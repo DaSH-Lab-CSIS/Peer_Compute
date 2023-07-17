@@ -1,0 +1,114 @@
+Metadata-Version: 2.0
+Name: rabbitmq-admin
+Version: 0.2
+Summary: A python interface for the RabbitMQ Admin HTTP API
+Home-page: https://github.com/ambitioninc/rabbitmq-admin
+Author: Micah Hausler
+Author-email: opensource@ambition.com
+License: MIT
+Keywords: RabbitMQ,AMQP,admin
+Platform: UNKNOWN
+Classifier: Programming Language :: Python :: 2.7
+Classifier: Programming Language :: Python :: 3.4
+Classifier: Programming Language :: Python :: 3.5
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Requires-Dist: requests (>=2.7.0)
+Requires-Dist: six (>=1.8.0)
+Provides-Extra: all
+Requires-Dist: pika (>=0.10.0); extra == 'all'
+Requires-Dist: sphinx-rtd-theme; extra == 'all'
+Requires-Dist: Sphinx (>=1.2.2); extra == 'all'
+Requires-Dist: nose (>=1.3.0); extra == 'all'
+Requires-Dist: six (>=1.8.0); extra == 'all'
+Requires-Dist: flake8 (>=2.2.0); extra == 'all'
+Requires-Dist: requests (>=2.7.0); extra == 'all'
+Requires-Dist: wheel; extra == 'all'
+Requires-Dist: mock (>=1.0.1); extra == 'all'
+Requires-Dist: coverage (>=4.0); extra == 'all'
+Provides-Extra: docs
+Requires-Dist: Sphinx (>=1.2.2); extra == 'docs'
+Requires-Dist: sphinx-rtd-theme; extra == 'docs'
+Provides-Extra: packaging
+Requires-Dist: wheel; extra == 'packaging'
+Provides-Extra: test
+Requires-Dist: coverage (>=4.0); extra == 'test'
+Requires-Dist: flake8 (>=2.2.0); extra == 'test'
+Requires-Dist: pika (>=0.10.0); extra == 'test'
+Requires-Dist: mock (>=1.0.1); extra == 'test'
+Requires-Dist: nose (>=1.3.0); extra == 'test'
+
+.. image:: https://travis-ci.org/ambitioninc/rabbitmq-admin.svg?branch=master
+    :target: https://travis-ci.org/ambitioninc/rabbitmq-admin
+
+.. image:: https://coveralls.io/repos/ambitioninc/rabbitmq-admin/badge.png?branch=master
+    :target: https://coveralls.io/r/ambitioninc/rabbitmq-admin?branch=master
+
+
+rabbitmq-admin
+==============
+This project is a python wrapper around the RabbitMQ Management HTTP API.
+
+
+Example
+-------
+::
+
+    >>> from rabbitmq_admin import AdminAPI
+    >>> api = AdminAPI(url='http://192.168.99.100:15672', auth=('guest', 'guest'))
+    >>> api.create_vhost('second_vhost')
+    >>> api.create_user('second_user', 'password')
+    >>> api.create_user_permission('second_user', 'second_vhost')
+    >>> api.list_permission()
+    [{'configure': '.*',
+      'read': '.*',
+      'user': 'guest',
+      'vhost': '/',
+      'write': '.*'},
+     {'configure': '.*',
+      'read': '.*',
+      'user': 'second_user',
+      'vhost': 'second_vhost',
+      'write': '.*'}]
+
+Unsupported Management API endpoints
+------------------------------------
+This is a list of unsupported API endpoints. Please do not make issues for
+these, but pull requests implementing them are welcome.
+
+- ``/api/exchanges/vhost/name/bindings/source [GET]``
+- ``/api/exchanges/vhost/name/bindings/destination [GET]``
+- ``/api/exchanges/vhost/name/publish [POST]``
+- ``/api/queues/vhost/name/bindings [GET]``
+- ``/api/queues/vhost/name/contents [DELETE]``
+- ``/api/queues/vhost/name/actions [POST]``
+- ``/api/queues/vhost/name/get [POST]``
+- ``/api/bindings/vhost/e/exchange/q/queue [GET, POST]``
+- ``/api/bindings/vhost/e/exchange/q/queue/props [GET, DELETE]``
+- ``/api/bindings/vhost/e/source/e/destination [GET, POST]``
+- ``/api/bindings/vhost/e/source/e/destination/props [GET, DELETE]``
+- ``/api/parameters [GET]``
+- ``/api/parameters/component [GET]``
+- ``/api/parameters/component/vhost [GET]``
+- ``/api/parameters/component/vhost/name [GET, PUT, DELETE]``
+
+Installation
+------------
+To install the latest release, type::
+
+    pip install rabbitmq-admin
+
+To install the latest code directly from source, type::
+
+    pip install git+git://github.com/ambitioninc/rabbitmq-admin.git
+
+Documentation
+-------------
+Full documentation is available at http://rabbitmq-admin.readthedocs.org
+
+License
+-------
+MIT License (see LICENSE)
+
+
