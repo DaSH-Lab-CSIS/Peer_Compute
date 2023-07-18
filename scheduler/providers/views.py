@@ -9,6 +9,9 @@ def make_rmq_user(user):
     username = 'username' + str(user.user_id)
     password = 'username' + str(user.user_id) + '_mqtt'
     api = AdminAPI(url='http://' + RABBITMQ_HOST + ':' + RABBITMQ_MANAGEMENT_PORT, auth=(RABBITMQ_USER, RABBITMQ_PASS))
+
+    #create user and set permissions 
     api.create_user(username, password)
     permission = "^(" + username + ".*|amq.default)$"
     api.create_user_permission(username, '/', permission, permission, permission)
+

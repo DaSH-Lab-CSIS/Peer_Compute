@@ -3,12 +3,10 @@ from pytz import timezone
 import pytz
 from datetime import datetime, timedelta
 import uuid
-from profiles.models import User
 from scheduler.settings import TIME_ZONE
 
 # Create your models here.
 class User(models.Model):
-    provider = models.ForeignKey(User, on_delete=models.CASCADE, limit_choices_to={'is_provider': True})
     user_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
     is_provider = models.BooleanField(default=False)
     is_developer = models.BooleanField(default=False)
