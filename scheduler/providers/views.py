@@ -15,3 +15,4 @@ def make_rmq_user(user):
     permission = "^(" + username + ".*|amq.default)$"
     api.create_user_permission(username, '/', permission, permission, permission)
 
+    return username,password

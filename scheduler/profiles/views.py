@@ -23,7 +23,9 @@ def register_user(request):
         user.save()
         if user.is_provider:
             user.active = True
-            make_rmq_user(user)
-        return JsonResponse({'message':'User added successfully'})
+            username,password =  make_rmq_user(user)
+            return JsonResponse({'message':'User added successfully','rmq_username': username, 'rmq_password': password})
+        else:
+            return JsonResponse({'message':'User added successfully'})
     else:
         return JsonResponse({'error': 'Invalid request method'})
