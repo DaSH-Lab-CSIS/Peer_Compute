@@ -1,9 +1,11 @@
 from django.shortcuts import render
+from django.core import serializers
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from .models import User
 import json
 from providers.views import make_rmq_user
+
 
 # Create your views here.
 
@@ -29,3 +31,23 @@ def register_user(request):
             return JsonResponse({'message':'User added successfully'})
     else:
         return JsonResponse({'error': 'Invalid request method'})
+    
+
+
+
+def list_users(request):
+    if request.method == 'GET':
+        users = User.objects.all()
+        user_ids = list(users.values_list('id', flat=True))
+        return JsonResponse({'user_ids': user_ids})
+
+@csrf_exempt
+def delete_user(request, user_id):
+    if request.method == 'DELETE':
+        try:
+            user = User.objects.get(pk=user_id)
+            user.delete()
+            return JsonResponse({'message': 'User deleted successfully'})
+        except User.DoesNotExist:
+            return JsonResponse({'error': 'User not found'}, status=404)
+
