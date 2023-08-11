@@ -5,6 +5,7 @@ from django.views.decorators.csrf import csrf_exempt
 from .models import User
 import json
 from providers.views import make_rmq_user
+from developers.models import Services
 
 
 # Create your views here.
@@ -27,13 +28,23 @@ def register_user(request):
             user.active = True
             username,password =  make_rmq_user(user)
             return JsonResponse({'message':'User added successfully','rmq_username': username, 'rmq_password': password})
+        if user.is_developer:
+            user.active = True
+            add_default_service(user)
+            ##add default service
         else:
             return JsonResponse({'message':'User added successfully'})
     else:
         return JsonResponse({'error': 'Invalid request method'})
     
-
-
+def add_default_service(user):
+    default_service = Services.objects.create(
+        developer = user,
+        provider = None,
+        docker_container = "https://cloud.docker.com/u/ghaemisr/repository/docker/ghaemisr/node-info", 
+        active=True
+    )
+    default_service.save()
 
 def list_users(request):
     if request.method == 'GET':
