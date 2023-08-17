@@ -1,8 +1,8 @@
-from django.shortcuts import render
+from django.shortcuts import render, get_object_or_404
 from django.core import serializers
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
-from .models import User
+from profiles.models import User
 import json
 from providers.views import make_rmq_user
 from developers.models import Services
@@ -10,7 +10,7 @@ from developers.models import Services
 
 # Create your views here.
 
-@csrf_exempt
+# @csrf_exempt
 def register_user(request):
     if request.method == 'POST':
         data = json.loads(request.body)
@@ -38,9 +38,9 @@ def register_user(request):
         return JsonResponse({'error': 'Invalid request method'})
     
 def add_default_service(user):
-    default_service = Services.objects.create(
+    default_service = Services(
         developer = user,
-        provider = None,
+        provider = get_object_or_404(User, pk=5),
         docker_container = "https://cloud.docker.com/u/ghaemisr/repository/docker/ghaemisr/node-info", 
         active=True
     )
@@ -52,7 +52,7 @@ def list_users(request):
         user_ids = list(users.values_list('id', flat=True))
         return JsonResponse({'user_ids': user_ids})
 
-@csrf_exempt
+# @csrf_exempt
 def delete_user(request, user_id):
     if request.method == 'DELETE':
         try:
