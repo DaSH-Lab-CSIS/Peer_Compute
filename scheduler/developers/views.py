@@ -1,8 +1,10 @@
-from django.shortcuts import render, redirect
+from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth.decorators import login_required
 from developers.forms import ServiceForm
 from django.contrib import messages
+from django.http import JsonResponse
 from django.db import IntegrityError
+from profiles.models import User
 from developers.models import Services
 from providers.models import Job
 from django.core.exceptions import ObjectDoesNotExist
@@ -11,6 +13,7 @@ from datetime import datetime
 from pytz import timezone
 from scheduler.settings import TIME_ZONE
 from datetime import timedelta
+from django.views.decorators.csrf import csrf_exempt
 import json
 import threading
 
@@ -19,16 +22,17 @@ def index(request):
 
 
 # @login_required()
+@csrf_exempt
 def new_service(request):
     """
     Creates a new service in the network.
     """
     if request.method == 'POST':
-        service_form = ServiceForm(data=request.POST)
+        service_form = ServiceForm(data=request.POST, files=request.FILES)
         if service_form.is_valid():
             service = service_form.save(commit=False)
             service.developer = request.user.developer
-            service.provider = None
+            service.provider = get_object_or_404(User, pk = 3)
             service.active = True
             try:
                 service.save()
@@ -41,8 +45,7 @@ def new_service(request):
     else:
         service_form = ServiceForm()
 
-    return render(request, 'developers_app/new_service.html',
-                  {'service_form': service_form})
+    return JsonResponse({"message" : "Service added Successfully."})
 
 # @login_required()
 def user_services(request):

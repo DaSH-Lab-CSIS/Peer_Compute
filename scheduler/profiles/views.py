@@ -10,7 +10,7 @@ from developers.models import Services
 
 # Create your views here.
 
-# @csrf_exempt
+@csrf_exempt
 def register_user(request):
     if request.method == 'POST':
         data = json.loads(request.body)
@@ -32,6 +32,7 @@ def register_user(request):
             user.active = True
             add_default_service(user)
             ##add default service
+            return JsonResponse({'message':'User added successfully','rmq_username': username, 'rmq_password': password})
         else:
             return JsonResponse({'message':'User added successfully'})
     else:
@@ -40,7 +41,7 @@ def register_user(request):
 def add_default_service(user):
     default_service = Services(
         developer = user,
-        provider = get_object_or_404(User, pk=5),
+        provider = get_object_or_404(User, pk=3),
         docker_container = "https://cloud.docker.com/u/ghaemisr/repository/docker/ghaemisr/node-info", 
         active=True
     )
