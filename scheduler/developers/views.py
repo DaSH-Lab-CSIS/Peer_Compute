@@ -28,26 +28,29 @@ def new_service(request):
     Creates a new service in the network.
     """
     if request.method == 'POST':
-        service_form = ServiceForm(data=request.POST, files=request.FILES)
-        if service_form.is_valid():
-            service = service_form.save(commit=False)
-            service.developer = request.user.developer
-            service.provider = get_object_or_404(User, pk = 3)
-            service.active = True
-            try:
-                service.save()
-                messages.success(request, "New service created")
-                service_form = ServiceForm()
-            except IntegrityError:
+        data = json.loads(request.body) 
+        service = Services()
+        try:
+            service.save(
+                developer = data.get('developer'), 
+                provider = get_default_provider(), 
+                name = data.get('name'),
+                docker_container = data.get('docker_url'),
+                active = data.get('is_active',True),
+            )
+            messages.success(request, "New service created")
+        except IntegrityError:
                 messages.error(request, "You already have a service with this name")
-        else:
-            print(service_form.errors)
+        service_form = ServiceForm(data=request.POST, files=request.FILES)
     else:
-        service_form = ServiceForm()
-
+       return JsonResponse({'error': 'Invalid request method'})
     return JsonResponse({"message" : "Service added Successfully."})
 
 # @login_required()
+def get_default_provider():
+    provider = User.objects.get(user_id = 3)
+    return provider
+
 def user_services(request):
     """
     Shows all services owned by a user.
