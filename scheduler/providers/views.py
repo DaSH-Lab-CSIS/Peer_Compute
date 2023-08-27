@@ -57,7 +57,7 @@ def index(request):
 
 def add_task_to_queue(request,task,username):
 
-    client = RpcClient()
+    client = RpcClient(username)
     task_dict = json.dumps(task)
     client.call(username,task_dict)
     response = client.response 
@@ -124,19 +124,16 @@ class RpcClient(object):
     """
     This is the rabbitmq RpcClient class.
     """
+    username = None
 
-    def __init__(self):
+    def __init__(self,username):
+        RpcClient.username = username
+
         credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASS)
-        if not RABBITMQ_PORT:
-            self.connection = pika.BlockingConnection(
-                pika.ConnectionParameters(host=RABBITMQ_HOST, credentials=credentials))
-        else:
-            self.connection = pika.BlockingConnection(
-                pika.ConnectionParameters(RABBITMQ_HOST, RABBITMQ_PORT, credentials=credentials))
-
+        self.connection = pika.BlockingConnection(pika.ConnectionParameters(RABBITMQ_HOST, RABBITMQ_PORT, credentials=credentials))
         self.channel = self.connection.channel()
 
-        result = self.channel.queue_declare(queue='', exclusive=True)
+        result = self.channel.queue_declare(queue=username, exclusive=True)
         self.callback_queue = result.method.queue
 
         self.channel.basic_consume(
@@ -149,12 +146,12 @@ class RpcClient(object):
         if self.corr_id == props.correlation_id:
             self.response = body
 
-    def call(self, queue_name, request):
+    def call(self, request):
         self.response = None
         self.corr_id = str(uuid.uuid4())
         self.channel.basic_publish(
             exchange='',
-            routing_key=queue_name,
+            routing_key=RpcClient.username, #using the class variable here
             properties=pika.BasicProperties(
                 reply_to=self.callback_queue,
                 correlation_id=self.corr_id,

@@ -10,6 +10,7 @@ from random import randint
 # Create your views here.
 def request_handler(request,service,start_time,run_async = False):
     provider = find_provider()
+    
     if provider is None : 
         return None,None,None,None
     
@@ -17,7 +18,7 @@ def request_handler(request,service,start_time,run_async = False):
     job.save()
     task_link = service.docker_container 
     task_developer = service.developer
-    response = add_task_to_queue(request)
+    # response = add_task_to_queue(request)
     
 
 def find_provider():
