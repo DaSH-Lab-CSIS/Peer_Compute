@@ -6,11 +6,14 @@ from datetime import datetime, timedelta
 from pytz import timezone
 from scheduler.settings import TIME_ZONE
 from random import randint 
+import zmq 
 
 # Create your views here.
+
+
 def request_handler(request,service,start_time,run_async = False):
     provider = find_provider()
-    
+
     if provider is None : 
         return None,None,None,None
     
@@ -18,7 +21,8 @@ def request_handler(request,service,start_time,run_async = False):
     job.save()
     task_link = service.docker_container 
     task_developer = service.developer
-    # response = add_task_to_queue(request)
+    response = add_task_to_queue(provider,task_link,task_developer)
+    #handle response
     
 
 def find_provider():
@@ -34,3 +38,4 @@ def find_provider():
     return ready_providers[randint(0,len(ready_providers)-1)]
 
 #have to add job_status get method 
+
