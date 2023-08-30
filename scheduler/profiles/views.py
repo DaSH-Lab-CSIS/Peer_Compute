@@ -25,19 +25,20 @@ def register_user(request):
             cpu=data.get('cpu', 0)
         )
         user.save()
+        user_id = user.id
         if user.is_provider:
             user.active = True
             # username,password =  make_rmq_user(user)
-            create_thread_and_subscribe(request,user.user_id)
+            # create_thread_and_subscribe(request,user.user_id)
 
-            return JsonResponse({'message':'User added successfully'})
+            return JsonResponse({'message':'User added successfully', 'user_id' : user_id})
         if user.is_developer:
             user.active = True
             add_default_service(user)
             ##add default service
-            return JsonResponse({'message':'User added successfully'})
+            return JsonResponse({'message':'User added successfully', 'user_id' : user_id})
         else:
-            return JsonResponse({'message':'User added successfully'})
+            return JsonResponse({'message':'User added successfully', 'user_id' : user_id})
     else:
         return JsonResponse({'error': 'Invalid request method'})
     
@@ -66,23 +67,23 @@ def delete_user(request, user_id):
         except User.DoesNotExist:
             return JsonResponse({'error': 'User not found'}, status=404)
 
-def create_thread_and_subscribe(request,user_id):
-    client_ip = request.META.get('REMOTE_ADDR')
-    client_port = request.META.get('REMOTE_PORT')
-    provider_thread = Thread(target= thread_target, args= (client_ip,client_port,user_id))
-    provider_thread.start()
-    provider_thread.join()
+# def create_thread_and_subscribe(request,user_id):
+#     client_ip = request.META.get('REMOTE_ADDR')
+#     client_port = request.META.get('REMOTE_PORT')
+#     provider_thread = Thread(target= thread_target, args= (client_ip,client_port,user_id))
+#     provider_thread.start()
+#     provider_thread.join()
     
-def thread_target(client_ip,client_port,user_id):
-    while True:
-        try:
-            ctx = zmq.Context()
-            socket = ctx.socket(zmq.SUB)
-            socket.connect(f"tcp://{client_ip}:{client_port}")
-            socket.subscribe(user_id)
-            print("Connected to socket.")
-            break  # Exit the loop if connection is successful
+# def thread_target(client_ip,client_port,user_id):
+#     while True:
+#         try:
+#             ctx = zmq.Context()
+#             socket = ctx.socket(zmq.SUB)
+#             socket.connect(f"tcp://{client_ip}:{client_port}")
+#             socket.setsockopt_string(zmq.SUBSCRIBE, str(user_id))
+#             print("Connected to socket.")
+#             break  # Exit the loop if connection is successful
 
-        except zmq.error.ZMQError as e:
-            print(f"Connection attempt failed: {e}")
-            time.sleep(5)  # Wait for 5 seconds before retrying
+#         except zmq.error.ZMQError as e:
+#             print(f"Connection attempt failed: {e}")
+#             time.sleep(5)  # Wait for 5 seconds before retrying
