@@ -8,6 +8,7 @@ from profiles.models import User
 from datetime import datetime, timedelta, tzinfo
 import uuid
 from providers.models import Job
+from django.http import JsonResponse
 from scheduler.settings import TIME_ZONE
 from pytz import timezone
 from django.contrib import messages
@@ -15,19 +16,22 @@ import zmq
 # Create your views here.
 zmq_context = zmq.Context()
 
-def add_task_to_queue(provider , task_link , task_developer):
+def publish_to_topic(provider , task_link , task_developer, job_id):
+    router_name = str(provider.user_id)
     zmq_data = {
-        'provider_id' : provider.id,
+        'provider_id' : provider.user_id,
         'task_link' : task_link,
         'task_developer' : task_developer,
+        'job_id' : job_id
     }
-    zmq_socket = zmq_context.socket(zmq.PUSH)
-    zmq_socket.connect("tcp://localhost:5555")
-    zmq_socket.send_json(zmq_data)
+    zmq_socket = zmq_context.socket(zmq.DEALER)
+    dealer_id = b"dealer1"
+    zmq_socket.setsockopt(zmq.IDENTITY, dealer_id)
+    zmq_socket.connect("tcp://*:5555")
+    zmq_socket.send_multipart([router_name, json.dumps(zmq_data).encode("utf-8")])
+    response = zmq_socket.recv()
     zmq_socket.close()
-    return 1    
-
-
+    return response
 
 
 # def make_rmq_user(user):
@@ -80,7 +84,8 @@ def add_task_to_queue(provider , task_link , task_developer):
 #         provider = request.user.provider
 #         provider.ready = False
 #         provider.save()
-#         add_task_to_queue(request, 'Stop', request.user.username)
+#         publish_to_topic
+#(request, 'Stop', request.user.username)
 #         return redirect('providers_app:index')
 #     else:
 #         return redirect('providers_app:index')
@@ -98,28 +103,36 @@ def add_task_to_queue(provider , task_link , task_developer):
 #     return redirect('providers_app:index')
 
 
-# # @login_required
-# def not_ready(request):
-#     """
-#     Shows that the provider is not ready to receive tasks.
-#     """
-#     provider = request.user.provider
-#     provider.ready = False
-#     provider.save()
-#     return redirect('providers_app:index')
+# @login_required
+@csrf_exempt
+def not_ready(request):
+    """
+    Shows that the provider is not ready to receive tasks.
+    """
+    if request.method == 'GET':
+        if 'user_id' in request.GET.keys():
+            provider = get_object_or_404(User, pk=request.GET['job'])
+            provider.ready = False
+            provider.save()
+        else:
+            messages.error(request, "You need to provide the user_id.")
+    else:
+        messages.error(request, "Wrong request method.")
+    return JsonResponse({'message' : 'Not ready ran successfully.'})
 
 # # @login_required
-# def job_ack(request):
-#     if request.method == 'GET':
-#         if 'job' in request.GET.keys():
-#             job = get_object_or_404(Job, pk=request.GET['job'])
-#             job.ack_time = datetime.now(tz=timezone(TIME_ZONE))
-#             job.save(update_fields=['ack_time'])
-#         else:
-#             messages.error(request, "You need to provide the job number.")
-#     else:
-#         messages.error(request, "Wrong request method.")
-#     return redirect('providers_app:index')
+@csrf_exempt
+def job_ack(request):
+    if request.method == 'GET':
+        if 'job' in request.GET.keys():
+            job = get_object_or_404(Job, pk=request.GET['job'])
+            job.ack_time = datetime.now(tz=timezone(TIME_ZONE))
+            job.save(update_fields=['ack_time'])
+        else:
+            messages.error(request, "You need to provide the job number.")
+    else:
+        messages.error(request, "Wrong request method.")
+    return JsonResponse({'message' : 'Job acknowledge time updated successfully.'})
 
 
 # class RpcClient(object):

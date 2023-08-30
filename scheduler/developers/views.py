@@ -41,7 +41,6 @@ def new_service(request):
             messages.success(request, "New service created")
         except IntegrityError:
                 messages.error(request, "You already have a service with this name")
-        service_form = ServiceForm(data=request.POST, files=request.FILES)
     else:
        return JsonResponse({'error': 'Invalid request method'})
     return JsonResponse({"message" : "Service added Successfully."})
