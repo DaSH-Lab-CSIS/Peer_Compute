@@ -19,6 +19,7 @@ ACK_URL = "https://" + controller_ip + ":" + controller_port + "/providers/job_a
 NOT_READY_URL = "https://" + controller_ip + ":" + controller_port + "providers/not_ready/"
 READY_URL = "https://" + controller_ip + ":" + controller_port + "providers/ready/"
 
+
 # def create_thread_and_subscribe(user_id):
 #     provider_thread = Thread(target= thread_target, args= (controller_ip,controller_port,user_id))
 #     provider_thread.start()
