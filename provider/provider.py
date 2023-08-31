@@ -9,15 +9,15 @@ import math
 
 user_id = sys.argv[1]
 controller_ip = "10.8.1.46"
-controller_port = "8000"
+controller_port = "8080"
 
 client = docker.from_env()
 container_name = ""
 
 # REGISTER_URL = 'https://' + controller_ip + ":" + controller_port + "/profiles/register_user/"
 ACK_URL = "https://" + controller_ip + ":" + controller_port + "/providers/job_ack/"
-NOT_READY_URL = "https://" + controller_ip + ":" + controller_port + "providers/not_ready/"
-READY_URL = "https://" + controller_ip + ":" + controller_port + "providers/ready/"
+NOT_READY_URL = "https://" + controller_ip + ":" + controller_port + "/providers/not_ready/"
+READY_URL = "https://" + controller_ip + ":" + controller_port + "/providers/ready/"
 
 
 # def create_thread_and_subscribe(user_id):
@@ -41,12 +41,12 @@ READY_URL = "https://" + controller_ip + ":" + controller_port + "providers/read
 
 def run_docker(body):
     start_pull_time = time.time()
-    image = client.images.pull(body)
+    image = client.images.pull("hello-world")
     print("Pull done!")
     pull_time = int((time.time() - start_pull_time) *1000)
 
     start_run_time = time.time()
-    result = client.containers.run(body, name=container_name)
+    result = client.containers.run("hello-world", name=container_name)
     result = result.decode("utf-8")
     print("Run done!")
 
@@ -60,11 +60,11 @@ def delete_container_and_image(body):
     container_id = client.containers.list(all=True, filters=filters)[0]
     container_id.remove()
 
-    client.images.remove(body)
+    client.images.remove("hello-world")
 
 def on_request(json_data) :
-    requests.GET(url=ACK_URL + str(json_data['job_id']))
-    requests.GET(url=NOT_READY_URL + user_id)
+    # requests.get(url=ACK_URL + str(json_data['job_id']), verify=False)
+    # requests.get(url=NOT_READY_URL + user_id, verify = False)
     container_name = str(json_data['job_id']) + "_container"
     r, pull_time, run_time = run_docker(json_data['task_link'])
     total_time = math.ceil(((pull_time + run_time)/100.0))*100
@@ -73,10 +73,10 @@ def on_request(json_data) :
     return {'Result': r, 'pull_time': pull_time, 'run_time': run_time, 'total_time': total_time}
 
 data = {
-    "is_provider": true,
-    "is_developer": false,
-    "active": true,
-    "ready": true,
+    "is_provider": True,
+    "is_developer": False,
+    "active": True,
+    "ready": True,
     "location": "TEST_PROV_1",
     "ram": 8,
     "cpu": 4
@@ -90,7 +90,7 @@ data = {
 context = zmq.Context()
 socket = context.socket(zmq.ROUTER)
 socket.setsockopt(zmq.IDENTITY, user_id.encode("utf-8"))
-socket.bind("tcp://" + controller_ip + ":5555")
+socket.connect("tcp://" + controller_ip + ":5555")
 # socket.setsockopt_string(zmq.SUBSCRIBE, user_id)
 
 while True:
@@ -100,7 +100,7 @@ while True:
         print(f"Received identity: {identity.decode('utf-8')}")
         print(f"Received data: {data}")
 
-        response = on_request(json_data)
+        response = on_request(data)
         socket.send_multipart([identity, json.dumps(response).encode("utf-8")])
 
-        requests.GET(url=READY_URL+user_id)
+        # requests.get(url=READY_URL+user_id)

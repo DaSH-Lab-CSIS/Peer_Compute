@@ -109,7 +109,7 @@ def run_service(request, service_id):
     except ObjectDoesNotExist:
         messages.error(request, "Incorrect service id")
 
-    return render(request, 'final_response.html',
+    return JsonResponse(
                   {'result': response['Result'],
                    'providing_time': providing_time,
                    'pull_time': response['pull_time'],
