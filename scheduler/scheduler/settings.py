@@ -25,7 +25,7 @@ SECRET_KEY = 'django-insecure-xgo+%_s-0piu0d7c$hhw$n6t5%ozqct71qrc(e8d!5flo@6n@c
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['*']
 
 
 # Application definition
@@ -41,6 +41,7 @@ INSTALLED_APPS = [
     'providers',
     'controller',
     'developers',
+    'corsheaders',
 ]
 
 MIDDLEWARE = [
@@ -51,6 +52,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
 ]
 
 ROOT_URLCONF = 'scheduler.urls'
@@ -61,6 +63,7 @@ RABBITMQ_MANAGEMENT_PORT = '15672'
 RABBITMQ_USER = 'chainfaas'
 RABBITMQ_PASS = 'chainfaas'
 
+CORS_ORIGIN_ALLOW_ALL = True
 
 TEMPLATES = [
     {

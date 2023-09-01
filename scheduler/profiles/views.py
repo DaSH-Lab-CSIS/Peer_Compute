@@ -5,7 +5,6 @@ from django.views.decorators.csrf import csrf_exempt
 from profiles.models import User
 import json
 import time
-from providers.views import make_rmq_user
 from developers.models import Services
 from threading import Thread 
 import zmq

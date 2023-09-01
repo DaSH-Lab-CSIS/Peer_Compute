@@ -19,16 +19,16 @@ zmq_context = zmq.Context()
 def publish_to_topic(provider , task_link , task_developer, job_id):
     router_name = str(provider.user_id)
     zmq_data = {
-        'provider_id' : provider.user_id,
+        'provider_id' : router_name,
         'task_link' : task_link,
-        'task_developer' : task_developer,
+        'task_developer' : str(task_developer.user_id),
         'job_id' : job_id
     }
     zmq_socket = zmq_context.socket(zmq.DEALER)
     dealer_id = b"dealer1"
     zmq_socket.setsockopt(zmq.IDENTITY, dealer_id)
-    zmq_socket.connect("tcp://*:5555")
-    zmq_socket.send_multipart([router_name, json.dumps(zmq_data).encode("utf-8")])
+    zmq_socket.bind("tcp://*:5555")
+    zmq_socket.send_multipart([router_name.encode("utf-8"), json.dumps(zmq_data).encode("utf-8")])
     response = zmq_socket.recv()
     zmq_socket.close()
     return response
@@ -98,7 +98,7 @@ def ready(request,user_id):
     Shows that the provider is still ready.
     """
     if request.method == 'GET':
-        provider = User.objects.filter(user_id=user_id)
+        provider = User.objects.get(user_id=user_id)
         provider.ready = True
         provider.last_ready_signal = datetime.now(tz=timezone(TIME_ZONE))
         provider.save()
@@ -114,7 +114,7 @@ def not_ready(request, user_id):
     Shows that the provider is not ready to receive tasks.
     """
     if request.method == 'GET':
-            provider = User.objects.filter(user_id=user_id)
+            provider = User.objects.get(user_id=user_id)
             provider.ready = False
             provider.save()
     else:

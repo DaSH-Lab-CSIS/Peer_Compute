@@ -7,6 +7,7 @@ from pytz import timezone
 from scheduler.settings import TIME_ZONE
 from random import randint 
 import zmq 
+import json
 
 # Create your views here.
 
@@ -17,18 +18,20 @@ def request_handler(request,service,start_time,run_async = False):
     if provider is None : 
         return None,None,None,None
     
-    job = Job.objects.create(provider = provider,service = service , start_time = start_time)
+    job = Job.objects.create(provider = provider, start_time = start_time)
     job.save()
     task_link = service.docker_container 
     task_developer = service.developer
     response = publish_to_topic(provider,task_link,task_developer, job.id)
     # total_time = response['pull_time'] + response['run_time']
+    response = json.loads(response.decode("utf-8"))
     print("response from provider: ", response)
     job.refresh_from_db()
     job.pull_time = response['pull_time']
     job.run_time = response['run_time']
     job.total_time = response['total_time']
     job.cost = calculate_cost(response['total_time'])
+    job.response = response['Result']
     job.finished = True
     job.save()
     providing_time = int(((job.ack_time - job.start_time)/timedelta(microseconds=1))/1000) # Providing time in milliseconds
@@ -47,7 +50,7 @@ def find_provider():
 
     ready_providers = User.objects.filter(
         active = True , ready = True , 
-        last_ready_signal__gte = datetime.now(tz=timezone(TIME_ZONE)) - timedelta(minutes=1)
+        last_ready_signal__gte = datetime.now(tz=timezone(TIME_ZONE)) - timedelta(minutes=10000)
     )
     
     if len(ready_providers) == 0: 

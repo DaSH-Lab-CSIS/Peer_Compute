@@ -16,8 +16,8 @@ container_name = ""
 
 # REGISTER_URL = 'https://' + controller_ip + ":" + controller_port + "/profiles/register_user/"
 ACK_URL = "https://" + controller_ip + ":" + controller_port + "/providers/job_ack/"
-NOT_READY_URL = "https://" + controller_ip + ":" + controller_port + "providers/not_ready/"
-READY_URL = "https://" + controller_ip + ":" + controller_port + "providers/ready/"
+NOT_READY_URL = "https://" + controller_ip + ":" + controller_port + "/providers/not_ready/"
+READY_URL = "https://" + controller_ip + ":" + controller_port + "/providers/ready/"
 
 
 # def create_thread_and_subscribe(user_id):
@@ -73,10 +73,10 @@ def on_request(json_data) :
     return {'Result': r, 'pull_time': pull_time, 'run_time': run_time, 'total_time': total_time}
 
 data = {
-    "is_provider": true,
-    "is_developer": false,
-    "active": true,
-    "ready": true,
+    "is_provider": True,
+    "is_developer": False,
+    "active": True,
+    "ready": True,
     "location": "TEST_PROV_1",
     "ram": 8,
     "cpu": 4
@@ -90,7 +90,7 @@ data = {
 context = zmq.Context()
 socket = context.socket(zmq.ROUTER)
 socket.setsockopt(zmq.IDENTITY, user_id.encode("utf-8"))
-socket.bind("tcp://" + controller_ip + ":5555")
+socket.connect("tcp://" + controller_ip + ":5555")
 # socket.setsockopt_string(zmq.SUBSCRIBE, user_id)
 
 while True:
@@ -100,7 +100,7 @@ while True:
         print(f"Received identity: {identity.decode('utf-8')}")
         print(f"Received data: {data}")
 
-        response = on_request(json_data)
+        response = on_request(data)
         socket.send_multipart([identity, json.dumps(response).encode("utf-8")])
 
-        requests.GET(url=READY_URL+user_id)
+        requests.get(url=READY_URL+user_id)

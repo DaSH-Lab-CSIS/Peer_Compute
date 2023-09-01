@@ -6,7 +6,7 @@ urlpatterns = [
     path('publish_to_topic/', publish_to_topic, name='publish_to_topic'),
     # path('index/', index, name='index'),
     # path('stop_providing/', stop_providing, name='stop_providing'),
-    path('ready/<string:user_id>', ready, name='ready'),
-    path('not_ready/<string:user_id>', not_ready, name='not_ready'),
+    path('ready/<str:user_id>', ready, name='ready'),
+    path('not_ready/<str:user_id>', not_ready, name='not_ready'),
     path('job_ack/<int:job_id>', job_ack, name='job_ack')
 ]
