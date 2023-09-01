@@ -15,13 +15,13 @@ def register_user(request):
     if request.method == 'POST':
         data = json.loads(request.body)
         user = User(
-            is_provider=data.get('is_provider', False),
-            is_developer=data.get('is_developer', False),
-            active=data.get('active', False),
-            ready=data.get('ready', False),
-            location=data.get('location', 'DASH_LAB'),
-            ram=data.get('ram', 0),
-            cpu=data.get('cpu', 0)
+            is_provider=data.get('is_provider', data['is_provider']),
+            is_developer=data.get('is_developer', data['is_developer']),
+            active=data.get('active', data['active']),
+            ready=data.get('ready', data['ready']),
+            location=data.get('location', data['location']),
+            ram=data.get('ram', data['ram']),
+            cpu=data.get('cpu', data['cpu'])
         )
         user.save()
         user_id = user.id
@@ -45,7 +45,7 @@ def add_default_service(user):
     default_service = Services(
         developer = user,
         provider = get_object_or_404(User, pk=3),
-        docker_container = "https://cloud.docker.com/u/ghaemisr/repository/docker/ghaemisr/node-info", 
+        docker_container = "hello-world", 
         active=True
     )
     default_service.save()
