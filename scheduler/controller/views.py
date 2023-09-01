@@ -14,7 +14,7 @@ import json
 
 def request_handler(request,service,start_time,run_async = False):
     provider = find_provider()
-
+    print(provider)
     if provider is None : 
         return None,None,None,None
     

@@ -9,7 +9,7 @@ import math
 
 user_id = sys.argv[1]
 controller_ip = "10.8.1.46"
-controller_port = "8000"
+controller_port = "8080"
 
 client = docker.from_env()
 container_name = ""
@@ -41,12 +41,12 @@ READY_URL = "https://" + controller_ip + ":" + controller_port + "/providers/rea
 
 def run_docker(body):
     start_pull_time = time.time()
-    image = client.images.pull(body)
+    image = client.images.pull("hello-world")
     print("Pull done!")
     pull_time = int((time.time() - start_pull_time) *1000)
 
     start_run_time = time.time()
-    result = client.containers.run(body, name=container_name)
+    result = client.containers.run("hello-world", name=container_name)
     result = result.decode("utf-8")
     print("Run done!")
 
@@ -60,11 +60,11 @@ def delete_container_and_image(body):
     container_id = client.containers.list(all=True, filters=filters)[0]
     container_id.remove()
 
-    client.images.remove(body)
+    client.images.remove("hello-world")
 
 def on_request(json_data) :
-    requests.GET(url=ACK_URL + str(json_data['job_id']))
-    requests.GET(url=NOT_READY_URL + user_id)
+    # requests.get(url=ACK_URL + str(json_data['job_id']), verify=False)
+    # requests.get(url=NOT_READY_URL + user_id, verify = False)
     container_name = str(json_data['job_id']) + "_container"
     r, pull_time, run_time = run_docker(json_data['task_link'])
     total_time = math.ceil(((pull_time + run_time)/100.0))*100
