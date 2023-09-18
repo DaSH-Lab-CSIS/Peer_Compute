@@ -6,41 +6,52 @@ from datetime import datetime, timedelta
 from pytz import timezone
 from scheduler.settings import TIME_ZONE
 from random import randint 
-import zmq 
+from scheduler.settings import USE_FABRIC
+import fabric.views as fabric
 import json
 
 # Create your views here.
 
 
-def request_handler(request,service,start_time,run_async = False):
-    provider = find_provider()
+def request_handler(data,service,start_time,run_async = False):
+    
+    provider = None
+    while(provider == None):
+        provider = find_provider()
     print(provider)
-    if provider is None : 
-        return None,None,None,None
     
     job = Job.objects.create(provider = provider, start_time = start_time)
     job.save()
+
+    if USE_FABRIC:
+        r = fabric.invoke_new_job(str(job.id), str(service.id), str(service.developer_id),
+                                        str(provider.id), provider_org="Org1")
+        if 'jwt expired' in r.text or 'jwt malformed' in r.text or 'User was not found' in r.text:
+            token = fabric.register_user()
+            r = fabric.invoke_new_job(str(job.id), str(service.id), str(service.developer_id),
+                                        str(provider.id), provider_org="Org1",token=token)
+
     task_link = service.docker_container 
     task_developer = service.developer
-    response = publish_to_topic(provider,task_link,task_developer, job.id)
+    response = publish_to_topic(data['runMultipleInvocations'], data['numberOfInvocations'], data['chained'], data['input'], provider,task_link,task_developer, job.id)
     # total_time = response['pull_time'] + response['run_time']
-    response = json.loads(response.decode("utf-8"))
-    print("response from provider: ", response)
+    response_decoded = json.loads(response.decode("utf-8"))
+    print("response from provider: ", response_decoded)
     job.refresh_from_db()
-    job.pull_time = response['pull_time']
-    job.run_time = response['run_time']
-    job.total_time = response['total_time']
-    job.cost = calculate_cost(response['total_time'])
-    job.response = response['Result']
+    job.pull_time = response_decoded['pull_time']
+    job.run_time = response_decoded['run_time']
+    job.total_time = response_decoded['total_time']
+    job.cost = calculate_cost(response_decoded['total_time'])
+    job.response = response_decoded['Result']
     job.finished = True
     job.save()
     providing_time = int(((job.ack_time - job.start_time)/timedelta(microseconds=1))/1000) # Providing time in milliseconds
-    # if USE_FABRIC:
-    #     r = fabric.invoke_received_result(str(job.id))
-    #     if 'jwt expired' in r.text or 'jwt malformed' in r.text or 'User was not found' in r.text:
-    #         token = fabric.register_user()
-    #         r = fabric.invoke_received_result(str(job.id))
-    return response, provider.id, providing_time, str(job.id)
+    if USE_FABRIC:
+        r = fabric.invoke_received_result(str(job.id))
+        if 'jwt expired' in r.text or 'jwt malformed' in r.text or 'User was not found' in r.text:
+            token = fabric.register_user()
+            r = fabric.invoke_received_result(str(job.id), token=token)
+    return response_decoded, provider.id, providing_time, str(job.id)
     #handle response
     
 def calculate_cost(total_time):
@@ -52,6 +63,8 @@ def find_provider():
         active = True , ready = True , 
         last_ready_signal__gte = datetime.now(tz=timezone(TIME_ZONE)) - timedelta(minutes=10000)
     )
+
+    print("Ready Providers: \n", ready_providers)
     
     if len(ready_providers) == 0: 
         return

@@ -41,6 +41,7 @@ INSTALLED_APPS = [
     'providers',
     'controller',
     'developers',
+    'fabric',
     'corsheaders',
 ]
 
@@ -57,11 +58,8 @@ MIDDLEWARE = [
 
 ROOT_URLCONF = 'scheduler.urls'
 
-RABBITMQ_HOST = 'localhost'
-RABBITMQ_PORT = '15672'
-RABBITMQ_MANAGEMENT_PORT = '15672'
-RABBITMQ_USER = 'chainfaas'
-RABBITMQ_PASS = 'chainfaas'
+USE_FABRIC = False
+CONTROLLER_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE2OTM5NzE5NTMsInVzZXJuYW1lIjoidGVtcCIsIm9yZ05hbWUiOiJPcmcxIiwiaWF0IjoxNjkzOTM1OTUzfQ.x06zMn-c0_e7_phfc3thS30R1H284V8x6xMda6rl6Ak"
 
 CORS_ORIGIN_ALLOW_ALL = True
 

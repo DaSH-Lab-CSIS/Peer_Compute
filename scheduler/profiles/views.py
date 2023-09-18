@@ -1,13 +1,13 @@
 from django.shortcuts import render, get_object_or_404
-from django.core import serializers
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from profiles.models import User
+import fabric.views as fabric
 import json
 import time
 from developers.models import Services
 from threading import Thread 
-import zmq
+from scheduler.settings import USE_FABRIC
 # Create your views here.
 
 @csrf_exempt
@@ -24,7 +24,13 @@ def register_user(request):
             cpu=data.get('cpu', data['cpu'])
         )
         user.save()
-        user_id = user.id
+        user_id = user.user_id
+        if USE_FABRIC :
+            r = fabric.invoke_new_monetary_account(str(user.user_id), '700')
+            if 'jwt expired' in r.text or 'jwt malformed' in r.text or 'User was not found' in r.text:
+                token = fabric.register_user()
+                r = fabric.invoke_new_monetary_account(str(user.user_id), '700', token = token)
+        
         if user.is_provider:
             user.active = True
             # username,password =  make_rmq_user(user)
@@ -36,8 +42,7 @@ def register_user(request):
             add_default_service(user)
             ##add default service
             return JsonResponse({'message':'User added successfully', 'user_id' : user_id})
-        else:
-            return JsonResponse({'message':'User added successfully', 'user_id' : user_id})
+        
     else:
         return JsonResponse({'error': 'Invalid request method'})
     

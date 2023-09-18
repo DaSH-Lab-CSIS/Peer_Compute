@@ -16,13 +16,17 @@ import zmq
 # Create your views here.
 zmq_context = zmq.Context()
 
-def publish_to_topic(provider , task_link , task_developer, job_id):
+def publish_to_topic(runMultipleInvocations, numberOfInvocations, isChained, inputData, provider , task_link , task_developer, job_id):
     router_name = str(provider.user_id)
     zmq_data = {
         'provider_id' : router_name,
         'task_link' : task_link,
         'task_developer' : str(task_developer.user_id),
-        'job_id' : job_id
+        'job_id' : job_id,
+        'numberOfInvocations': numberOfInvocations,
+        'isChained': isChained,
+        'inputData': inputData,
+        'runMultipleInvocations': runMultipleInvocations
     }
     zmq_socket = zmq_context.socket(zmq.DEALER)
     dealer_id = b"dealer1"
