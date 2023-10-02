@@ -98,9 +98,9 @@ def run_service(request, service_id):
         if service.active:
             temp_time = datetime.now(tz=timezone(TIME_ZONE))
             data = json.loads(request.body)
-            for i in range(data['numberOfInvocations']):
-                print("Invocation ", str(i), ": \n")
-                response, provider, providing_time, job_id = request_handler(data, service, temp_time)
+            # for i in range(data['numberOfInvocations']):
+            #     print("Invocation ", str(i), ": \n")
+            response, provider, providing_time, job_id = request_handler(data, service, temp_time)
             if response is None:
                 messages.error(request, "There are no available providers in the network")
                 return redirect('index')

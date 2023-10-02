@@ -9,9 +9,10 @@ from random import randint
 from scheduler.settings import USE_FABRIC
 import fabric.views as fabric
 import json
+# import zmq
 
-# Create your views here.
-
+# # Create your views here.
+# zmq_context = zmq.Context()
 
 def request_handler(data,service,start_time,run_async = False):
     
@@ -33,15 +34,20 @@ def request_handler(data,service,start_time,run_async = False):
 
     task_link = service.docker_container 
     task_developer = service.developer
-    response = publish_to_topic(data['runMultipleInvocations'], data['numberOfInvocations'], data['chained'], data['input'], provider,task_link,task_developer, job.id)
-    # total_time = response['pull_time'] + response['run_time']
-    response_decoded = json.loads(response.decode("utf-8"))
+    input_val = data['input']
+    response_decoded = None
+    if(data['chained'] == True): 
+        for i in range(data['numberOfInvocations']):
+            response = publish_to_topic(data['runMultipleInvocations'], data['numberOfInvocations'], data['chained'], input_val, provider,task_link,task_developer, job.id)
+        # total_time = response['pull_time'] + response['run_time']
+            response_decoded = json.loads(response.decode("utf-8"))
+            input_val = int(response_decoded['Result'])
     print("response from provider: ", response_decoded)
     job.refresh_from_db()
     job.pull_time = response_decoded['pull_time']
     job.run_time = response_decoded['run_time']
     job.total_time = response_decoded['total_time']
-    job.cost = calculate_cost(response_decoded['total_time'])
+    job.cost = (response_decoded['total_time'])
     job.response = response_decoded['Result']
     job.finished = True
     job.save()
