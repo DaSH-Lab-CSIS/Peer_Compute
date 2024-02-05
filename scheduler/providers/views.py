@@ -15,10 +15,10 @@ from django.contrib import messages
 import zmq
 # Create your views here.
 zmq_context = zmq.Context()
-zmq_socket = zmq_context.socket(zmq.DEALER)
-dealer_id = b"dealer1"
-zmq_socket.setsockopt(zmq.IDENTITY, dealer_id)
-zmq_socket.bind("tcp://*:5555")
+# zmq_socket = zmq_context.socket(zmq.DEALER)
+# dealer_id = b"dealer1"
+# zmq_socket.setsockopt(zmq.IDENTITY, dealer_id)
+# zmq_socket.bind("tcp://*:5555")
 
 def publish_to_topic(runMultipleInvocations, numberOfInvocations, isChained, inputData, provider , task_link , task_developer, job_id):
     router_name = str(provider.user_id)
@@ -32,13 +32,16 @@ def publish_to_topic(runMultipleInvocations, numberOfInvocations, isChained, inp
         'inputData': inputData,
         'runMultipleInvocations': runMultipleInvocations
     }
-    # zmq_socket = zmq_context.socket(zmq.DEALER)
-    # dealer_id = b"dealer1"
-    # zmq_socket.setsockopt(zmq.IDENTITY, dealer_id)
-    # zmq_socket.bind("tcp://*:5555")
+    zmq_socket = zmq_context.socket(zmq.DEALER)
+    dealer_id = b"dealer1"
+    zmq_socket.setsockopt(zmq.IDENTITY, dealer_id)
+    zmq_socket.bind("tcp://*:5555")
+    # print("Sending zmq data.")
     zmq_socket.send_multipart([router_name.encode("utf-8"), json.dumps(zmq_data).encode("utf-8")])
+    # print("Waiting for zmq response.")
     response = zmq_socket.recv()
-    # zmq_socket.close()
+    # print("Received response from zmq: ", response)
+    zmq_socket.close()
     return response
 
 

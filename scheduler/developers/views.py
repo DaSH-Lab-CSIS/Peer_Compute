@@ -94,13 +94,18 @@ def delete_service(request, service_id):
 def run_service(request, service_id):
     response = ''
     try:
-        service = Services.objects.get(id=service_id)
+        service = Services.objects.get(id=(service_id+7))
         if service.active:
             temp_time = datetime.now(tz=timezone(TIME_ZONE))
             data = json.loads(request.body)
-            # for i in range(data['numberOfInvocations']):
-            #     print("Invocation ", str(i), ": \n")
-            response, provider, providing_time, job_id = request_handler(data, service, temp_time)
+            if (data['chained'] == True) :
+                for i in range(data['numberOfInvocations']):
+                    response, provider, providing_time, job_id = request_handler(data, service, temp_time)
+                    data['input'] = int(response['Result'])
+            else:
+                for i in range(data['numberOfInvocations']):
+                #     print("Invocation ", str(i), ": \n")
+                    response, provider, providing_time, job_id = request_handler(data, service, temp_time)
             if response is None:
                 messages.error(request, "There are no available providers in the network")
                 return redirect('index')
@@ -112,7 +117,7 @@ def run_service(request, service_id):
 
     except ObjectDoesNotExist:
         messages.error(request, "Incorrect service id")
-
+    # print("Response", response)
     return JsonResponse(
                   {'result': response['Result'],
                    'providing_time': providing_time,
