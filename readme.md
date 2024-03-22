@@ -43,7 +43,10 @@ There is a python login script in the Documents folder name loginscript.py or lo
 ## Automate the startup terminals
 Install the extension Terminals Manager by Fabio Spampinato
 type in "terminals edit configuration" in command pallete (cmd+shift+P)
-and replace it with the json in the end of this readme. Now type in "terminals run" in command pallete to run the startup terminals
+and replace it with the json in the end of this readme. 
+
+Now type in "terminals run" in command pallete to run the startup terminals
+
 In the postgres terminal type in password and enter the following:
 ```
 psql chainfaas
@@ -81,3 +84,44 @@ The JSON:
   ]
 }
 ```
+
+# Local Installation
+
+## Setting virutal environments.
+
+Make a virtual environment named ".venv" and make one named "chainenv", both in the base folder (Serverless_Scheduler)
+```
+pip install virtualenv
+python -m venv .venv
+python -m venv chainenv
+```
+
+now activate .venv and install requirements.
+```
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+after installation is done deactivate this virtual env by typing `deactivate` , and use `deactivate` everytime u switch virtual env.
+```
+deactivate
+```
+now activate chainenv and install requirements
+```
+source chainenv/bin/activate
+pip install -r requirements_chain.txt
+```
+after installation `deactivate`.
+
+## Changing IPs of mosquitto broker and providers.
+
+set global var `BROKER_ID` in provider1.py and scheduler/providers/views.py to "broker.hivemq.com"
+if Connected successfully doesn't show when u run provider1.py msg me. (Aalhad)
+this is a free broker host which allows everyone. otherwise the broker host would be one of the lab machines with a custom config.
+
+use 
+```
+ipconfig getifaddr en0
+```
+to get the ip of your machine.
+Put this in the global var `controller_ip` of provider1.py
