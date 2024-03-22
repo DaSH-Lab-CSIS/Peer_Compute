@@ -1,6 +1,7 @@
 from django.shortcuts import render,get_object_or_404, redirect
 import pika 
 import json
+import socket
 from django.views.decorators.csrf import csrf_exempt
 from django.contrib.auth.decorators import login_required
 from providers.forms import ProviderForm
@@ -13,13 +14,44 @@ from scheduler.settings import TIME_ZONE
 from pytz import timezone
 from django.contrib import messages
 import zmq
+import paho.mqtt.client as mqtt
+
 # Create your views here.
 zmq_context = zmq.Context()
+data_dict = None
+BROKER_ID = "10.60.5.46"
 # zmq_socket = zmq_context.socket(zmq.DEALER)
 # dealer_id = b"dealer1"
 # zmq_socket.setsockopt(zmq.IDENTITY, dealer_id)
 # zmq_socket.bind("tcp://*:5555")
 
+
+# mqtt client callbacks:
+def on_connect(mqtt_client, userdata, flags, rc, callback_api_version):
+    if rc == 0:
+        print('Connected successfully')
+    else:
+        print('Bad connection. Code:', rc)
+
+def on_message(mqtt_client, userdata, msg):
+    print('from views.py/providers ')
+    print(f'Received message on topic: {msg.topic} with payload: {msg.payload}')
+    data = json.loads(msg.payload.decode("utf-8"))
+    try:
+        if(data['stage'] == 'dockernotrun'): print("pulled but docker not run")
+        if(data['stage'] == 'dockerrun'):
+            print(f"data[stage]==dockerrun works")
+            global data_dict
+            data_dict = data
+            mqtt_client.loop_stop()
+            mqtt_client.disconnect()
+    except:
+        print("docker success messgae")
+def on_subscribe(mqtt_client, userdata, mid, qos, properties=None):
+    print("on_subscribe userdata is "+ str(mqtt_client))
+
+############################################################################################
+    
 def publish_to_topic(runMultipleInvocations, numberOfInvocations, isChained, inputData, provider , task_link , task_developer, job_id):
     router_name = str(provider.user_id)
     zmq_data = {
@@ -44,6 +76,36 @@ def publish_to_topic(runMultipleInvocations, numberOfInvocations, isChained, inp
     zmq_socket.close()
     return response
 
+# pub to topic mqtt actually just forwards it to provider1.py where it adds pull times and stuff and then it publishes.
+def publish_to_topic_mqtt(runMultipleInvocations, numberOfInvocations, isChained, inputData, provider , task_link , task_developer, job_id):
+    router_name = str(provider.user_id)
+    userdata = {
+        'provider_id' : router_name,
+        'task_link' : task_link,
+        'task_developer' : str(task_developer.user_id),
+        'job_id' : job_id,
+        'numberOfInvocations': numberOfInvocations,
+        'isChained': isChained,
+        'inputData': inputData,
+        'runMultipleInvocations': runMultipleInvocations,
+        'stage': "dockernotrun"
+    }  
+    #makes a new client everytime it pubtotopic is called.
+    client = mqtt.Client(callback_api_version= mqtt.CallbackAPIVersion.VERSION2)
+    # make a socket bind to tcp and make a dealer
+    client.on_connect = on_connect
+    client.on_message = on_message
+    client.on_subscribe= on_subscribe
+
+    client.connect(host=BROKER_ID,port=1883)
+    client.subscribe(topic=router_name)
+    client.publish(topic=router_name, payload=json.dumps(userdata).encode("utf-8"), qos=2)
+    print("in pub to topic mqtt")
+    client.loop_forever()
+    print("views.py/provider loop_forever exited")
+    # dont return this return the data which is sent by on_message {data}
+    
+    return json.dumps(data_dict)
 
 # def make_rmq_user(user):
 #     username = 'username' + str(user.user_id)

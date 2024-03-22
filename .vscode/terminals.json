@@ -1,0 +1,26 @@
+{
+  "autorun": false,
+  "terminals": [
+    {
+      "name": "Postgres",
+      "description": "This is a description",
+      "commands": ["cd ~/Documents/Serverless_Scheduler", "deactivate", "source .venv/bin/activate", "sudo -i -u postgres"]
+    },
+    {
+      "name": "Django Server",
+      "commands": [
+        "cd ~/Documents/Serverless_Scheduler", "deactivate", "source chainenv/bin/activate", "python scheduler/manage.py runserver 0.0.0.0:8000"
+      ]
+    },
+    {
+      "name": "Python Provider script",
+      "focus": true,
+      "execute": false,
+      "command": "python provider/provider1.py 34933555-5cca-41fb-aded-4ab7900c48d5"
+    },
+    {
+      "name": "Curl Requests",
+      "command": "# Enter curl requests here. There's an example in startup.md"
+    }
+  ]
+}

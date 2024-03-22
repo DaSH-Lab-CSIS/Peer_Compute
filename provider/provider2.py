@@ -7,6 +7,7 @@ import time
 import docker
 import HFRequests
 import math
+from docker.models.containers import Container
 import csv
 user_id = sys.argv[1]
 controller_ip = "10.8.1.48"
@@ -17,7 +18,7 @@ chaincodeName = "monitoring"
 token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE2OTQxMjk2MzcsInVzZXJuYW1lIjoiY29udHJvbGxlciIsIm9yZ05hbWUiOiJPcmcxIiwiaWF0IjoxNjk0MDkzNjM3fQ.DNJZ4kB11PbDB4UO2HaMjwlqxgTbJ8b7JK3WsRzaePY"
 
 client = docker.from_env()
-container_name = "test"
+container_name = "test7"
 
 # REGISTER_URL = 'https://' + controller_ip + ":" + controller_port + "/profiles/register_user/"
 ACK_URL = "http://" + controller_ip + ":" + controller_port + "/providers/job_ack/"
@@ -53,13 +54,22 @@ def run_docker(body, inputData=None):
     start_run_time = time.time()
     if inputData == None:
         result = client.containers.run(body, name=container_name)
-    else:    
+
+    else:
         result = client.containers.run(body, command=str(inputData), name=container_name)
     result = result.decode("utf-8")
+    run_time = int((time.time() - start_run_time)*1000)
     print("Run done!")
 
-    # print(result)
-    run_time = int((time.time() - start_run_time)*1000)
+    print(len(client.containers.list())) # returns 0
+    print(client.containers.get(container_name).stats) # returns nothing
+
+    #stats = container.stats(stream=False)
+
+    #mb_usage = stats['memory_stats']['usage']
+
+    #print(f'{stats} MB')
+
     return result, pull_time, run_time
 
 def delete_container_and_image(body):
