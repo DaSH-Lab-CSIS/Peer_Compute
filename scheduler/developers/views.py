@@ -28,26 +28,28 @@ def new_service(request):
     Creates a new service in the network.
     """
     if request.method == 'POST':
-        service_form = ServiceForm(data=request.POST, files=request.FILES)
-        if service_form.is_valid():
-            service = service_form.save(commit=False)
-            service.developer = request.user.developer
-            service.provider = get_object_or_404(User, pk = 3)
-            service.active = True
-            try:
-                service.save()
-                messages.success(request, "New service created")
-                service_form = ServiceForm()
-            except IntegrityError:
+        data = json.loads(request.body) 
+        service = Services()
+        try:
+            service.save(
+                developer = data.get('developer'), 
+                provider = get_default_provider(), 
+                name = data.get('name'),
+                docker_container = data.get('docker_url'),
+                active = data.get('is_active',True),
+            )
+            messages.success(request, "New service created")
+        except IntegrityError:
                 messages.error(request, "You already have a service with this name")
-        else:
-            print(service_form.errors)
     else:
-        service_form = ServiceForm()
-
+       return JsonResponse({'error': 'Invalid request method'})
     return JsonResponse({"message" : "Service added Successfully."})
 
 # @login_required()
+def get_default_provider():
+    provider = User.objects.get(user_id = 3)
+    return provider
+
 def user_services(request):
     """
     Shows all services owned by a user.
@@ -88,13 +90,22 @@ def delete_service(request, service_id):
                   {'all_services': all_services,
                    'developer_id': request.user.developer.id})
 
+@csrf_exempt
 def run_service(request, service_id):
     response = ''
     try:
-        service = Services.objects.get(id=service_id)
+        service = Services.objects.get(id=(service_id+7))
         if service.active:
             temp_time = datetime.now(tz=timezone(TIME_ZONE))
-            response, provider, providing_time, job_id = request_handler(request, service, temp_time)
+            data = json.loads(request.body)
+            if (data['chained'] == True) :
+                for i in range(data['numberOfInvocations']):
+                    response, provider, providing_time, job_id = request_handler(data, service, temp_time)
+                    data['input'] = int(response['Result'])
+            else:
+                for i in range(data['numberOfInvocations']):
+                #     print("Invocation ", str(i), ": \n")
+                    response, provider, providing_time, job_id = request_handler(data, service, temp_time)
             if response is None:
                 messages.error(request, "There are no available providers in the network")
                 return redirect('index')
@@ -106,8 +117,8 @@ def run_service(request, service_id):
 
     except ObjectDoesNotExist:
         messages.error(request, "Incorrect service id")
-
-    return render(request, 'final_response.html',
+    # print("Response", response)
+    return JsonResponse(
                   {'result': response['Result'],
                    'providing_time': providing_time,
                    'pull_time': response['pull_time'],

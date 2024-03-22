@@ -9,7 +9,7 @@ https://docs.djangoproject.com/en/4.2/topics/settings/
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/4.2/ref/settings/
 """
-##test
+
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -25,7 +25,7 @@ SECRET_KEY = 'django-insecure-xgo+%_s-0piu0d7c$hhw$n6t5%ozqct71qrc(e8d!5flo@6n@c
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['*']
 
 
 # Application definition
@@ -41,6 +41,8 @@ INSTALLED_APPS = [
     'providers',
     'controller',
     'developers',
+    'fabric',
+    'corsheaders',
 ]
 
 MIDDLEWARE = [
@@ -51,16 +53,15 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
 ]
 
 ROOT_URLCONF = 'scheduler.urls'
 
-RABBITMQ_HOST = 'localhost'
-RABBITMQ_PORT = '15672'
-RABBITMQ_MANAGEMENT_PORT = '15672'
-RABBITMQ_USER = 'chainfaas'
-RABBITMQ_PASS = 'chainfaas'
+USE_FABRIC = False
+CONTROLLER_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE2OTM5NzE5NTMsInVzZXJuYW1lIjoidGVtcCIsIm9yZ05hbWUiOiJPcmcxIiwiaWF0IjoxNjkzOTM1OTUzfQ.x06zMn-c0_e7_phfc3thS30R1H284V8x6xMda6rl6Ak"
 
+CORS_ORIGIN_ALLOW_ALL = True
 
 TEMPLATES = [
     {
