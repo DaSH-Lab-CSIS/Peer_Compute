@@ -113,11 +113,7 @@ pip install -r requirements_chain.txt
 ```
 after installation `deactivate`.
 
-## Changing IPs of mosquitto broker and providers.
-
-set global var `BROKER_ID` in provider1.py and scheduler/providers/views.py to "broker.hivemq.com"
-if Connected successfully doesn't show when u run provider1.py msg me. (Aalhad)
-this is a free broker host which allows everyone. otherwise the broker host would be one of the lab machines with a custom config.
+## Changing IPs of  providers.
 
 use 
 ```
@@ -125,3 +121,7 @@ ipconfig getifaddr en0
 ```
 to get the ip of your machine.
 Put this in the global var `controller_ip` of provider1.py
+
+NOTE: Do not worry about broker part it will run even if u run this locally.
+More info: right now the mqtt broker is hosted on a cloud based public node with IP: "broker.hivemq.com".
+this is a free broker host which allows everyone. otherwise the broker host would be one of the lab machines with a custom config. (allow_anonymous true \n listener 1883)
