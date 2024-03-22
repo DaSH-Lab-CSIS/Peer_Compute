@@ -19,7 +19,7 @@ import paho.mqtt.client as mqtt
 # Create your views here.
 zmq_context = zmq.Context()
 data_dict = None
-BROKER_ID = "10.60.5.46"
+BROKER_ID = "broker.hivemq.com"
 # zmq_socket = zmq_context.socket(zmq.DEALER)
 # dealer_id = b"dealer1"
 # zmq_socket.setsockopt(zmq.IDENTITY, dealer_id)
