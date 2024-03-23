@@ -92,8 +92,8 @@ The JSON:
 Make a virtual environment named ".venv" and make one named "chainenv", both in the base folder (Serverless_Scheduler)
 ```
 pip install virtualenv
-python -m venv .venv
-python -m venv chainenv
+python3 -m venv .venv
+python3 -m venv chainenv
 ```
 
 now activate .venv and install requirements.
