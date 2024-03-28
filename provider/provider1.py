@@ -24,7 +24,7 @@ import numpy as np
 user_id = sys.argv[1]
 controller_ip = "10.8.1.48" #change to .46
 controller_port = "8000"
-BROKER_ID = "10.60.5.46"
+BROKER_ID = "broker.hivemq.com"
 #uncomment requests.get ACK READY NOT READY
 channelName = "mychannel"
 chaincodeName = "monitoring"
@@ -85,64 +85,45 @@ def load_model(filename):
     return model
 
 
-# Function to preprocess the data
-def preprocess_data(streaming_data):
-    # Convert timestamp to datetime object
-    #print(streaming_data)
-    streaming_data['timestamp'] = pd.to_datetime(streaming_data['timestamp'])
-    # Sort DataFrame by timestamp
-    streaming_data.sort_values(by='timestamp', inplace=True)
-    # Calculate time intervals between measurements
-    streaming_data['time_interval'] = streaming_data['timestamp'].diff().dt.total_seconds().fillna(0)
-    return streaming_data
+def collect_reference_data():
+    # Simulated data collection for reference provider
+    reference_data = {
+        "function1": {"cpu_usage": 20, "memory_usage": 512, "cpu_efficiency_score": 0.8, "memory_efficiency_score": 0.7, "runtime": 10},
+        "function2": {"cpu_usage": 30, "memory_usage": 1024, "cpu_efficiency_score": 0.7, "memory_efficiency_score": 0.6, "runtime": 15}
+        # Add more functions as needed
+    }
+    with open("reference_data.json", "w") as f:
+        json.dump(reference_data, f)
 
+def load_reference_data():
+    with open("reference_data.json", "r") as f:
+        reference_data = json.load(f)
+    return reference_data
 
+def calculate_efficiency_scores(provider, reference_cpu_usage, reference_memory_usage):
+    provider.cpu_efficiency_score = ((reference_cpu_usage - provider.cpu_usage) / reference_cpu_usage)
+    provider.memory_efficiency_score = ((reference_memory_usage - provider.memory_usage) / reference_memory_usage)
 
-# Function to predict runtime from the return values of run_docker
-def predict_runtime(model, timed_stats):
-    # Preprocess the datas
-    preprocessed_data = preprocess_data(pd.DataFrame(timed_stats))
-    
-    # Separate features
-    X = np.array(preprocessed_data[['cpu_total_usage', 'memory_usage', 'time_interval']])
+def train_regression_model(reference_data):
+    X = []
+    y = []
+    for function, data in reference_data.items():
+        X.append([data["cpu_usage"] * data["cpu_efficiency_score"], 
+                  data["memory_usage"] * data["memory_efficiency_score"]])
+        y.append(data["runtime"])
 
-    # Make prediction using the trained model
-    predicted_runtime = model.predict(X)
-
-    print(predicted_runtime)
-    return predicted_runtime # Return the first predicted runtime if multiple rows are predicted
-
-
-
-
-def train_model(filename):
-
-    data = load_data_from_file(filename)
-    #print(data)
-    # Initialize lists to store features and targets
-    X_list = []
-    y_list = []
-
-    # Process data to associate each actual_runtime with its time_indexed_stats
-    for entry in data:
-        time_indexed_stats = entry['time_indexed_stats']
-        actual_runtime = entry['actual_runtime']
-        # Create separate feature rows for each time_indexed_stats list
-        for stat_entry in time_indexed_stats:
-            X_list.append([stat_entry['cpu_total_usage'], stat_entry['memory_usage'], (pd.to_datetime(stat_entry['timestamp']) - pd.to_datetime(time_indexed_stats[0]['timestamp'])).total_seconds()])
-            y_list.append(actual_runtime)
-
-    # Convert lists to DataFrames
-    X = np.array(pd.DataFrame(X_list, columns=['cpu_total_usage', 'memory_usage', 'time_interval']))
-    y = pd.Series(y_list)
-
-    # Train a new linear regression model
     model = LinearRegression()
     model.fit(X, y)
-
-    save_model(model, 'LRModels/service5/model1.pkl')
-    print('Model saved to disk')
     return model
+
+def predict_runtime(function, provider, model, reference_data):
+    reference_cpu_usage = reference_data[function]["cpu_usage"]
+    reference_memory_usage = reference_data[function]["memory_usage"]
+    
+    X = np.array([[reference_cpu_usage * provider.cpu_efficiency_score, 
+                   reference_memory_usage * provider.memory_efficiency_score]])
+    predicted_runtime = model.predict(X)
+    return predicted_runtime[0]
 
 
 
@@ -172,26 +153,6 @@ def sendCurl():
     print("after sleep")
     print(curl_count)
 
-
-# Function to plot predictions against time
-    
-def plot_predictions(predictions):
-    first_timestamp = predictions[0]['timestamp']
-    timestamps = [(pd.to_datetime(entry['timestamp']) - pd.to_datetime(first_timestamp)).total_seconds() for entry in predictions]
-    predicted_runtimes = [entry['predicted_runtime'] for entry in predictions]
-    plt.figure(figsize=(10, 6))
-    plt.plot(timestamps, predicted_runtimes, marker='o', linestyle='-')
-    plt.xlabel('Timestamp')
-    plt.ylabel('Predicted Runtime')
-    plt.title('Predicted Runtimes Over Time')
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    print(predicted_runtimes)
-    plt.savefig('LRModels/service5/livePredictions2.png')
-
-
-
-
 def run_docker(body, inputData=None):
     start_pull_time = time.time()
     image = client.images.pull(body)
@@ -217,7 +178,7 @@ def run_docker(body, inputData=None):
     result = "this is result" #remove this line uncomment below line
     #result = result.decode("utf-8") #this gives the Hello from Docker msg.
     print("Run Started!")
-
+    print(body)
     timeout = 60
     stop_time = 0.1
     elapsed_time = 0
