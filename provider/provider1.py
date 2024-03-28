@@ -164,13 +164,19 @@ def run_docker(body, inputData=None):
     start_run_time = time.time()
     if inputData == None:
         # result = client.containers.run(body, name=container_name)
-
-        client.containers.create(body, name=container_name)
+        try:
+            client.containers.create(body, name=container_name)
+        except:
+            container_name += "e"
+            client.containers.create(body, name=container_name)
         cont = client.containers.get(container_name)
         cont.start()
     else:    
-
-        client.containers.create(body, command=str(inputData), name=container_name)
+        try:
+            client.containers.create(body, command=str(inputData), name=container_name)
+        except:
+            container_name += "n"
+            client.containers.create(body, command=str(inputData), name=container_name)
         cont = client.containers.get(container_name)
         cont.start()
 
@@ -189,8 +195,8 @@ def run_docker(body, inputData=None):
     count = 0
     runs = 0
     #model = load_model('LRModels/service5/model1.pkl')
-    livepredictions = {} # dict with two keys predicted_runtime and timestamp
-    predictions = [] # list of livepredictions
+    # livepredictions = {} # dict with two keys predicted_runtime and timestamp
+    # predictions = [] # list of livepredictions
 
     while ((cont != None) and (str(cont.status) == 'running')):
         if(elapsed_time > timeout):
