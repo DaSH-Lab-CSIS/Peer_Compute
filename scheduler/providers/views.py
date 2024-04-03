@@ -25,6 +25,31 @@ BROKER_ID = "broker.hivemq.com"
 # zmq_socket.setsockopt(zmq.IDENTITY, dealer_id)
 # zmq_socket.bind("tcp://*:5555")
 
+# Helpers
+def load_data_as_dict(file_path):
+    all_data = {}
+    with open(file_path, 'r') as file:
+        for line in file:
+            data_dict = json.loads(line.strip())
+            all_data.update(data_dict)
+    return all_data
+
+def update_efficiency_score_in_models(user_id, provider_cpu_usage, provider_memory_usage, reference_cpu_usage, reference_memory_usage):
+    print("updating models...")
+    # uncomment after adding column to database tables
+    # provider= User.objects.get(user_id=user_id)
+    # provider.cpu_efficiency_score = ((reference_cpu_usage - provider_cpu_usage) / reference_cpu_usage)
+    # provider.memory_efficiency_score = ((reference_memory_usage - provider_memory_usage) / reference_memory_usage)
+
+def get_benchmarks_for(user_id, benchmark):
+    benchmarks = load_data_as_dict("benchmark_results.txt")
+    reference_stats=benchmarks[benchmarks['Reference']]
+    reference_cpu_usage= reference_stats['cpu_usage']
+    reference_memory_usage= reference_stats['memory_usage']
+    provider_cpu_usage = benchmark[user_id]['cpu_usage']
+    provider_memory_usage = benchmark[user_id]['memory_usage']
+    print(reference_stats)
+    update_efficiency_score_in_models(user_id,provider_cpu_usage, provider_memory_usage, reference_cpu_usage, reference_memory_usage)
 
 # mqtt client callbacks:
 def on_connect(mqtt_client, userdata, flags, rc, callback_api_version):
@@ -36,8 +61,8 @@ def on_connect(mqtt_client, userdata, flags, rc, callback_api_version):
 def on_message(mqtt_client, userdata, msg):
     print('from views.py/providers ')
     print(f'Received message on topic: {msg.topic} with payload: {msg.payload}')
-    data = json.loads(msg.payload.decode("utf-8"))
     try:
+        data = json.loads(msg.payload.decode("utf-8"))
         if(data['stage'] == 'dockernotrun'): print("pulled but docker not run")
         if(data['stage'] == 'dockerrun'):
             print(f"data[stage]==dockerrun works")
@@ -46,7 +71,14 @@ def on_message(mqtt_client, userdata, msg):
             mqtt_client.loop_stop()
             mqtt_client.disconnect()
     except:
-        print("docker success messgae")
+        print("In excpet, will print benchmark.")
+        print(msg.payload.decode("utf-8"), type(msg.payload.decode("utf-8")))
+        if(msg.payload.decode("utf-8").startswith("Benchmark:")):
+            benchmark = json.loads(msg.payload[10:])
+            user_id = list(benchmark.keys())[0]
+            get_benchmarks_for(user_id=user_id, benchmark=benchmark) #this will also update models.
+            
+
 def on_subscribe(mqtt_client, userdata, mid, qos, properties=None):
     print("on_subscribe userdata is "+ str(mqtt_client))
 
@@ -204,6 +236,22 @@ def job_ack(request, job_id):
     else:
         messages.error(request, "Wrong request method.")
     return JsonResponse({'message' : 'Job acknowledge time updated successfully.'})
+
+def calculate_efficiency(request, user_id):
+    #TODO
+    # send this to provider1.py requesting a docker container value, update it to the provider model.
+    client = mqtt.Client(callback_api_version= mqtt.CallbackAPIVersion.VERSION2)
+    # make a socket bind to tcp and make a dealer
+    client.on_connect = on_connect
+    client.on_message = on_message
+    client.on_subscribe= on_subscribe
+
+    client.connect(host=BROKER_ID,port=1883)
+    client.subscribe(topic=user_id)
+    client.publish(topic=user_id, payload="calculate_efficiency", qos=2)
+    print("in calculate_efficiency")
+    client.loop_start()
+    print("views.py/provider loop_forever exited")
 
 
 # class RpcClient(object):

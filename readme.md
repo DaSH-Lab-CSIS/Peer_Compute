@@ -10,7 +10,9 @@ example curl
 	"input": "None",
 	"runMultipleInvocations": false
   }'
-
+```
+```
+  curl -X GET "http://localhost:8000/providers/calculate_efficiency/34933555-5cca-41fb-aded-4ab7900c48d5" 
 ```
 services:
 run_service/3 - (hello world),  
@@ -32,7 +34,7 @@ If Django server is on a infinite loop with finding ready providers. One of th p
 SQL command for making provider ready (if id 14 does not have t and t in the table)
 ```
 UPDATE profiles_user
-SET ready = 't'
+SET cpu_efficiency_score = 1
 WHERE id = '14';
 ```
 
@@ -68,14 +70,16 @@ The JSON:
     {
       "name": "Django Server",
       "commands": [
-        "cd ~/Documents/Serverless_Scheduler", "deactivate", "source chainenv/bin/activate", "python scheduler/manage.py runserver 0.0.0.0:8000"
+        "cd ~/Documents/Serverless_Scheduler", "deactivate", "source .venv/bin/activate", "python scheduler/manage.py runserver 0.0.0.0:8000"
       ]
     },
     {
       "name": "Python Provider script",
       "focus": true,
       "execute": false,
-      "command": "python provider/provider1.py 34933555-5cca-41fb-aded-4ab7900c48d5"
+      "commands": [
+        "cd ~/Documents/Serverless_Scheduler", "deactivate", "source .venv/bin/activate","python provider/provider1.py 34933555-5cca-41fb-aded-4ab7900c48d5"
+      ]
     },
     {
       "name": "Curl Requests",
@@ -125,3 +129,20 @@ Put this in the global var `controller_ip` of provider1.py
 NOTE: Do not worry about broker part it will run even if u run this locally.
 More info: right now the mqtt broker is hosted on a cloud based public node with IP: "broker.hivemq.com".
 this is a free broker host which allows everyone. otherwise the broker host would be one of the lab machines with a custom config. (allow_anonymous true \n listener 1883)
+
+
+Changes which may lead to bugs:
+publish_to_topic in urlpattern of provider module is changed to publish_to_topic_mqtt
+
+## Room for improvement
+
+### 1. Runtime prediction model not specific to service
+
+Runtime of some service on p1 is predicted by a linear function f:
+predicted_runtime = f(cpu_usage_on_reference * cpu_efficiency_of_p1, memory_usage_on_reference * memory_efficiency_of_p1)
+where cpu_usage_on_reference and memory_usage_of_reference are usages of that service on reference providers.
+We know that this linear function, f , should ideally be different for each service. 
+perhaps some services give runtime more on the basis of memory_stats than other who have heavier weightage for cpu_stats.
+We could train a linear regression model for each service and get f specific to the service.
+But at scale if PeerCompute has thousands of functions in the registry and thousands of providers. For the training of these models,
+each function would have to be run on a lot of providers. 
