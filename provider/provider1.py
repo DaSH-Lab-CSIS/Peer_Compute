@@ -31,7 +31,7 @@ chaincodeName = "monitoring"
 token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE2OTQxMjk2MzcsInVzZXJuYW1lIjoiY29udHJvbGxlciIsIm9yZ05hbWUiOiJPcmcxIiwiaWF0IjoxNjk0MDkzNjM3fQ.DNJZ4kB11PbDB4UO2HaMjwlqxgTbJ8b7JK3WsRzaePY"
 
 client = docker.from_env()
-container_name = "test74"
+container_name = "test86"
 cont_num = 1
 # REGISTER_URL = 'https://' + controller_ip + ":" + controller_port + "/profiles/register_user/"
 ACK_URL = "http://" + controller_ip + ":" + controller_port + "/providers/job_ack/"
@@ -59,6 +59,69 @@ curl_count = 0
 #             time.sleep(5)  # Wait for 5 seconds before retrying
 
 
+# MQTT
+
+def on_connect(mqtt_client, userdata, flags, rc, callback_api_version):
+    if rc == 0:
+        print('Connected successfully')
+        mqtt_client.subscribe(user_id)
+    else:
+        print('Bad connection. Code:', rc)
+
+def on_message(mqtt_client, userdata, msg):
+    print("Inside on_message of provider1.py")
+    print(f'Received message on topic: {msg.topic} with payload: {msg.payload}')
+    
+    try: 
+        data = json.loads(msg.payload.decode("utf-8"))
+        if(data["stage"] == "dockernotrun"):
+            data["stage"] = "dockerrun"
+            
+            response = {'Result': [], 'run_time': [], 'pull_time': [], 'total_time': []}
+            
+            if(data['runMultipleInvocations'] == True):
+                if(data['numberOfInvocations'] == 1) :
+                    response = on_request(data)
+                elif(data['isChained'] == False):
+                    for i in range(data['numberOfInvocations']):
+                        container_name = str(data['job_id']) + "_container_" + str(i)
+                        temp = on_request(data)
+                        response['Result'].append(temp['Result'])
+                        response['run_time'].append(temp['run_time'])
+                        response['pull_time'].append(temp['pull_time'])
+                        response['total_time'].append(temp['total_time'])
+                else: 
+                    response = on_chained_request(data)
+            else:
+                response = on_request(data)
+            
+            mqtt_client.publish(user_id, json.dumps(response).encode("utf-8"),qos=2)
+            #mqtt_client.loop_stop()
+            #mqtt_client.disconnect()
+    except:
+        #print(str({msg.payload}))
+        if(msg.payload.decode("utf-8")=="calculate_efficiency"):
+            calc_benchmark_stats()
+        print(traceback.format_exc())
+        print(f'Received in except with TOPIC: {msg.topic} with PAYLOAD: {msg.payload}')
+    #socket.send_multipart([identity, json.dumps(response).encode("utf-8")])
+
+    #requests.get(url=READY_URL+user_id)
+
+def on_subscribe(mqtt_client, userdata, mid, qos, properties=None):
+    print("subbed to topic from provider1.py")
+
+
+mclient = mqtt.Client(callback_api_version= mqtt.CallbackAPIVersion.VERSION2)
+# make a socket bind to tcp and make a dealer
+mclient.on_connect = on_connect
+mclient.on_message = on_message
+mclient.on_subscribe= on_subscribe
+
+mclient.connect(host=BROKER_ID,port=1883)
+#client subscribe is in on_connect
+mclient.loop_start() #different thread
+
 #LINEAR REGRESSION LOGIC
 
 
@@ -85,29 +148,26 @@ def load_model(filename):
     return model
 
 
-def collect_reference_data():
-    # Simulated data collection for reference provider
-    reference_data = {
-        "function1": {"cpu_usage": 20, "memory_usage": 512, "cpu_efficiency_score": 0.8, "memory_efficiency_score": 0.7, "runtime": 10},
+def collect_training_data():
+    # Simulated data collection for all providers
+    training_data = {
+        "service5": {"cpu_usage": 40738299958, "memory_usage": 7946240, "cpu_efficiency_score": 1, "memory_efficiency_score": 1, "runtime": 40},
+        "service5": {"cpu_usage": 20, "memory_usage": 512, "cpu_efficiency_score": 0.8, "memory_efficiency_score": 0.7, "runtime": 10},
         "function2": {"cpu_usage": 30, "memory_usage": 1024, "cpu_efficiency_score": 0.7, "memory_efficiency_score": 0.6, "runtime": 15}
         # Add more functions as needed
     }
     with open("reference_data.json", "w") as f:
-        json.dump(reference_data, f)
+        json.dump(training_data, f)
 
 def load_reference_data():
-    with open("reference_data.json", "r") as f:
+    with open("training_data.json", "r") as f:
         reference_data = json.load(f)
     return reference_data
 
-def calculate_efficiency_scores(provider, reference_cpu_usage, reference_memory_usage):
-    provider.cpu_efficiency_score = ((reference_cpu_usage - provider.cpu_usage) / reference_cpu_usage)
-    provider.memory_efficiency_score = ((reference_memory_usage - provider.memory_usage) / reference_memory_usage)
-
-def train_regression_model(reference_data):
+def train_regression_model(training_data):
     X = []
     y = []
-    for function, data in reference_data.items():
+    for function, data in training_data.items():
         X.append([data["cpu_usage"] * data["cpu_efficiency_score"], 
                   data["memory_usage"] * data["memory_efficiency_score"]])
         y.append(data["runtime"])
@@ -161,7 +221,8 @@ def run_docker(body, inputData=None):
     global container_name
     container_name += "n"
     print(container_name)
-    start_run_time = time.time()
+    print(body)
+    start_run_time = 0
     if inputData == None:
         # result = client.containers.run(body, name=container_name)
         try:
@@ -171,6 +232,7 @@ def run_docker(body, inputData=None):
             client.containers.create(body, name=container_name)
         cont = client.containers.get(container_name)
         cont.start()
+        start_run_time = time.time()
     else:    
         try:
             client.containers.create(body, command=str(inputData), name=container_name)
@@ -179,54 +241,44 @@ def run_docker(body, inputData=None):
             client.containers.create(body, command=str(inputData), name=container_name)
         cont = client.containers.get(container_name)
         cont.start()
+        start_run_time = time.time()
 
 
     result = "this is result" #remove this line uncomment below line
     #result = result.decode("utf-8") #this gives the Hello from Docker msg.
     print("Run Started!")
     print(body)
-    timeout = 60
-    stop_time = 0.1
-    elapsed_time = 0
+    timeout = 65
     stack = []
     run_vars = {}
-    time_indexed_stats = []
     cont = client.containers.get(container_name)
     count = 0
-    runs = 0
     #model = load_model('LRModels/service5/model1.pkl')
     # livepredictions = {} # dict with two keys predicted_runtime and timestamp
     # predictions = [] # list of livepredictions
 
-    while ((cont != None) and (str(cont.status) == 'running')):
-        if(elapsed_time > timeout):
-            print("timeout exceeded")
+    while ((cont != None) and ((str(cont.status) == 'running') or (str(cont.status) == 'created'))):
+        if(time.time()-start_run_time > timeout):
+            print("timeout exceeded (cont not killed)")
             break
-        elapsed_time += stop_time
+        #elapsed_time += stop_time
         s = cont.stats(decode=False, stream=False)
         if(s['memory_stats'] != {}):
             #stack.clear() #to get stats streamed throughout the process remove this line
-            # var = {}
-            # var['timestamp'] = s['read'] #understand read preread and see if time.now() would yeild better model
-            # var['cpu_total_usage'] = s['cpu_stats']['cpu_usage']['total_usage']
-            # var['memory_usage']=s['memory_stats']['usage']
-            # time_indexed_stats.append(var)
-            # livepredictions = {}
-            # livepredictions['predicted_runtime']=predict_runtime(model, time_indexed_stats)
-            # livepredictions['timestamp']=var['timestamp']
-            # predictions.append(livepredictions)
             stack.clear() #only to save time
             stack.append(s)
         else: break
-        if(cont.status=='running'):runs+=1
         count+=1
-        sleep(stop_time)
+        #if(cont.status=='running'):print("running")
+        #else: print("Not running")
+        #sleep(stop_time)
 
-    print(stack) #uncomment this to get full stats
+    #print(stack) #uncomment this to get full stats
     run_time = int((time.time() - start_run_time)*1000)
+    print(count)
     # run_vars['time_indexed_stats'] = time_indexed_stats
     run_vars['memory_usage'] = stack[0]['memory_stats']['usage']
-    run_vars['memory_usage'] = stack[0]['cpu_stats']['cpu_usage']['total_usage']
+    run_vars['cpu_usage'] = stack[0]['cpu_stats']['cpu_usage']['total_usage']
     run_vars['actual_runtime'] = run_time
     # print(run_vars)
     #print(count)
@@ -337,15 +389,64 @@ def on_chained_request(json_data) :
     # delete_container_and_image(json_data['task_link'])
     return {'Result': responses, 'pull_time': pull_times, 'run_time': run_times, 'total_time': total_times}
 
-data = {
-    "is_provider": True,
-    "is_developer": False,
-    "active": True,
-    "ready": True,
-    "location": "TEST_PROV_1",
-    "ram": 8,
-    "cpu": 4
-}
+# data = {
+#     "is_provider": True,
+#     "is_developer": False,
+#     "active": True,
+#     "ready": True,
+#     "location": "TEST_PROV_1",
+#     "ram": 8,
+#     "cpu": 4
+# }
+
+def calc_benchmark_stats():
+    #TODO
+    print("calculating bench mark stats")
+    global container_name
+    container_name+="b"
+    client.containers.create(client.images.get("satyam098/testimage_largeruntime"), name=container_name)
+    cont = client.containers.get(container_name)
+    cont.start()
+    print(cont)
+    print(str(cont.status))
+    start_run_time=time.time()
+    timeout = 40 # how long will this benchmark test run in seconds
+    stack=[]
+    run_vars={}
+    runtime=timeout
+    while ((cont != None) and ((str(cont.status) == 'running') or (str(cont.status) == 'created'))):
+        if(time.time()-start_run_time > timeout):
+            print("timeout reached")
+            cont.kill()
+            break
+        #elapsed_time += stop_time
+        s = cont.stats(decode=False, stream=False)
+        if(s['memory_stats'] != {}):
+            #stack.clear() #to get stats streamed throughout the process remove this line
+            stack.clear() #only to save time
+            stack.append(s)
+        else: break
+        #if(cont.status=='running'):print("running")
+        #else: print("Not running")
+        #sleep(stop_time)
+
+    run_time = int((time.time() - start_run_time)*1000)
+    run_vars['memory_usage'] = stack[0]['memory_stats']['usage']
+    run_vars['cpu_usage'] = stack[0]['cpu_stats']['cpu_usage']['total_usage']
+    run_vars['actual_runtime'] = run_time
+    run_vars['timeout']=timeout*1000
+    print(user_id)
+    benchmark = {user_id: run_vars}
+    append_data_to_file(benchmark, "benchmark_results.txt")
+    #store one run as the reference benchmark.
+    #calc efficiency score from this benchmark.
+    #update_model()
+    #send mqtt topic a msg request to calculate eff score and update the model.
+    global mclient
+    mclient.publish(topic=user_id, payload="Benchmark:"+json.dumps(benchmark), qos=2)
+    print(benchmark)
+    return benchmark
+
 
 # response = requests.POST(url=REGISTER_URL, data=data)
 # user_id = response['user_id']
@@ -353,65 +454,6 @@ data = {
 ## mqtt implementation
 
 
-def on_connect(mqtt_client, userdata, flags, rc, callback_api_version):
-    if rc == 0:
-        print('Connected successfully')
-        mqtt_client.subscribe("34933555-5cca-41fb-aded-4ab7900c48d5")
-    else:
-        print('Bad connection. Code:', rc)
-
-def on_message(mqtt_client, userdata, msg):
-    print("Inside on_message of provider1.py")
-    print(f'Received message on topic: {msg.topic} with payload: {msg.payload}')
-    data = json.loads(msg.payload.decode("utf-8"))
-    try: 
-        if(data["stage"] == "dockernotrun"):
-            data["stage"] = "dockerrun"
-            
-            response = {'Result': [], 'run_time': [], 'pull_time': [], 'total_time': []}
-            
-            if(data['runMultipleInvocations'] == True):
-                if(data['numberOfInvocations'] == 1) :
-                    response = on_request(data)
-                elif(data['isChained'] == False):
-                    for i in range(data['numberOfInvocations']):
-                        container_name = str(data['job_id']) + "_container_" + str(i)
-                        temp = on_request(data)
-                        response['Result'].append(temp['Result'])
-                        response['run_time'].append(temp['run_time'])
-                        response['pull_time'].append(temp['pull_time'])
-                        response['total_time'].append(temp['total_time'])
-                else: 
-                    response = on_chained_request(data)
-            else:
-                response = on_request(data)
-            
-            mqtt_client.publish(user_id, json.dumps(response).encode("utf-8"),qos=2)
-            #mqtt_client.loop_stop()
-            #mqtt_client.disconnect()
-    except:
-        print(traceback.format_exc())
-        print(f'Received in except with TOPIC: {msg.topic} with PAYLOAD: {msg.payload}')
-    #socket.send_multipart([identity, json.dumps(response).encode("utf-8")])
-
-    #requests.get(url=READY_URL+user_id)
-
-
-
-def on_subscribe(mqtt_client, userdata, mid, qos, properties=None):
-    print("subbed to topic from provider1.py")
-
-
-mclient = mqtt.Client(callback_api_version= mqtt.CallbackAPIVersion.VERSION2)
-# make a socket bind to tcp and make a dealer
-mclient.on_connect = on_connect
-mclient.on_message = on_message
-mclient.on_subscribe= on_subscribe
-
-mclient.connect(host=BROKER_ID,port=1883)
-
-#client subscribe is in on_connect
-mclient.loop_start() #different thread
 while(True):
     a=1
 # create_thread_and_subscribe(user_id)
