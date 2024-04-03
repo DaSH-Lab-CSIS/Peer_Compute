@@ -9,14 +9,16 @@
     {
       "name": "Django Server",
       "commands": [
-        "cd ~/Documents/Serverless_Scheduler", "deactivate", "source chainenv/bin/activate", "python scheduler/manage.py runserver 0.0.0.0:8000"
+        "cd ~/Documents/Serverless_Scheduler", "deactivate", "source .venv/bin/activate", "python scheduler/manage.py runserver 0.0.0.0:8000"
       ]
     },
     {
       "name": "Python Provider script",
       "focus": true,
       "execute": false,
-      "command": "python provider/provider1.py 34933555-5cca-41fb-aded-4ab7900c48d5"
+      "commands": [
+        "cd ~/Documents/Serverless_Scheduler", "deactivate", "source .venv/bin/activate","python provider/provider1.py 34933555-5cca-41fb-aded-4ab7900c48d5"
+      ]
     },
     {
       "name": "Curl Requests",

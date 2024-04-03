@@ -15,7 +15,8 @@ class User(models.Model):
     location = models.CharField(max_length=30, blank=True)
     ram = models.IntegerField(default=0)
     cpu = models.IntegerField(default=0)
-
+    cpu_efficiency_score = models.DecimalField(null=True, max_digits=30, decimal_places=15)
+    memory_efficiency_score = models.DecimalField(null=True, max_digits=30, decimal_places=15)
     class Meta:
         # Add any Meta options you need for the User model
         pass
