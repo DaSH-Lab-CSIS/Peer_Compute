@@ -31,7 +31,7 @@ chaincodeName = "monitoring"
 token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE2OTQxMjk2MzcsInVzZXJuYW1lIjoiY29udHJvbGxlciIsIm9yZ05hbWUiOiJPcmcxIiwiaWF0IjoxNjk0MDkzNjM3fQ.DNJZ4kB11PbDB4UO2HaMjwlqxgTbJ8b7JK3WsRzaePY"
 
 client = docker.from_env()
-container_name = "test86"
+container_name = "test99"
 cont_num = 1
 # REGISTER_URL = 'https://' + controller_ip + ":" + controller_port + "/profiles/register_user/"
 ACK_URL = "http://" + controller_ip + ":" + controller_port + "/providers/job_ack/"
@@ -44,20 +44,9 @@ runs_list = [] #this stores all data in all runs for a specific job.
 #     provider_thread.start()
 #     provider_thread.join()
 curl_count = 0
-# def thread_target(client_ip,client_port,user_id):
-#     while True:
-#         try:
-#             ctx = zmq.Context()
-#             socket = ctx.socket(zmq.SUB)
-#             socket.connect(f"tcp://{client_ip}:{client_port}")
-#             socket.setsockopt_string(zmq.SUBSCRIBE, str(user_id))
-#             print("Connected to socket.")
-#             break  # Exit the loop if connection is successful
 
-#         except zmq.error.ZMQError as e:
-#             print(f"Connection attempt failed: {e}")
-#             time.sleep(5)  # Wait for 5 seconds before retrying
-
+cpu_efficiency_score = "DID NOT RECIEVE"
+memory_efficiency_score = "DID NOT RECIEVE"
 
 # MQTT
 
@@ -65,11 +54,11 @@ def on_connect(mqtt_client, userdata, flags, rc, callback_api_version):
     if rc == 0:
         print('Connected successfully')
         mqtt_client.subscribe(user_id)
+        mqtt_client.subscribe("EVERYONE")
     else:
         print('Bad connection. Code:', rc)
 
 def on_message(mqtt_client, userdata, msg):
-    print("Inside on_message of provider1.py")
     print(f'Received message on topic: {msg.topic} with payload: {msg.payload}')
     
     try: 
@@ -102,14 +91,25 @@ def on_message(mqtt_client, userdata, msg):
         #print(str({msg.payload}))
         if(msg.payload.decode("utf-8")=="calculate_efficiency"):
             calc_benchmark_stats()
-        print(traceback.format_exc())
-        print(f'Received in except with TOPIC: {msg.topic} with PAYLOAD: {msg.payload}')
-    #socket.send_multipart([identity, json.dumps(response).encode("utf-8")])
+        if(msg.payload.decode("utf-8").startswith("EfficiencyScoreSet:")):
+            scoreset = json.loads(msg.payload[19:])
+            global cpu_efficiency_score
+            cpu_efficiency_score = scoreset['cpu']
+            global memory_efficiency_score
+            memory_efficiency_score = scoreset['memory']
+            print("Fetched this provider's efficiency score set")
+            print(cpu_efficiency_score)
+            print(memory_efficiency_score)
+        if(msg.payload.decode("utf-8").startswith("ref_run_service_id/")):
+            service_id = msg.payload.decode("utf-8")[19:]
+            set_reference_stats_for_service(service_id)
 
-    #requests.get(url=READY_URL+user_id)
 
 def on_subscribe(mqtt_client, userdata, mid, qos, properties=None):
-    print("subbed to topic from provider1.py")
+    pass
+
+# tell scheduler that this provider has started. waits for the request to get then proceeds.
+requests.get("http://localhost:8000/providers/startup/"+user_id)
 
 
 mclient = mqtt.Client(callback_api_version= mqtt.CallbackAPIVersion.VERSION2)
@@ -121,6 +121,9 @@ mclient.on_subscribe= on_subscribe
 mclient.connect(host=BROKER_ID,port=1883)
 #client subscribe is in on_connect
 mclient.loop_start() #different thread
+
+mclient.publish(topic="EVERYONE", payload="start_connect"+user_id, qos=2)
+mclient.publish(topic="EVERYONE", payload="get_efficiency_score"+user_id, qos=2)
 
 #LINEAR REGRESSION LOGIC
 
@@ -148,26 +151,10 @@ def load_model(filename):
     return model
 
 
-def collect_training_data():
-    # Simulated data collection for all providers
-    training_data = {
-        "service5": {"cpu_usage": 40738299958, "memory_usage": 7946240, "cpu_efficiency_score": 1, "memory_efficiency_score": 1, "runtime": 40},
-        "service5": {"cpu_usage": 20, "memory_usage": 512, "cpu_efficiency_score": 0.8, "memory_efficiency_score": 0.7, "runtime": 10},
-        "function2": {"cpu_usage": 30, "memory_usage": 1024, "cpu_efficiency_score": 0.7, "memory_efficiency_score": 0.6, "runtime": 15}
-        # Add more functions as needed
-    }
-    with open("reference_data.json", "w") as f:
-        json.dump(training_data, f)
-
-def load_reference_data():
-    with open("training_data.json", "r") as f:
-        reference_data = json.load(f)
-    return reference_data
-
 def train_regression_model(training_data):
     X = []
     y = []
-    for function, data in training_data.items():
+    for data in training_data:
         X.append([data["cpu_usage"] * data["cpu_efficiency_score"], 
                   data["memory_usage"] * data["memory_efficiency_score"]])
         y.append(data["runtime"])
@@ -177,7 +164,7 @@ def train_regression_model(training_data):
     return model
 
 def predict_runtime(function, provider, model, reference_data):
-    reference_cpu_usage = reference_data[function]["cpu_usage"]
+    reference_cpu_usage = reference_data['service']["cpu_usage"]
     reference_memory_usage = reference_data[function]["memory_usage"]
     
     X = np.array([[reference_cpu_usage * provider.cpu_efficiency_score, 
@@ -280,6 +267,12 @@ def run_docker(body, inputData=None):
     run_vars['memory_usage'] = stack[0]['memory_stats']['usage']
     run_vars['cpu_usage'] = stack[0]['cpu_stats']['cpu_usage']['total_usage']
     run_vars['actual_runtime'] = run_time
+    global cpu_efficiency_score
+    run_vars['cpu_efficiency_score'] = cpu_efficiency_score
+    global memory_efficiency_score
+    run_vars['memory_efficiency_score'] = memory_efficiency_score
+
+    append_data_to_file(run_vars, 'TrainingData/eff_score_data.txt')
     # print(run_vars)
     #print(count)
     # print("sending curl")
@@ -447,6 +440,44 @@ def calc_benchmark_stats():
     print(benchmark)
     return benchmark
 
+
+def set_reference_stats_for_service(service_id):
+    global container_name
+    container_name+="r"
+    print(str(service_id))
+    global client
+    client.containers.create(client.images.get(str(service_id)), name=container_name)
+    cont = client.containers.get(container_name)
+    cont.start()
+    start_run_time=time.time()
+    timeout = 500 # how long will this service run on reference in seconds
+    stack=[]
+    run_vars={}
+    runtime=timeout
+    while ((cont != None) and ((str(cont.status) == 'running') or (str(cont.status) == 'created'))):
+        if(time.time()-start_run_time > timeout):
+            print("timeout of 500 seconds reached in running service on the reference provider.")
+            cont.kill()
+            break
+        #elapsed_time += stop_time
+        s = cont.stats(decode=False, stream=False)
+        if(s['memory_stats'] != {}):
+            #stack.clear() #to get stats streamed throughout the process remove this line
+            stack.clear() #only to save time
+            stack.append(s)
+        else: break
+
+    run_time = int((time.time() - start_run_time)*1000)
+    run_vars['service']=service_id
+    run_vars['memory_usage'] = stack[0]['memory_stats']['usage']
+    run_vars['cpu_usage'] = stack[0]['cpu_stats']['cpu_usage']['total_usage']
+    run_vars['actual_runtime'] = run_time
+
+    append_data_to_file(run_vars, 'TrainingData/Reference_Provider_Data.txt')
+    global mclient
+    # !IMPORTANT here user_id should actually be reference_user_id 
+    mclient.publish(topic=user_id, payload="Stats for Reference Provider: "+json.dumps(run_vars), qos=2)
+    return
 
 # response = requests.POST(url=REGISTER_URL, data=data)
 # user_id = response['user_id']
