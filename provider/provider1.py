@@ -31,7 +31,7 @@ chaincodeName = "monitoring"
 token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE2OTQxMjk2MzcsInVzZXJuYW1lIjoiY29udHJvbGxlciIsIm9yZ05hbWUiOiJPcmcxIiwiaWF0IjoxNjk0MDkzNjM3fQ.DNJZ4kB11PbDB4UO2HaMjwlqxgTbJ8b7JK3WsRzaePY"
 
 client = docker.from_env()
-container_name = "test99"
+container_name = "test104"
 cont_num = 1
 # REGISTER_URL = 'https://' + controller_ip + ":" + controller_port + "/profiles/register_user/"
 ACK_URL = "http://" + controller_ip + ":" + controller_port + "/providers/job_ack/"
@@ -157,22 +157,37 @@ def train_regression_model(training_data):
     for data in training_data:
         X.append([data["cpu_usage"] * data["cpu_efficiency_score"], 
                   data["memory_usage"] * data["memory_efficiency_score"]])
-        y.append(data["runtime"])
+        y.append(data["actual_runtime"])
 
     model = LinearRegression()
     model.fit(X, y)
     return model
 
-def predict_runtime(function, provider, model, reference_data):
-    reference_cpu_usage = reference_data['service']["cpu_usage"]
-    reference_memory_usage = reference_data[function]["memory_usage"]
-    
-    X = np.array([[reference_cpu_usage * provider.cpu_efficiency_score, 
-                   reference_memory_usage * provider.memory_efficiency_score]])
-    predicted_runtime = model.predict(X)
+def predict_runtime(service, provider, model):
+
+    ref_service_list = load_data_from_file("TrainingData/Reference_Provider_Data.txt")
+    for item in ref_service_list:
+        if(item['service']==service):
+            reference_cpu_usage=item['cpu_usage']
+            reference_memory_usage=item['memory_usage']
+            break
+    global cpu_efficiency_score, memory_efficiency_score
+
+    # For training in scheduler, instead of globals use provider.cpu_efficiency_score and provider.memory_efficiency_score
+    X = np.array([[reference_cpu_usage * cpu_efficiency_score, reference_memory_usage * memory_efficiency_score]])
+    return model.predict(X)
+
+
+def trainAndPredict(run_vars):
+    #run_vars has  cpu_usage, memory_usage, actual_runtime (of providers required for training not prediction) they will be loaded from file
+    #It also has service (task link) (to get corresponding reference stats), eff_scores for training+prediction the ones which we use in this function
+    #TRAINING
+    training_data=load_data_from_file("TrainingData/eff_score_data.txt")
+    model = train_regression_model(training_data)
+    #PREDICTION
+    dummy_provider = 0 # this provider would be real if this were to run in the scheduler. Here it is useless as we use globals.
+    predicted_runtime = predict_runtime(run_vars['service'], dummy_provider, model)
     return predicted_runtime[0]
-
-
 
 def sendCurl():
     print("inside curl before sleep")
@@ -230,7 +245,6 @@ def run_docker(body, inputData=None):
         cont.start()
         start_run_time = time.time()
 
-
     result = "this is result" #remove this line uncomment below line
     #result = result.decode("utf-8") #this gives the Hello from Docker msg.
     print("Run Started!")
@@ -240,10 +254,6 @@ def run_docker(body, inputData=None):
     run_vars = {}
     cont = client.containers.get(container_name)
     count = 0
-    #model = load_model('LRModels/service5/model1.pkl')
-    # livepredictions = {} # dict with two keys predicted_runtime and timestamp
-    # predictions = [] # list of livepredictions
-
     while ((cont != None) and ((str(cont.status) == 'running') or (str(cont.status) == 'created'))):
         if(time.time()-start_run_time > timeout):
             print("timeout exceeded (cont not killed)")
@@ -256,9 +266,6 @@ def run_docker(body, inputData=None):
             stack.append(s)
         else: break
         count+=1
-        #if(cont.status=='running'):print("running")
-        #else: print("Not running")
-        #sleep(stop_time)
 
     #print(stack) #uncomment this to get full stats
     run_time = int((time.time() - start_run_time)*1000)
@@ -273,23 +280,10 @@ def run_docker(body, inputData=None):
     run_vars['memory_efficiency_score'] = memory_efficiency_score
 
     append_data_to_file(run_vars, 'TrainingData/eff_score_data.txt')
-    # print(run_vars)
-    #print(count)
-    # print("sending curl")
-    # sendCurl()
-    # print("curl sent")
-    # UNCOMMENT BEFORE DEBUGGING, DO NOT SPOIL TRAINING DATA
-    #append_data_to_file(run_vars, 'TrainingData/service5.txt') #uncomment during debugging
-    # # UNCOMMENT BEFORE DEBUGGING, DO NOT SPOIL TRAINING DATA
-
-    
-    #get a freshly trained model on txt file
-    #model = train_model('TrainingData/service5.txt')
-
-    #load model without training it
-    #model = load_model('LRModels/service5/model1.pkl')
+    run_vars['service']=body # this is the task link
 
     print("Predicted Runtime:")
+    print(trainAndPredict(run_vars))
     #print(predict_runtime(model, run_vars['time_indexed_stats'])) #a list of stats with timestamps
     print("Actual Runtime " + str(run_time))
     # Plot real-time predictions
