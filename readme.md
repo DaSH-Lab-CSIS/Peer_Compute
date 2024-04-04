@@ -14,13 +14,24 @@ example curl
 ```
   curl -X GET "http://localhost:8000/providers/calculate_efficiency/34933555-5cca-41fb-aded-4ab7900c48d5" 
 ```
+```
+curl -X POST "http://localhost:8000/providers/set_reference_stats_for_service/" -H "Content-Type: application/json" -d '{"service_id":"satyam098/testimage_largeruntime"}'
+```
 services:
 run_service/3 - (hello world),  
 run_service/5 - (largeruntime)
 
-provider: ```34933555-5cca-41fb-aded-4ab7900c48d5```
+reference provider: ```34933555-5cca-41fb-aded-4ab7900c48d5```
+
+## TODO
+Set_reference_stats_for_service/<str: service_id> Here service_id is not the service_id but instead the task link. Get the task link from this service id in views.py/provider itself, use that instead and continue remaining without any changes.   
+Make a copy of provider1.py without set_reference_stats and other exclusive reference provider methods. This script will be for all other nodes.  
+Remove try and except instead give if statements and startswith(dockerrun) etc
 
 ## Common Issues:
+
+NOTE: Rerun the provider script after running the benchmark. The efficiency scores are not fetched in the global vars in provider1.py after calling benchmark function, but rather only at the start of provider1.py script. So since before running benchmarks global vars were nothing and efficiency score get request is done after running benchmarks eff scores are not in global vars for this first benchmark run. Fix this.
+
 if this provider does not write "Connected successfully", contact me (Aalhad). 
 paste the IP I give into the global variable named "BROKER_ID" in provider1.py and providers/views.py
 
@@ -34,7 +45,7 @@ If Django server is on a infinite loop with finding ready providers. One of th p
 SQL command for making provider ready (if id 14 does not have t and t in the table)
 ```
 UPDATE profiles_user
-SET cpu_efficiency_score = 1
+SET memory_efficiency_score = 1
 WHERE id = '14';
 ```
 
@@ -131,18 +142,30 @@ More info: right now the mqtt broker is hosted on a cloud based public node with
 this is a free broker host which allows everyone. otherwise the broker host would be one of the lab machines with a custom config. (allow_anonymous true \n listener 1883)
 
 
-Changes which may lead to bugs:
-publish_to_topic in urlpattern of provider module is changed to publish_to_topic_mqtt
+## Things to fix at some point.
+
+These work but will be inefficient at scale.  
+Everytime startup request is sent, it creates a new client and a new mqtt daemon subbed to "EVERYONE".
+Instead a new client should be made and subbed only at django server startup (lookup ready method in apps.py)
+this client should then be used in all other methods. So make a method mclient = get_mclient() which has a global var.
+
+To change the reference provider, change value in benchmark_results.txt and the global var in views.py/provider.
+
 
 ## Room for improvement
 
 ### 1. Runtime prediction model not specific to service
 
 Runtime of some service on p1 is predicted by a linear function f:
-predicted_runtime = f(cpu_usage_on_reference * cpu_efficiency_of_p1, memory_usage_on_reference * memory_efficiency_of_p1)
+
+$predicted\_runtime = f(cpu\_usage\_on\_reference * cpu\_efficiency\_of\_p1,\text{ } memory\_usage\_on\_reference * memory\_efficiency\_of\_p1)$
+
 where cpu_usage_on_reference and memory_usage_of_reference are usages of that service on reference providers.
 We know that this linear function, f , should ideally be different for each service. 
 perhaps some services give runtime more on the basis of memory_stats than other who have heavier weightage for cpu_stats.
 We could train a linear regression model for each service and get f specific to the service.
-But at scale if PeerCompute has thousands of functions in the registry and thousands of providers. For the training of these models,
-each function would have to be run on a lot of providers. 
+But at scale if PeerCompute has thousands of services in the registry and thousands of providers. For the training of these models,
+each function would have to be run on a lot of providers.   
+Solution: Take a set of providers which represent diverse fast and slow providers. Run all services on them and based on that make a model for each service.  
+Issue: This goes against the concept of decentralisation, like who gets to be in this set of model making providers.  
+Better Solution: Divide all services into categories like compute-heavy, memory-heavy, both-heavy, io-heavy etc and make a prediction model for each category
