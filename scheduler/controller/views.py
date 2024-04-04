@@ -1,7 +1,7 @@
 from django.shortcuts import render, get_object_or_404
 from profiles.models import User
 from providers.models import Job
-from providers.views import publish_to_topic, publish_to_topic_mqtt
+from providers.views import publish_to_topic_mqtt
 from datetime import datetime, timedelta
 from pytz import timezone
 from scheduler.settings import TIME_ZONE
