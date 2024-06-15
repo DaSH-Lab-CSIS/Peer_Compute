@@ -12,12 +12,27 @@ import json
 import csv
 import random
 from controller.mincost import minimize_total_cost
+import queue
 # import zmq
 
 # # Create your views here.
 # zmq_context = zmq.Context()
 
 file_path = "/home/user/Documents/Serverless_Scheduler/SchedInfo.csv"
+global service_id_array 
+global service_queue
+service_id_array = []
+service_queue = queue.Queue()
+
+#create a map where service.id points to a particular key from 0 to n , n being the number of services. use that key in place of service.id ie insert that in the queue
+#do the same in provider1.py, import the key there and change the cached_time function
+def serviceid_queue(service):
+    while(service_queue.qsize()>=30):
+        service_queue.get()
+    service_queue.put(service.id)
+    service_id_array[service.id] = service_id_array[service.id]+1
+    return
+    
 
 def request_handler(data,service,start_time,run_async = False):
     print("In request handler.")
@@ -25,6 +40,8 @@ def request_handler(data,service,start_time,run_async = False):
     while(provider == None):
         provider = find_provider(service)
     print(provider)
+
+    serviceid_queue(service.id)
     
     job = Job.objects.create(provider = provider, start_time = start_time)
     job.save()

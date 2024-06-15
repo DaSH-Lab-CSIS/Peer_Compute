@@ -21,6 +21,8 @@ import pickle
 import matplotlib.pyplot as plt
 import numpy as np
 
+from scheduler.controller.views import service_id_array 
+
 user_id = sys.argv[1]
 controller_ip = "10.8.1.48" #change to .46
 controller_port = "8000"
@@ -188,6 +190,12 @@ def trainAndPredict(run_vars):
     dummy_provider = 0 # this provider would be real if this were to run in the scheduler. Here it is useless as we use globals.
     predicted_runtime = predict_runtime(run_vars['service'], dummy_provider, model)
     return predicted_runtime[0]
+
+def cached_time(service):
+    relevance_score = service_id_array[service.id]/30
+    dummy_pred_time = 60
+    pred_cached_time = dummy_pred_time*(1+relevance_score)
+    return pred_cached_time
 
 def sendCurl():
     print("inside curl before sleep")
