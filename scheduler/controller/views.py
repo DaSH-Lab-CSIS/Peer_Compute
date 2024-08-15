@@ -29,6 +29,7 @@ service_queue = queue.Queue()
 def serviceid_queue(service):
     while(service_queue.qsize()>=30):
         service_queue.get()
+        service_id_array[service.id] -=1
     service_queue.put(service.id)
     service_id_array[service.id] = service_id_array[service.id]+1
     return
