@@ -24,7 +24,8 @@ import numpy as np
 user_id = sys.argv[1]
 controller_ip = "10.8.1.48" #change to .46
 controller_port = "8000"
-BROKER_ID = "broker.hivemq.com"
+#BROKER_ID = "10.60.12.47"
+BROKER_ID="broker.hivemq.com"
 #uncomment requests.get ACK READY NOT READY
 channelName = "mychannel"
 chaincodeName = "monitoring"
@@ -182,11 +183,12 @@ def trainAndPredict(run_vars):
     #run_vars has  cpu_usage, memory_usage, actual_runtime (of providers required for training not prediction) they will be loaded from file
     #It also has service (task link) (to get corresponding reference stats), eff_scores for training+prediction the ones which we use in this function
     #TRAINING
+    print("running predictions inside trainAndPredict")
     training_data=load_data_from_file("TrainingData/eff_score_data.txt")
     model = train_regression_model(training_data)
     #PREDICTION
-    dummy_provider = 0 # this provider would be real if this were to run in the scheduler. Here it is useless as we use globals.
-    predicted_runtime = predict_runtime(run_vars['service'], dummy_provider, model)
+    provider_id = 0 # this provider would be used if this training and prediction were to run in the scheduler. Here it is useless as we use globals.
+    predicted_runtime = predict_runtime(run_vars['service'], provider_id, model)
     return predicted_runtime[0]
 
 def sendCurl():
@@ -228,6 +230,7 @@ def run_docker(body, inputData=None):
     if inputData == None:
         # result = client.containers.run(body, name=container_name)
         try:
+            print("in try in inputData=None")
             client.containers.create(body, name=container_name)
         except:
             container_name += "e"
@@ -249,7 +252,7 @@ def run_docker(body, inputData=None):
     #result = result.decode("utf-8") #this gives the Hello from Docker msg.
     print("Run Started!")
     print(body)
-    timeout = 65
+    timeout = 3000
     stack = []
     run_vars = {}
     cont = client.containers.get(container_name)
@@ -269,7 +272,7 @@ def run_docker(body, inputData=None):
 
     #print(stack) #uncomment this to get full stats
     run_time = int((time.time() - start_run_time)*1000)
-    print(count)
+    #print(count)
     # run_vars['time_indexed_stats'] = time_indexed_stats
     run_vars['memory_usage'] = stack[0]['memory_stats']['usage']
     run_vars['cpu_usage'] = stack[0]['cpu_stats']['cpu_usage']['total_usage']
@@ -278,7 +281,7 @@ def run_docker(body, inputData=None):
     run_vars['cpu_efficiency_score'] = cpu_efficiency_score
     global memory_efficiency_score
     run_vars['memory_efficiency_score'] = memory_efficiency_score
-
+    # the below is service specific and has to be made for each service.
     append_data_to_file(run_vars, 'TrainingData/eff_score_data.txt')
     run_vars['service']=body # this is the task link
 
@@ -338,7 +341,7 @@ def on_request(json_data) :
 
 
     delete_container_and_image(json_data['task_link'])
-    return {'Result': r, 'pull_time': pull_time, 'run_time': run_time, 'total_time': total_time}
+    return {'Result': r, 'pull_time': pull_time, 'run_time': run_time, 'total_time': total_time, 'job_id': json_data['job_id']}
 
 def on_chained_request(json_data) :
     #requests.get(url=ACK_URL + str(json_data['job_id']))
