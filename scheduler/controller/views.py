@@ -28,7 +28,7 @@ def request_handler(data,service,start_time,run_async = False):
     
     job = Job.objects.create(provider = provider, start_time = start_time)
     job.save()
-
+    print("Job id: " + job.id)
     if USE_FABRIC:
         r = fabric.invoke_new_job(str(job.id), str(service.id), str(service.developer_id),
                                         str(provider.id), provider_org="Org1")
@@ -50,8 +50,11 @@ def request_handler(data,service,start_time,run_async = False):
     # for i in range(data['numberOfInvocations']):
     #response = publish_to_topic(data['runMultipleInvocations'], data['numberOfInvocations'], data['chained'], input_val, provider,task_link,task_developer, job.id)
     #print("abt to pub to mqtt")
-    response = publish_to_topic_mqtt(data['runMultipleInvocations'], data['numberOfInvocations'], data['chained'], input_val, provider,task_link,task_developer, job.id)
+     # add the below code in on_message.
+    publish_to_topic_mqtt(data['runMultipleInvocations'], data['numberOfInvocations'], data['chained'], input_val, provider,task_link,task_developer, job.id)
 
+# also use job from the above function.
+# def receive_job_data(response):
     response_decoded = json.loads(response.decode("utf-8"))
     # response_decoded = json.loads(response)
     print("response from provider: ", response_decoded)
