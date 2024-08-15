@@ -7,6 +7,7 @@ from profiles.models import User
 
 # Create your models here.
 class Job(models.Model):
+    id = models.AutoField(primary_key=True)
     provider = models.ForeignKey(
         User,
         on_delete=models.CASCADE,

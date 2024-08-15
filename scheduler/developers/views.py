@@ -8,7 +8,8 @@ from profiles.models import User
 from developers.models import Services
 from providers.models import Job
 from django.core.exceptions import ObjectDoesNotExist
-from controller.views import request_handler, find_provider
+# from controller.views import request_handler, find_provider
+from providers.views import request_handler, find_provider
 from datetime import datetime
 from pytz import timezone
 from scheduler.settings import TIME_ZONE
@@ -90,6 +91,44 @@ def delete_service(request, service_id):
                   {'all_services': all_services,
                    'developer_id': request.user.developer.id})
 
+# @csrf_exempt
+# def run_service(request, service_id):
+#     response = ''
+#     try:
+#         service = Services.objects.get(id=(service_id+7))
+#         if service.active:
+#             temp_time = datetime.now(tz=timezone(TIME_ZONE))
+#             data = json.loads(request.body)
+#             if (data['chained'] == True) :
+#                 for i in range(data['numberOfInvocations']):
+#                     response, provider, providing_time, job_id = request_handler(data, service, temp_time)
+#                     data['input'] = int(response['Result'])
+#             else:
+#                 for i in range(data['numberOfInvocations']):
+#                 #     print("Invocation ", str(i), ": \n")
+#                     response, provider, providing_time, job_id = request_handler(data, service, temp_time)
+#             if response is None:
+#                 messages.error(request, "There are no available providers in the network")
+#                 return redirect('index')
+#             else:
+#                 messages.success(request, "Successfully sent a request to '{}' service of '{}'".format(service.name,
+#                                                                                                    service.developer))
+#         else:
+#             messages.error(request, "This service is disabled")
+
+#     except ObjectDoesNotExist:
+#         messages.error(request, "Incorrect service id")
+#     # print("Response", response)
+#     return JsonResponse(
+#                   {'result': response['Result'],
+#                    'providing_time': providing_time,
+#                    'pull_time': response['pull_time'],
+#                    'run_time': response['run_time'],
+#                    'total_time': response['total_time'],
+#                    'provider': provider, 
+#                    'job_id': job_id})
+
+
 @csrf_exempt
 def run_service(request, service_id):
     response = ''
@@ -100,32 +139,21 @@ def run_service(request, service_id):
             data = json.loads(request.body)
             if (data['chained'] == True) :
                 for i in range(data['numberOfInvocations']):
-                    response, provider, providing_time, job_id = request_handler(data, service, temp_time)
-                    data['input'] = int(response['Result'])
+                    request_handler(data, service, temp_time)
+                    
             else:
                 for i in range(data['numberOfInvocations']):
                 #     print("Invocation ", str(i), ": \n")
-                    response, provider, providing_time, job_id = request_handler(data, service, temp_time)
-            if response is None:
-                messages.error(request, "There are no available providers in the network")
-                return redirect('index')
-            else:
-                messages.success(request, "Successfully sent a request to '{}' service of '{}'".format(service.name,
-                                                                                                   service.developer))
+                    request_handler(data, service, temp_time)
+            
         else:
             messages.error(request, "This service is disabled")
 
     except ObjectDoesNotExist:
         messages.error(request, "Incorrect service id")
+        print("incorrect service id")
     # print("Response", response)
-    return JsonResponse(
-                  {'result': response['Result'],
-                   'providing_time': providing_time,
-                   'pull_time': response['pull_time'],
-                   'run_time': response['run_time'],
-                   'total_time': response['total_time'],
-                   'provider': provider, 
-                   'job_id': job_id})
+    return JsonResponse({'response': 'There is no return or response for now.'})
 
 def run_service_async(request, service_id):
     response = ''
