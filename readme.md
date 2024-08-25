@@ -19,8 +19,8 @@ curl -X POST "http://localhost:8000/providers/set_reference_stats_for_service/" 
 ```
 services:
 run_service/3 - (hello world),  
-run_service/5 - (largeruntime)
-
+run_service/5 - (largeruntime),
+run_service/6 - video_encoding benchmark from vswarmease.
 reference provider: ```34933555-5cca-41fb-aded-4ab7900c48d5```
 
 ## TODO
@@ -34,10 +34,15 @@ NOTE: Rerun the provider script after running the benchmark. The efficiency scor
 
 if this provider does not write "Connected successfully", contact me (Aalhad). 
 paste the IP I give into the global variable named "BROKER_ID" in provider1.py and providers/views.py
+If hivemq not connecting check internet with curl parrot.live
 
 If Django server Port already in use then close then use a different port, with
 ```python scheduler/manage.py runserver 0.0.0.0:5000```
 and also change the url in curl requests.
+
+For mac, brew info mosquitto to locate conf file.
+
+If Django server not working saying is port 5432 accepting tcp ip connections and postgres not opening chainfaas then just restart postgres with ```sudo systemctl start postgresql``` followed by ```sudo systemctl enable postgresql```
 
 If test\n container already in use error, set the global var "container_name" to something different than what it is rn ex "test20" -> "test21"
 
@@ -52,6 +57,7 @@ WHERE id = '14';
 If docker container is not being loaded from the registry or some certificate issue u are running into, you are not connected to the wifi.
 There is a python login script in the Documents folder name loginscript.py or login.py run that with ```python login.py```
 
+If trainAndPredict fails, check the data in TrainingData, none of the eff score should be "could not load" all should be floats.
 
 ## Automate the startup terminals
 Install the extension Terminals Manager by Fabio Spampinato

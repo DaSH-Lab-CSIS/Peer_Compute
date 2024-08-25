@@ -2,7 +2,7 @@ import pulp
 import time
 # Linear programming in essence is giving some constraint curves which set an area on the cartesian plane,
 # now we have an objective function to maximise/minimise and this function/curve will be max/min at the vertices of the area.
-# This is a topic from 12th CBSE maths see graph graph below for a visual proof.
+# This is a topic from 12th maths see graph graph below for a visual proof.
 # Photo explanation : https://calcworkshop.com/wp-content/uploads/linear-programming-example.png
 
 
