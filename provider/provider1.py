@@ -67,25 +67,25 @@ def on_message(mqtt_client, userdata, msg):
         if(data["stage"] == "dockernotrun"):
             data["stage"] = "dockerrun"
             
-            response = {'Result': [], 'run_time': [], 'pull_time': [], 'total_time': []}
-            
+            # response = {'Result': [], 'run_time': [], 'pull_time': [], 'total_time': []}
+            # on_request initially returned a dictionary.
             if(data['runMultipleInvocations'] == True):
                 if(data['numberOfInvocations'] == 1) :
-                    response = on_request(data)
+                    on_request(data)
                 elif(data['isChained'] == False):
                     for i in range(data['numberOfInvocations']):
                         container_name = str(data['job_id']) + "_container_" + str(i)
                         temp = on_request(data)
-                        response['Result'].append(temp['Result'])
-                        response['run_time'].append(temp['run_time'])
-                        response['pull_time'].append(temp['pull_time'])
-                        response['total_time'].append(temp['total_time'])
+                        # response['Result'].append(temp['Result'])
+                        # response['run_time'].append(temp['run_time'])
+                        # response['pull_time'].append(temp['pull_time'])
+                        # response['total_time'].append(temp['total_time'])
                 else: 
-                    response = on_chained_request(data)
+                    on_chained_request(data)
             else:
-                response = on_request(data)
+                on_request(data)
             
-            mqtt_client.publish(user_id, json.dumps(response).encode("utf-8"),qos=2)
+            # mqtt_client.publish(user_id, json.dumps(response).encode("utf-8"),qos=2)
             #mqtt_client.loop_stop()
             #mqtt_client.disconnect()
     except:
@@ -233,8 +233,10 @@ def run_docker(body, inputData=None):
             print("in try in inputData=None")
             client.containers.create(body, name=container_name)
         except:
+            print("in except in inputData=None")
             container_name += "e"
             client.containers.create(body, name=container_name)
+            print("container created in except")
         cont = client.containers.get(container_name)
         cont.start()
         start_run_time = time.time()
@@ -341,7 +343,8 @@ def on_request(json_data) :
 
 
     delete_container_and_image(json_data['task_link'])
-    return {'Result': r, 'pull_time': pull_time, 'run_time': run_time, 'total_time': total_time, 'job_id': json_data['job_id']}
+    response = {'Result': r, 'pull_time': pull_time, 'run_time': run_time, 'total_time': total_time, 'job_id': json_data['job_id']}
+    mqtt_client.publish(user_id, json.dumps(response).encode("utf-8"),qos=2)
 
 def on_chained_request(json_data) :
     #requests.get(url=ACK_URL + str(json_data['job_id']))

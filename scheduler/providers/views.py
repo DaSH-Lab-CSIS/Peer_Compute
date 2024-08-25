@@ -32,7 +32,7 @@ file_path = "/home/user/Documents/Serverless_Scheduler/SchedInfo.csv"
 mclient = None
 global service_id_array 
 global service_queue
-service_id_array = []
+service_id_array = {}
 service_queue = queue.Queue()
 
 # Helpers
@@ -145,6 +145,14 @@ def get_mclient():
 #     # print("Received response from zmq: ", response)
 #     zmq_socket.close()
 #     return response
+
+
+def findfreq_service(service):
+    while(service_queue.qsize()>=30):
+        service_id_array[service_queue.get()] -=1
+    service_queue.put(service.id)
+    service_id_array[service.id] = service_id_array[service.id]+1
+    return
 
 # pub to topic mqtt actually just forwards it to provider1.py where it adds pull times and stuff and then it publishes.
 def publish_to_topic_mqtt(runMultipleInvocations, numberOfInvocations, isChained, inputData, provider , task_link , task_developer, job_id):
