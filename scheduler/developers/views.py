@@ -21,7 +21,6 @@ import threading
 def index(request):
     return render(request, 'developers_app/index.html')
 
-
 # @login_required()
 @csrf_exempt
 def new_service(request):
