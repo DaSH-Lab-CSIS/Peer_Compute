@@ -34,6 +34,7 @@ global service_id_array
 global service_queue
 service_id_array = {}
 service_queue = queue.Queue()
+global requested_services
 
 # Helpers
 def load_data_as_dict(file_path):
@@ -431,6 +432,10 @@ def finish_job(data):
             token = fabric.register_user()
             r = fabric.invoke_received_result(str(job.id), token=token)
     return
+
+def queue_jobs(service):
+    requested_services.append(service)
+    
 
 def find_provider(service):
 
