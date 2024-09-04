@@ -17,11 +17,8 @@ from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error
 import joblib  # Used for model persistence
 import pickle
-
 import matplotlib.pyplot as plt
 import numpy as np
-
-from scheduler.controller.views import service_id_array 
 
 user_id = sys.argv[1]
 controller_ip = "10.8.1.48" #change to .46
@@ -34,7 +31,7 @@ chaincodeName = "monitoring"
 token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE2OTQxMjk2MzcsInVzZXJuYW1lIjoiY29udHJvbGxlciIsIm9yZ05hbWUiOiJPcmcxIiwiaWF0IjoxNjk0MDkzNjM3fQ.DNJZ4kB11PbDB4UO2HaMjwlqxgTbJ8b7JK3WsRzaePY"
 
 client = docker.from_env()
-container_name = "test104"
+container_name = "test"
 cont_num = 1
 # REGISTER_URL = 'https://' + controller_ip + ":" + controller_port + "/profiles/register_user/"
 ACK_URL = "http://" + controller_ip + ":" + controller_port + "/providers/job_ack/"
@@ -193,12 +190,6 @@ def trainAndPredict(run_vars):
     predicted_runtime = predict_runtime(run_vars['service'], provider_id, model)
     return predicted_runtime[0]
 
-def cached_time(service):
-    relevance_score = service_id_array[service.id]/30
-    dummy_pred_time = 60
-    pred_cached_time = dummy_pred_time*(1+relevance_score)
-    return pred_cached_time
-
 def sendCurl():
     print("inside curl before sleep")
     sleep(10)
@@ -225,6 +216,7 @@ def sendCurl():
     print("after sleep")
     print(curl_count)
 
+
 def run_docker(body, inputData=None):
     start_pull_time = time.time()
     image = client.images.pull(body)
@@ -239,6 +231,7 @@ def run_docker(body, inputData=None):
         # result = client.containers.run(body, name=container_name)
         try:
             print("in try in inputData=None")
+            print(body)
             client.containers.create(body, name=container_name)
         except:
             print("in except in inputData=None")
