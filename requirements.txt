@@ -1,5 +1,6 @@
 asgiref==3.8.1
 asttokens==2.4.1
+async-timeout==4.0.3
 certifi==2023.11.17
 charset-normalizer==3.3.2
 comm==0.2.2

@@ -17,11 +17,9 @@ from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error
 import joblib  # Used for model persistence
 import pickle
-
 import matplotlib.pyplot as plt
 import numpy as np
-
-from scheduler.controller.views import service_id_array 
+from hybridcaching import HybridImageManager
 
 user_id = sys.argv[1]
 controller_ip = "10.8.1.48" #change to .46
@@ -34,8 +32,7 @@ chaincodeName = "monitoring"
 token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE2OTQxMjk2MzcsInVzZXJuYW1lIjoiY29udHJvbGxlciIsIm9yZ05hbWUiOiJPcmcxIiwiaWF0IjoxNjk0MDkzNjM3fQ.DNJZ4kB11PbDB4UO2HaMjwlqxgTbJ8b7JK3WsRzaePY"
 
 client = docker.from_env()
-container_name = "test104"
-cont_num = 1
+
 # REGISTER_URL = 'https://' + controller_ip + ":" + controller_port + "/profiles/register_user/"
 ACK_URL = "http://" + controller_ip + ":" + controller_port + "/providers/job_ack/"
 NOT_READY_URL = "http://" + controller_ip + ":" + controller_port + "/providers/not_ready/"
@@ -51,6 +48,10 @@ curl_count = 0
 cpu_efficiency_score = "DID NOT RECIEVE"
 memory_efficiency_score = "DID NOT RECIEVE"
 
+MEMORY_LIMIT = 1200 * 1024 * 1024
+DISK_LIMIT = 2000 * 1024 * 1024
+
+imagePuller = HybridImageManager(memory_limit=MEMORY_LIMIT, disk_limit=DISK_LIMIT)
 # MQTT
 
 def on_connect(mqtt_client, userdata, flags, rc, callback_api_version):
@@ -67,7 +68,7 @@ def on_message(mqtt_client, userdata, msg):
     try: 
         data = json.loads(msg.payload.decode("utf-8"))
         if(data["stage"] == "dockernotrun"):
-            data["stage"] = "dockerrun"
+            data["stage"] = "dockerrunning"
             
             # response = {'Result': [], 'run_time': [], 'pull_time': [], 'total_time': []}
             # on_request initially returned a dictionary.
@@ -193,71 +194,40 @@ def trainAndPredict(run_vars):
     predicted_runtime = predict_runtime(run_vars['service'], provider_id, model)
     return predicted_runtime[0]
 
-def cached_time(service):
-    relevance_score = service_id_array[service.id]/30
-    dummy_pred_time = 60
-    pred_cached_time = dummy_pred_time*(1+relevance_score)
-    return pred_cached_time
 
-def sendCurl():
-    print("inside curl before sleep")
-    sleep(10)
-    headers = {
-        'Accept': '*/*',
-        'User-Agent': 'Thunder Client (https://www.thunderclient.com)',
-        'Content-Type': 'application/json',
-    }
-
-    json_data = {
-        'numberOfInvocations': 1,
-        'chained': False,
-        'input': 'None',
-        'runMultipleInvocations': False,
-    }
-    global curl_count
-    if(curl_count<100):
-        global container_name
-        global cont_num
-        container_name += str(cont_num)
-        response = requests.post('http://localhost:8000/developers/run_service/5', headers=headers, json=json_data)
-        curl_count+=1
-        cont_num+=1
-    print("after sleep")
-    print(curl_count)
-
-def run_docker(body, inputData=None):
+def run_docker(body, container_name, inputData=None):
     start_pull_time = time.time()
-    image = client.images.pull(body)
-    print("Pull done!")
+    #image = client.images.pull(body)
+    print("inside run_docker with body : " + body)
+    image = imagePuller.request_image(body)
+    print("Out of Hybrid Caching manager and inside run_docker again")
+    print(image)
     pull_time = int((time.time() - start_pull_time) *1000)
-    global container_name
-    container_name += "n"
-    print(container_name)
-    print(body)
+    
     start_run_time = 0
+    cont = None
     if inputData == None:
         # result = client.containers.run(body, name=container_name)
         try:
-            print("in try in inputData=None")
-            client.containers.create(body, name=container_name)
-        except:
-            print("in except in inputData=None")
-            container_name += "e"
-            client.containers.create(body, name=container_name)
-            print("container created in except")
-        cont = client.containers.get(container_name)
-        cont.start()
-        start_run_time = time.time()
+            cont = client.containers.run(image, name=container_name, detach=True)
+        except Exception as e:
+            print(e)
+            container_name += "t"
+            cont = client.containers.run(image, name=container_name, detach=True)
+        # cont = client.containers.get(container_name)
+        # cont.start()
+        
     else:    
         try:
-            client.containers.create(body, command=str(inputData), name=container_name)
-        except:
+            cont = client.containers.run(image, command=str(inputData), name=container_name, detach=True)
+        except Exception as e:
+            print(e)
             container_name += "n"
-            client.containers.create(body, command=str(inputData), name=container_name)
-        cont = client.containers.get(container_name)
-        cont.start()
-        start_run_time = time.time()
+            cont = client.containers.run(image, command=str(inputData), name=container_name, detach=True)
+        # cont = client.containers.get(container_name)
+        # cont.start()
 
+    start_run_time = time.time()
     result = "this is result" #remove this line uncomment below line
     #result = result.decode("utf-8") #this gives the Hello from Docker msg.
     print("Run Started!")
@@ -265,8 +235,9 @@ def run_docker(body, inputData=None):
     timeout = 3000
     stack = []
     run_vars = {}
-    cont = client.containers.get(container_name)
+    #cont = client.containers.get(container_name)
     count = 0
+    if(cont==None):print("cont is None")
     while ((cont != None) and ((str(cont.status) == 'running') or (str(cont.status) == 'created'))):
         if(time.time()-start_run_time > timeout):
             print("timeout exceeded (cont not killed)")
@@ -301,9 +272,9 @@ def run_docker(body, inputData=None):
     print("Actual Runtime " + str(run_time))
     # Plot real-time predictions
     #plot_predictions(predictions)
-    return result, pull_time, run_time
+    return result, pull_time, run_time, container_name
 
-def delete_container_and_image(body):
+def delete_container_and_image(body, container_name):
     filters = {'name': container_name}
     container_id = client.containers.list(all=True, filters=filters)[0]
     container_id.remove()
@@ -331,7 +302,8 @@ def on_request(json_data) :
     #requests.get(url=NOT_READY_URL + user_id)
     if json_data['inputData'] == "None":
         json_data['inputData'] = None
-    r, pull_time, run_time = run_docker(json_data['task_link'], json_data['inputData'])
+
+    r, pull_time, run_time, container_name = run_docker(json_data['task_link'], str(str(json_data['job_id'])+"_container_"), json_data['inputData'])
     total_time = math.ceil(((pull_time + run_time)/100.0))*100
     print(pull_time, run_time, total_time)
     # HF_set_time(str(json_data['job_id']), total_time)
@@ -350,9 +322,11 @@ def on_request(json_data) :
         writer.writerow(data)
 
 
-    delete_container_and_image(json_data['task_link'])
-    response = {'Result': r, 'pull_time': pull_time, 'run_time': run_time, 'total_time': total_time, 'job_id': json_data['job_id']}
-    mqtt_client.publish(user_id, json.dumps(response).encode("utf-8"),qos=2)
+    delete_container_and_image(json_data['task_link'], container_name)
+    response = {'stage':"dockerrun", 'Result': r, 'pull_time': pull_time, 'run_time': run_time, 'total_time': total_time, 'job_id': json_data['job_id']}
+    global mclient
+    mclient.publish(user_id, json.dumps(response).encode("utf-8"),qos=2)
+    print("published response to scheduler")
 
 def on_chained_request(json_data) :
     #requests.get(url=ACK_URL + str(json_data['job_id']))
@@ -365,7 +339,7 @@ def on_chained_request(json_data) :
         json_data['inputData'] = None
     for i in range(json_data['numberOfInvocations']):
         container_name = str(json_data['job_id']) + "_container_" + str(i)
-        r, pull_time, run_time = run_docker(json_data['task_link'], json_data['inputData'] if i == 0 else responses[-1])
+        r, pull_time, run_time = run_docker(json_data['task_link'], container_name, json_data['inputData'] if i == 0 else responses[-1])
         responses.append(r)
         pull_times.append(pull_time)
         run_times.append(run_time)
@@ -403,11 +377,15 @@ def on_chained_request(json_data) :
 def calc_benchmark_stats():
     #TODO
     print("calculating bench mark stats")
-    global container_name
-    container_name+="b"
-    client.containers.create(client.images.get("satyam098/testimage_largeruntime"), name=container_name)
-    cont = client.containers.get(container_name)
-    cont.start()
+    bench_container_name = "benchTest"
+    bench_image = "satyam098/testimage_largeruntime"
+    image = imagePuller.request_image(bench_image)
+    try:
+        cont = client.containers.run(image, name=bench_container_name)
+    except Exception as e:
+        print(e)
+        container_name+='b'
+        cont = client.containers.run(image, name=bench_container_name)
     print(cont)
     print(str(cont.status))
     start_run_time=time.time()
@@ -430,7 +408,7 @@ def calc_benchmark_stats():
         #if(cont.status=='running'):print("running")
         #else: print("Not running")
         #sleep(stop_time)
-
+    delete_container_and_image(bench_image, bench_container_name)
     run_time = int((time.time() - start_run_time)*1000)
     run_vars['memory_usage'] = stack[0]['memory_stats']['usage']
     run_vars['cpu_usage'] = stack[0]['cpu_stats']['cpu_usage']['total_usage']
@@ -450,13 +428,11 @@ def calc_benchmark_stats():
 
 
 def set_reference_stats_for_service(service_id):
-    global container_name
-    container_name+="r"
-    print(str(service_id))
+    container_name = service_id+"_reference_stats_"
+    print(container_name)
+    img = imagePuller.request_image(service_id)
     global client
-    client.containers.create(client.images.get(str(service_id)), name=container_name)
-    cont = client.containers.get(container_name)
-    cont.start()
+    cont = client.containers.run(img, name=container_name)
     start_run_time=time.time()
     timeout = 500 # how long will this service run on reference in seconds
     stack=[]
@@ -495,43 +471,7 @@ def set_reference_stats_for_service(service_id):
 
 while(True):
     a=1
-# create_thread_and_subscribe(user_id)
 
-# context = zmq.Context()
-# socket = context.socket(zmq.ROUTER)
-# socket.setsockopt(zmq.IDENTITY, user_id.encode("utf-8"))
-# socket.connect("tcp://" + controller_ip + ":5555")
-# print("Connected to : ", controller_ip)
-# # socket.setsockopt_string(zmq.SUBSCRIBE, user_id)
-
-# while True:
-#         identity, _, json_data = socket.recv_multipart()
-#         data = json.loads(json_data.decode("utf-8"))
-        
-#         print(f"Received identity: {identity.decode('utf-8')}")
-#         print(f"Received data: {data}")
-
-#         response = {'Result': [], 'run_time': [], 'pull_time': [], 'total_time': []}
-        
-#         if(data['runMultipleInvocations'] == True):
-#             if(data['numberOfInvocations'] == 1) :
-#                 response = on_request(data)
-#             elif(data['isChained'] == False):
-#                 for i in range(data['numberOfInvocations']):
-#                     container_name = str(data['job_id']) + "_container_" + str(i)
-#                     temp = on_request(data)
-#                     response['Result'].append(temp['Result'])
-#                     response['run_time'].append(temp['run_time'])
-#                     response['pull_time'].append(temp['pull_time'])
-#                     response['total_time'].append(temp['total_time'])
-#             else: 
-#                 response = on_chained_request(data)
-#         else:
-#             response = on_request(data)
-
-#         socket.send_multipart([identity, json.dumps(response).encode("utf-8")])
-
-#         requests.get(url=READY_URL+user_id)
 
 def job_queue():
     q = None
