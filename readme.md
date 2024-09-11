@@ -1,5 +1,6 @@
 example curl
 ```
+
   curl -X POST "http://localhost:8000/developers/run_service/5" \
   -H "Accept: */*" \
   -H "User-Agent: Thunder Client (https://www.thunderclient.com)" \
@@ -10,6 +11,12 @@ example curl
 	"input": "None",
 	"runMultipleInvocations": false
   }'
+```
+```
+  curl -X GET "http://localhost:8000/providers/calculate_efficiency/34933555-5cca-41fb-aded-4ab7900c48d5" 
+```
+```
+curl -X POST "http://localhost:8000/providers/set_reference_stats_for_service/" -H "Content-Type: application/json" -d '{"service_id":"satyam098/testimage_largeruntime"}'
 ```
 ```
   curl -X GET "http://localhost:8000/providers/calculate_efficiency/34933555-5cca-41fb-aded-4ab7900c48d5" 
@@ -114,7 +121,6 @@ Make a virtual environment named ".venv" and make one named "chainenv", both in 
 ```
 pip install virtualenv
 python3 -m venv .venv
-python3 -m venv chainenv
 ```
 
 now activate .venv and install requirements.
@@ -175,3 +181,27 @@ each function would have to be run on a lot of providers.
 Solution: Take a set of providers which represent diverse fast and slow providers. Run all services on them and based on that make a model for each service.  
 Issue: This goes against the concept of decentralisation, like who gets to be in this set of model making providers.  
 Better Solution: Divide all services into categories like compute-heavy, memory-heavy, both-heavy, io-heavy etc and make a prediction model for each category
+
+##### DB on .48
+Django settings:
+```
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME':'chainfaas',
+        'USER':'chainfaas_dba',
+        'PASSWORD':'password',
+        'HOST':'localhost',
+        'PORT':'5432',
+    }
+}
+```
+
+To clear the diskCache use
+```
+from diskcache import Cache
+
+cache = Cache('cache_dir')  # Initialize your cache
+cache.clear()  # Clear the entire cache
+print("Disk cache cleared.")
+```
