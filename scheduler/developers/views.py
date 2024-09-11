@@ -130,6 +130,11 @@ def delete_service(request, service_id):
 
 @csrf_exempt
 def run_service(request, service_id):
+    print("in run service")
+    student_list = User.objects.all()
+    print(student_list.count())
+    for student in student_list:
+        print(student.user_id)
     response = ''
     try:
         service = Services.objects.get(id=(service_id+7))
