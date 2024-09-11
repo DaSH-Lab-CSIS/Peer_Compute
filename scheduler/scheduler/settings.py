@@ -87,10 +87,10 @@ WSGI_APPLICATION = 'scheduler.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME':'chainfaas',
-        'USER':'chainfaas_dba',
-        'PASSWORD':'password',
-        'HOST':'localhost',
+        'NAME':'peercompute',
+        'USER':'postgres',
+        'PASSWORD':'dash$123',
+        'HOST':'database-uno.c5gy8c44i5qo.us-east-2.rds.amazonaws.com',
         'PORT':'5432',
     }
 }
