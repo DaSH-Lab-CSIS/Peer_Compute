@@ -7,42 +7,46 @@ import time
 import docker
 import HFRequests
 import math
-
+import csv
 user_id = sys.argv[1]
-controller_ip = "10.8.1.46"
+controller_ips = ["10.8.1.46", "10.8.1.48", "10.8.1.45", "10.8.1.44"]
+controller_ip = None
 controller_port = "8000"
+socket = None
 
 channelName = "mychannel"
 chaincodeName = "monitoring"
 token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE2OTQxMjk2MzcsInVzZXJuYW1lIjoiY29udHJvbGxlciIsIm9yZ05hbWUiOiJPcmcxIiwiaWF0IjoxNjk0MDkzNjM3fQ.DNJZ4kB11PbDB4UO2HaMjwlqxgTbJ8b7JK3WsRzaePY"
 
 client = docker.from_env()
-container_name = ""
+container_name = "test"
 
 # REGISTER_URL = 'https://' + controller_ip + ":" + controller_port + "/profiles/register_user/"
-ACK_URL = "http://" + controller_ip + ":" + controller_port + "/providers/job_ack/"
-NOT_READY_URL = "http://" + controller_ip + ":" + controller_port + "/providers/not_ready/"
-READY_URL = "http://" + controller_ip + ":" + controller_port + "/providers/ready/"
+ACK_URL = ""
+NOT_READY_URL = ""
+READY_URL = ""
 
 
-# def create_thread_and_subscribe(user_id):
-#     provider_thread = Thread(target= thread_target, args= (controller_ip,controller_port,user_id))
+context = zmq.Context()
+socket = context.socket(zmq.ROUTER)
+socket.setsockopt(zmq.IDENTITY, user_id.encode("utf-8"))
+
+# def create_thread_and_connect():
+#     provider_thread = Thread(target= thread_target, args= None)
 #     provider_thread.start()
 #     provider_thread.join()
     
-# def thread_target(client_ip,client_port,user_id):
-#     while True:
-#         try:
-#             ctx = zmq.Context()
-#             socket = ctx.socket(zmq.SUB)
-#             socket.connect(f"tcp://{client_ip}:{client_port}")
-#             socket.setsockopt_string(zmq.SUBSCRIBE, str(user_id))
-#             print("Connected to socket.")
-#             break  # Exit the loop if connection is successful
+def thread_target():
+    for controller_ip in controller_ips:
+        try:
+            socket.connect("tcp://" + controller_ip + ":5555")
+            print("Connected to socket. to", controller_ip)
 
-#         except zmq.error.ZMQError as e:
-#             print(f"Connection attempt failed: {e}")
-#             time.sleep(5)  # Wait for 5 seconds before retrying
+            return controller_ip  # Exit the loop if connection is successful
+
+        except zmq.error.ZMQError as e:
+            print(f"Connection attempt failed: {e}")
+            time.sleep(2)  # Wait for 5 seconds before retrying
 
 def run_docker(body, inputData=None):
     start_pull_time = time.time()
@@ -58,12 +62,11 @@ def run_docker(body, inputData=None):
     result = result.decode("utf-8")
     print("Run done!")
 
-    print(result)
+    # print(result)
     run_time = int((time.time() - start_run_time)*1000)
     return result, pull_time, run_time
 
 def delete_container_and_image(body):
-
     filters = {'name': container_name}
     container_id = client.containers.list(all=True, filters=filters)[0]
     container_id.remove()
@@ -87,6 +90,7 @@ def HF_invoke_balance_transfer(receiver, sender):
     return response
 
 def on_request(json_data) :
+    # print(ACK_URL)
     requests.get(url=ACK_URL + str(json_data['job_id']))
     requests.get(url=NOT_READY_URL + user_id)
     if json_data['inputData'] == "None":
@@ -96,6 +100,20 @@ def on_request(json_data) :
     print(pull_time, run_time, total_time)
     # HF_set_time(str(json_data['job_id']), total_time)
     # HF_invoke_balance_transfer(str(json_data['provider_id']), str(json_data['task_developer']))
+
+    with open("results.csv", mode='a', newline='') as file:
+    # Create a CSV writer object
+        writer = csv.DictWriter(file, fieldnames=['PT', 'RT', 'TT'])        
+        # Check if the file is empty, and if so, write the header
+        if file.tell() == 0:
+            writer.writeheader()
+        data = {
+            'PT':pull_time, 'RT': run_time, 'TT': total_time
+        }
+        # Write the data as a new row
+        writer.writerow(data)
+
+
     delete_container_and_image(json_data['task_link'])
     return {'Result': r, 'pull_time': pull_time, 'run_time': run_time, 'total_time': total_time}
 
@@ -108,7 +126,7 @@ def on_chained_request(json_data) :
     total_times = []
     if json_data['inputData'] == "None":
         json_data['inputData'] = None
-    for i in range(json_data['numberOfInvocations']-1):
+    for i in range(json_data['numberOfInvocations']):
         container_name = str(json_data['job_id']) + "_container_" + str(i)
         r, pull_time, run_time = run_docker(json_data['task_link'], json_data['inputData'] if i == 0 else responses[-1])
         responses.append(r)
@@ -116,10 +134,23 @@ def on_chained_request(json_data) :
         run_times.append(run_time)
         total_time = math.ceil(((pull_time + run_time)/100.0))*100
         total_times.append(total_time)
-    print(responses, pull_times, run_times)
+        print(pull_time,run_time,total_time)
+        delete_container_and_image(json_data['task_link'])
+        with open("results.csv", mode='a', newline='') as file:
+        # Create a CSV writer object
+            writer = csv.DictWriter(file, fieldnames=['PT', 'RT', 'TT'])        
+            # Check if the file is empty, and if so, write the header
+            if file.tell() == 0:
+                writer.writeheader()
+            data = {
+                'PT':pull_time, 'RT': run_time, 'TT': total_time
+            }
+            # Write the data as a new row
+            writer.writerow(data)
+    # print(responses, pull_times, run_times)
     # HF_set_time(str(json_data['job_id']), total_time)
     # HF_invoke_balance_transfer(str(json_data['provider_id']), str(json_data['task_developer']))
-    delete_container_and_image(json_data['task_link'])
+    # delete_container_and_image(json_data['task_link'])
     return {'Result': responses, 'pull_time': pull_times, 'run_time': run_times, 'total_time': total_times}
 
 data = {
@@ -137,13 +168,22 @@ data = {
 
 # create_thread_and_subscribe(user_id)
 
-context = zmq.Context()
-socket = context.socket(zmq.ROUTER)
-socket.setsockopt(zmq.IDENTITY, user_id.encode("utf-8"))
-socket.connect("tcp://" + controller_ip + ":5555")
+# context = zmq.Context()
+# socket = context.socket(zmq.ROUTER)
+# socket.setsockopt(zmq.IDENTITY, user_id.encode("utf-8"))
+# socket.connect("tcp://" + controller_ip + ":5555")
 # socket.setsockopt_string(zmq.SUBSCRIBE, user_id)
 
+# create_thread_and_connect()
+
+controller_ip = thread_target()
+ACK_URL = "http://" + controller_ip + ":" + controller_port + "/providers/job_ack/"
+NOT_READY_URL = "http://" + controller_ip + ":" + controller_port + "/providers/not_ready/"
+READY_URL = "http://" + controller_ip + ":" + controller_port + "/providers/ready/"
+# print(ACK_URL)
 while True:
+        print(socket)
+        print("Waiting for zmq message.")
         identity, _, json_data = socket.recv_multipart()
         data = json.loads(json_data.decode("utf-8"))
         
@@ -152,7 +192,7 @@ while True:
 
         response = {'Result': [], 'run_time': [], 'pull_time': [], 'total_time': []}
         
-        if(data['runMultipleInvocations'] == False):
+        if(data['runMultipleInvocations'] == True):
             if(data['numberOfInvocations'] == 1) :
                 response = on_request(data)
             elif(data['isChained'] == False):
@@ -167,7 +207,14 @@ while True:
                 response = on_chained_request(data)
         else:
             response = on_request(data)
-
-        socket.send_multipart([identity, json.dumps(response).encode("utf-8")])
+        
+        try:
+            socket.send_multipart([identity, json.dumps(response).encode("utf-8")])
+        except Exception as e:
+            print("Could not send response through zmq")
+            controller_ip = thread_target()
+            ACK_URL = "http://" + controller_ip + ":" + controller_port + "/providers/job_ack/"
+            NOT_READY_URL = "http://" + controller_ip + ":" + controller_port + "/providers/not_ready/"
+            READY_URL = "http://" + controller_ip + ":" + controller_port + "/providers/ready/"
 
         requests.get(url=READY_URL+user_id)

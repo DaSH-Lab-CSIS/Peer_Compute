@@ -1,1 +1,8 @@
 chainenv/
+.venv/
+cache_dir/
+cached_images/
+provider/cached_images
+provider/cache_dir/*
+provider/cached_images/satyam098_slash_testimage_largeruntime.tar
+provider/cached_images/*.tar
