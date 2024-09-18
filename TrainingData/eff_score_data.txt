@@ -1,0 +1,27 @@
+{"memory_usage": 9809920, "cpu_usage": 52768162887, "actual_runtime": 55972, "cpu_efficiency_score": 1.0, "memory_efficiency_score": 1.0}
+{"memory_usage": 4304896, "cpu_usage": 52955478575, "actual_runtime": 56036, "cpu_efficiency_score": 1.0, "memory_efficiency_score": 1.0}
+{"memory_usage": 5566464, "cpu_usage": 53063947225, "actual_runtime": 55711, "cpu_efficiency_score": 1.0, "memory_efficiency_score": 1.0}
+{"memory_usage": 5398528, "cpu_usage": 53104984586, "actual_runtime": 54601, "cpu_efficiency_score": 1.0, "memory_efficiency_score": 1.0}
+{"memory_usage": 4067328, "cpu_usage": 51156085417, "actual_runtime": 54526, "cpu_efficiency_score": 1.0, "memory_efficiency_score": 1.0}
+{"memory_usage": 9351168, "cpu_usage": 51574808447, "actual_runtime": 55057, "cpu_efficiency_score": 1.0, "memory_efficiency_score": 1.0}
+{"memory_usage": 9883648, "cpu_usage": 52600057511, "actual_runtime": 56604, "cpu_efficiency_score": 1.0, "memory_efficiency_score": 1.0}
+{"memory_usage": 9969664, "cpu_usage": 53334860797, "actual_runtime": 56372, "cpu_efficiency_score": 1.0, "memory_efficiency_score": 1.0}
+{"memory_usage": 7344128, "cpu_usage": 51401969170, "actual_runtime": 54819, "cpu_efficiency_score": 1.0, "memory_efficiency_score": 1.0}
+{"memory_usage": 3719168, "cpu_usage": 52762771606, "actual_runtime": 56105, "cpu_efficiency_score": 1.0, "memory_efficiency_score": 1.0}
+{"memory_usage": 9965568, "cpu_usage": 53319007277, "actual_runtime": 55977, "cpu_efficiency_score": 1.0, "memory_efficiency_score": 1.0}
+{"memory_usage": 8855552, "cpu_usage": 52708667180, "actual_runtime": 56956, "cpu_efficiency_score": 1.0, "memory_efficiency_score": 1.0}
+{"memory_usage": 3420160, "cpu_usage": 51683591745, "actual_runtime": 53779, "cpu_efficiency_score": 1.0, "memory_efficiency_score": 1.0}
+{"memory_usage": 3350528, "cpu_usage": 52479502171, "actual_runtime": 55657, "cpu_efficiency_score": 1.0, "memory_efficiency_score": 1.0}
+{"memory_usage": 151228416, "cpu_usage": 1985666119, "actual_runtime": 66234, "cpu_efficiency_score": 1.0, "memory_efficiency_score": 1.0}
+{"memory_usage": 10035200, "cpu_usage": 52806828269, "actual_runtime": 55461, "cpu_efficiency_score": 1.0, "memory_efficiency_score": 1.0}
+{"memory_usage": 4063232, "cpu_usage": 52062038406, "actual_runtime": 55293, "cpu_efficiency_score": 1.0, "memory_efficiency_score": 1.0}
+{"memory_usage": 3444736, "cpu_usage": 52200971005, "actual_runtime": 54937, "cpu_efficiency_score": 1.0, "memory_efficiency_score": 1.0}
+{"memory_usage": 4026368, "cpu_usage": 52063255335, "actual_runtime": 55136, "cpu_efficiency_score": 1.0, "memory_efficiency_score": 1.0}
+{"memory_usage": 9891840, "cpu_usage": 52807907029, "actual_runtime": 55205, "cpu_efficiency_score": 1.0, "memory_efficiency_score": 1.0}
+{"memory_usage": 9936896, "cpu_usage": 52107581502, "actual_runtime": 56415, "cpu_efficiency_score": 1.0, "memory_efficiency_score": 1.0}
+{"memory_usage": 3420160, "cpu_usage": 52161761998, "actual_runtime": 55113, "cpu_efficiency_score": 1.0, "memory_efficiency_score": 1.0}
+{"memory_usage": 8663040, "cpu_usage": 51447911991, "actual_runtime": 54563, "cpu_efficiency_score": 1.0, "memory_efficiency_score": 1.0}
+{"memory_usage": 9875456, "cpu_usage": 51643841416, "actual_runtime": 54688, "cpu_efficiency_score": 1.0, "memory_efficiency_score": 1.0}
+{"memory_usage": 3338240, "cpu_usage": 51862640411, "actual_runtime": 54448, "cpu_efficiency_score": 1.0, "memory_efficiency_score": 1.0}
+{"memory_usage": 9986048, "cpu_usage": 52155270892, "actual_runtime": 56588, "cpu_efficiency_score": 1.0, "memory_efficiency_score": 1.0}
+{"memory_usage": 6905856, "cpu_usage": 52544482187, "io_read_stats": 3534848, "io_write_stats": 0, "actual_runtime": 56354, "cpu_efficiency_score": 1.0, "memory_efficiency_score": 1.0}
