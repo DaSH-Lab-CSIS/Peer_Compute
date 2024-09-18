@@ -257,6 +257,17 @@ def run_docker(body, container_name, inputData=None):
     # run_vars['time_indexed_stats'] = time_indexed_stats
     run_vars['memory_usage'] = stack[0]['memory_stats']['usage']
     run_vars['cpu_usage'] = stack[0]['cpu_stats']['cpu_usage']['total_usage']
+    #adding new lines for io_usage
+    # blkio_read=0
+    # blkio_write=0
+    # for entry in stack[0]['blkio_stats']['io_service_bytes_recursive']:
+    #     if entry['op'] == 'Read':
+    #         blkio_read += entry['value']
+    #     elif entry['op'] == 'Write':
+    #         blkio_write += entry['value']
+    # run_vars['io_read_stats'] = blkio_read
+    # run_vars['io_write_stats'] = blkio_write
+    #updated code till here
     run_vars['actual_runtime'] = run_time
     global cpu_efficiency_score
     run_vars['cpu_efficiency_score'] = cpu_efficiency_score
@@ -414,6 +425,17 @@ def calc_benchmark_stats():
     run_vars['cpu_usage'] = stack[0]['cpu_stats']['cpu_usage']['total_usage']
     run_vars['actual_runtime'] = run_time
     run_vars['timeout']=timeout*1000
+    #adding new lines for io_usage
+    blkio_read=0
+    blkio_write=0
+    for entry in stack[0]['blkio_stats']['io_service_bytes_recursive']:
+        if entry['op'] == 'Read':
+            blkio_read += entry['value']
+        elif entry['op'] == 'Write':
+            blkio_write += entry['value']
+    run_vars['io_read_stats'] = blkio_read
+    run_vars['io_write_stats'] = blkio_write
+    #updated code till here
     print(user_id)
     benchmark = {user_id: run_vars}
     append_data_to_file(benchmark, "benchmark_results.txt")

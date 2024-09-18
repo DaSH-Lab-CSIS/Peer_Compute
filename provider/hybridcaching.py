@@ -103,7 +103,7 @@ class HybridImageManager:
         self._evict_disk_cache(image_id, image)
 
         # Save the image to a tar file
-        tar_path = os.path.join(self.cache_dir, f"{image_id.replace(':', '_colon_').replace('/', '_slash_')}.tar")
+        tar_path = os.path.join(self.cache_dir, f"{image_id.replace(':', '_colon_').replace('/', '_slash_').replace('.', 'dot')}.tar")
         print(f"[store_in_disk_cache] Saving image to tar file: {tar_path}")
         with open(tar_path, 'wb') as f:
             for chunk in image.save():
