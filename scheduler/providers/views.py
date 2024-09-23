@@ -1,3 +1,4 @@
+from django.db import transaction
 from django.shortcuts import render,get_object_or_404, redirect
 import pika 
 import json
@@ -435,83 +436,75 @@ def finish_job(data):
 
 def queue_jobs(service):
     requested_services.append(service)
-    
 
-def find_provider(service):
 
-    ready_providers = User.objects.filter(
-        active = True , ready = True , 
+def get_ready_providers():
+    return User.objects.filter(
+        active=True,
+        is_provider=True,
+        ready=True,
         # last_ready_signal__gte = datetime.now(tz=timezone(TIME_ZONE)) - timedelta(minutes=10000)
     )
 
+
+def find_provider(service):
+    # get ready providers
+    ready_providers = get_ready_providers()
     print("Ready Providers: \n", ready_providers)
-    
-    if len(ready_providers) == 0: 
-        return
 
-    max_provider = None
-    max_invocations = -1
-    provider_choices= []
+    if not ready_providers.exists():
+        print("No ready providers available.")
+        return None
 
-    for provider_to_search in ready_providers:
-        with open(file_path, mode='r') as csv_file:
-            csv_reader = csv.DictReader(csv_file)
-            for row in csv_reader:
-                provider = row['Provider']
-                function = int(row['Function'])
-                invocations = int(row['Invocations'])
+    # filter providers based on service requirements
+    suitable_providers = []
+    for provider in ready_providers:
+        if provider.satisfies(service.requirements):
+            suitable_providers.append(provider)
 
-                # Check if the row matches the criteria
-                if provider == str(provider_to_search.user_id) and function == (service.id - 7):
-                    provider_choices.append({'invocations': invocations, 'provider': provider_to_search.id})
-                    # max_provider = provider
-                    # max_invocations = invocations
+    if not suitable_providers:
+        print(" No suitable providers found for this service ")
+        return None
 
-    # sort
-    if (len(provider_choices)< 1) :
-        max_provider = random.choice(ready_providers)
+    # fetch predicted runtimes
+    providers_with_pred_rt = []
+    for provider in suitable_providers:
+        predicted_runtime = provider.predicted_runtimes.get(str(service.id))
+        if predicted_runtime is not None:
+            current_delay = provider.calculate_current_delay()
+            providers_with_pred_rt.append((provider, predicted_runtime, current_delay))
+        else:
+            # Chose not to handle setting prediction runtimes while finding providers
+            print(f"Provider {provider.user_id} does not have a predicted runtime for Service {service.id}. Skipping.")
+            continue
+    if not providers_with_pred_rt:
+        print("No providers have predicted runtimes for the service.")
+        return None
 
-    elif (len(provider_choices)==1):
-        max_provider = get_object_or_404(User, pk=provider_choices[0]['provider'])
-    else:
-        provider_choices.sort(key=lambda x: x['invocations'], reverse=True)
-        max_provider = get_object_or_404(User, pk = random.choice(provider_choices[0:2])['provider'])
+    # Sort providers based on delay (active_t + predicted_runtimes) and reputation scores
+    sorted_providers = sorted(
+        providers_with_pred_rt,
+        key=lambda x: (x[2], x[1], -x[0].reputation_score)
+        # Lower delay -> lower predicted runtime -> higher reputation
+    )
 
-    print("Scheduler is chosing this provider -> ", max_provider)
-    updated_data = []
-    flag = False
-    if(max_provider != None):
-        # Read the CSV file and update the values
-        with open(file_path, mode='r') as csv_file:
-            csv_reader = csv.DictReader(csv_file)
-            for row in csv_reader:
-                provider = row['Provider']
-                function = int(row['Function'])
-                invocations = int(row['Invocations'])
+    top_n = 2
+    top_providers = sorted_providers[:top_n] if len(sorted_providers) >= top_n else sorted_providers
+    max_provider, selected_pred_runtime = random.choice(top_providers)
 
-                # Check if the row matches the criteria for update
-                if provider == str(max_provider.user_id) and function == (service.id - 7):
-                    flag = True
-                    row['Invocations'] = str(int(invocations)+1)
+    with transaction.atomic():
+        provider = User.objects.select_for_update().get(pk=max_provider.pk)
+        provider.add_delay(selected_pred_runtime)
+        service_key = str(service.id)
+        current_invocations = provider.function_invocations.get(service_key, 0)
+        provider.function_invocations[service_key] = current_invocations + 1
 
-                updated_data.append(row)
+        provider.save()
 
-    if(flag == False):
-        updated_data.append({'Provider': max_provider.user_id, 'Function': (service.id - 7), 'Invocations': 1})
-
-    print(updated_data)
-
-    with open(file_path, mode='w', newline='') as csv_file:
-        fieldnames = ['Provider', 'Function', 'Invocations']
-        csv_writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
-
-        # Write the header
-        csv_writer.writeheader()
-
-        # Write the updated rows
-        csv_writer.writerows(updated_data)
+    print("Scheduler is choosing this provider -> ", max_provider)
 
     return max_provider
+
 
 # MAIN CODE:
 
