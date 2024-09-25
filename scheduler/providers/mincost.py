@@ -6,11 +6,11 @@ import time
 # Photo explanation : https://calcworkshop.com/wp-content/uploads/linear-programming-example.png
 
 
-
 # takes 4 inputs: 1. list of providers
 #                 2. list of jobs
 #                 3. cost_matrix; a dict of dicts in form Provider : {Job : cost}
-#                 4. delay dict; a dict of delay in EACH provider. 
+#                 4. delay dict; a dict of delay in EACH provider.
+
 
 # returns 2 values: 1. a dict with keys as jobs and values as providers for the min cost combination
 #                   2. total cost (including delays) of the min cost combination
@@ -19,11 +19,13 @@ def minimize_total_cost(workers, jobs, cost_matrix, delay):
     # Create a binary variable for each combination of worker and job
     # this denotes if that combination of worker and job is chosen (1) or not (0) p.s. 'chosen' below is just a label.
     # for each job there is one worker who has value(x[worker,job]==1 and rest all workers for that job have x == 0)
-    x = pulp.LpVariable.dicts('chosen', ((worker, job) for worker in workers for job in jobs), cat='Binary')
-    
+    x = pulp.LpVariable.dicts(
+        "chosen", ((worker, job) for worker in workers for job in jobs), cat="Binary"
+    )
+
     # pulp.LpMinimize will minimise the objective function
     prob = pulp.LpProblem("Minimize_Total_Cost", pulp.LpMinimize)
-    
+
     # += opertator is to add constraints or objective functions to the problem
     # Objective function: total cost of runtimes + delay once per worker
     # Objective function is the expression to minimise/maximise
@@ -31,22 +33,31 @@ def minimize_total_cost(workers, jobs, cost_matrix, delay):
     # the if statement are so that 1 taken because if a worker has taken more than 1 jobs it the delay should still
     # be multiplied with 1 and not the number of jobs.
 
-    prob += pulp.lpSum(x[worker, job] * cost_matrix[worker][job] for worker in workers for job in jobs) + pulp.lpSum(delay[worker] * (pulp.lpSum(x[(worker, job)] for job in jobs) if pulp.lpSum(x[(worker, job)] for job in jobs) <= 1 else 1) for worker in workers)
+    prob += pulp.lpSum(
+        x[worker, job] * cost_matrix[worker][job] for worker in workers for job in jobs
+    ) + pulp.lpSum(
+        delay[worker]
+        * (
+            pulp.lpSum(x[(worker, job)] for job in jobs)
+            if pulp.lpSum(x[(worker, job)] for job in jobs) <= 1
+            else 1
+        )
+        for worker in workers
+    )
 
-    
     # Constraints: each job must be assigned to exactly one worker
     # Constraints are inequalities or equalities instead of an expression
     for job in jobs:
         prob += pulp.lpSum(x[worker, job] for worker in workers) == 1
-    
+
     prob.solve()
     print("Time taken for Min Cost Algo: " + str(prob.solutionTime))
-    
+
     # Check if the optimization was successful
-    if pulp.LpStatus[prob.status] != 'Optimal':
+    if pulp.LpStatus[prob.status] != "Optimal":
         print("optimisation not succesful :(")
         return None, None
-    
+
     # Store the min cost combination in a dict
     assignment = {}
     for worker in workers:
@@ -56,9 +67,13 @@ def minimize_total_cost(workers, jobs, cost_matrix, delay):
 
     # Calculate the total cost considering only recruited workers
     total_cost = sum(cost_matrix[assignment[job]][job] for job in jobs)
-    total_cost += sum(delay[worker] for worker in workers if any(pulp.value(x[worker, job]) == 1 for job in jobs))
-    
-    print("Time taken in wallclock sec by lp algo: ", time.time()-l)
+    total_cost += sum(
+        delay[worker]
+        for worker in workers
+        if any(pulp.value(x[worker, job]) == 1 for job in jobs)
+    )
+
+    print("Time taken in wallclock sec by lp algo: ", time.time() - l)
     return assignment, total_cost
 
 
@@ -85,3 +100,17 @@ def minimize_total_cost(workers, jobs, cost_matrix, delay):
 # print("Job Assignments:")
 # print(assignment)
 # print("Total Cost (including delay):", total_cost)
+
+# # Sample output:
+# {
+#     "Job1": "Worker1",
+#     "Job2": "Worker1",
+#     "Job3": "Worker1",
+#     "Job4": "Worker1",
+#     "Job5": "Worker1",
+#     "Job6": "Worker1",
+#     "Job7": "Worker1",
+#     "Job8": "Worker1",
+#     "Job9": "Worker1",
+#     "Job10": "Worker1",
+# }
