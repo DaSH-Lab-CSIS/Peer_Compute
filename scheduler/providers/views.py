@@ -1,3 +1,6 @@
+from collections import defaultdict
+from collections import defaultdict
+from django.apps import apps
 from django.db import transaction
 from django.shortcuts import render,get_object_or_404, redirect
 import pika 
@@ -456,27 +459,47 @@ def find_provider(service):
         print("No ready providers available.")
         return None
 
-    # filter providers based on service requirements
-    suitable_providers = []
-    for provider in ready_providers:
-        if provider.satisfies(service.requirements):
-            suitable_providers.append(provider)
+    Job = apps.get_model('providers', 'Job')
+    active_jobs = Job.objects.filter(provider__in=ready_providers, finished=False)
 
-    if not suitable_providers:
-        print(" No suitable providers found for this service ")
-        return None
+    provider_job_map = defaultdict(list)
+    for job in active_jobs:
+        provider_job_map[job.id].append(job)
+
+    suitable_providers_with_jobs = []
+    for provider in ready_providers:
+        jobs = provider_job_map.get(provider.id, [])
+        if jobs:
+            for job in jobs:
+                if job.satisfies(service.requirements):
+                    suitable_providers_with_jobs.append(provider, job)
+        else:
+            continue
+
+    if not suitable_providers_with_jobs:
+        print("No suitable providers found matching the requirements fort this service")
 
     # fetch predicted runtimes
     providers_with_pred_rt = []
-    for provider in suitable_providers:
-        predicted_runtime = provider.predicted_runtimes.get(str(service.id))
-        if predicted_runtime is not None:
-            current_delay = provider.calculate_current_delay()
-            providers_with_pred_rt.append((provider, predicted_runtime, current_delay))
-        else:
-            # Chose not to handle setting prediction runtimes while finding providers
-            print(f"Provider {provider.user_id} does not have a predicted runtime for Service {service.id}. Skipping.")
+    for provider, job in suitable_providers_with_jobs:
+        try:
+            pred_rt_matrix = job.get_predicted_runtimes()
+            predicted_runtime = pred_rt_matrix.get(service.name)
+        except Exception as e:
+            print(f"error getting predicted runtimes for provider: {provider.id} :\n\t{e}")
             continue
+
+        if predicted_runtime is not None:
+            try:
+                current_delay = job.calculate_current_delay()
+            except Exception as e:
+                print(f"error calculating current delay for Job: {job.id}:\n\t{e}")
+                current_delay = 0
+            providers_with_pred_rt.append((provider, job, predicted_runtime, current_delay))
+        else:
+            print(f"provider - {provider.id} does not hava a predicted runtime for service - {service.id}")
+            continue
+
     if not providers_with_pred_rt:
         print("No providers have predicted runtimes for the service.")
         return None
@@ -484,22 +507,26 @@ def find_provider(service):
     # Sort providers based on delay (active_t + predicted_runtimes) and reputation scores
     sorted_providers = sorted(
         providers_with_pred_rt,
-        key=lambda x: (x[2], x[1], -x[0].reputation_score)
+        key=lambda x: (x[3], x[2], -x[0].reputation_score)
         # Lower delay -> lower predicted runtime -> higher reputation
     )
 
     top_n = 2
     top_providers = sorted_providers[:top_n] if len(sorted_providers) >= top_n else sorted_providers
-    max_provider, selected_pred_runtime = random.choice(top_providers)
+    max_provider, selected_job, selected_pred_runtime, current_delay = random.choice(top_providers)
 
     with transaction.atomic():
-        provider = User.objects.select_for_update().get(pk=max_provider.pk)
-        provider.add_delay(selected_pred_runtime)
-        service_key = str(service.id)
-        current_invocations = provider.function_invocations.get(service_key, 0)
-        provider.function_invocations[service_key] = current_invocations + 1
-
-        provider.save()
+        try:
+            job_locked = Job.objects.select_for_update().get(pk=selected_job.pk)
+            job_locked.add_delay(selected_pred_runtime)
+            service_key = str(service.id)
+            current_invocations = job_locked.provider.function_invocations.get(service_key, 0)
+            job_locked.provider.function_invocations[service_key] = current_invocations + 1
+            job_locked.provider.save()
+            job_locked.save()
+        except Exception as e:
+            print(f"error adding job: {selected_job.pk} - {e}")
+            return None
 
     print("Scheduler is choosing this provider -> ", max_provider)
 
