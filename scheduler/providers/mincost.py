@@ -85,3 +85,18 @@ def minimize_total_cost(workers, jobs, cost_matrix, delay):
 # print("Job Assignments:")
 # print(assignment)
 # print("Total Cost (including delay):", total_cost)
+
+
+# # Sample output:
+# {
+#     "Job1": "Worker1",
+#     "Job2": "Worker1",
+#     "Job3": "Worker1",
+#     "Job4": "Worker1",
+#     "Job5": "Worker1",
+#     "Job6": "Worker1",
+#     "Job7": "Worker1",
+#     "Job8": "Worker1",
+#     "Job9": "Worker1",
+#     "Job10": "Worker1",
+# }
