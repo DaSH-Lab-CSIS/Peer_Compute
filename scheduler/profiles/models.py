@@ -21,7 +21,7 @@ class User(models.Model):
     memory_efficiency_score = models.DecimalField(null=True, max_digits=30, decimal_places=15)
     # gpu_available = models.BooleanField(default=False)
 
-    function_invocations = models.JSONField(default=dict, blank=True)
+    function_invocations = models.JSONField(default=dict, blank=True)  # { function_id [str] : invocation_count [int] }
 
     """
     resolves a case that may occur even with other checks:
