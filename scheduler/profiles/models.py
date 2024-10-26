@@ -4,6 +4,8 @@ import pytz
 from datetime import datetime, timedelta
 import uuid
 from scheduler.settings import TIME_ZONE
+# from developers.models import Services
+
 
 class User(models.Model):
     user_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
@@ -17,6 +19,23 @@ class User(models.Model):
     cpu = models.IntegerField(default=0)
     cpu_efficiency_score = models.DecimalField(null=True, max_digits=30, decimal_places=15)
     memory_efficiency_score = models.DecimalField(null=True, max_digits=30, decimal_places=15)
+    # gpu_available = models.BooleanField(default=False)
+
+    function_invocations = models.JSONField(default=dict, blank=True)  # { function_id [str] : invocation_count [int] }
+
+    """
+    resolves a case that may occur even with other checks:
+     -> non - provider has function_invocations populated
+    """
+
     class Meta:
-        # Add any Meta options you need for the User model
-        pass
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(is_provider=True) | models.Q(function_invocations__len=0),
+                name="function_invocation_only_if_provider"
+            )
+        ]
+
+    def __str__(self):
+        return f"User : {self.user_id}\n  \tprovider : {self.is_provider} \tdeveloper : {self.is_developer}"
+
