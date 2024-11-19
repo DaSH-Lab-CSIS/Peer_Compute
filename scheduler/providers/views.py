@@ -1,5 +1,5 @@
 from collections import defaultdict
-from collections import defaultdict
+import pulp
 from django.apps import apps
 from django.db import transaction
 from django.shortcuts import render,get_object_or_404, redirect
@@ -105,7 +105,7 @@ def on_message(mqtt_client, userdata, msg):
                 provider = User.objects.get(user_id=user_id)
                 scoreset = {'cpu':float(provider.cpu_efficiency_score), 'memory':float(provider.memory_efficiency_score)}
                 mqtt_client.publish(topic=user_id, payload="EfficiencyScoreSet:"+json.dumps(scoreset),qos=2)
-            
+
 
 def on_subscribe(mqtt_client, userdata, mid, qos, properties=None):
     print("on_subscribe userdata is "+ str(mqtt_client))
@@ -186,13 +186,12 @@ def publish_to_topic_mqtt(runMultipleInvocations, numberOfInvocations, isChained
     return
 
 
-
 # def make_rmq_user(user):
 #     username = 'username' + str(user.user_id)
 #     password = 'username' + str(user.user_id) + '_mqtt'
 #     api = AdminAPI(url='http://' + RABBITMQ_HOST + ':' + RABBITMQ_MANAGEMENT_PORT, auth=(RABBITMQ_USER, RABBITMQ_PASS))
 
-#     #create user and set permissions 
+#     #create user and set permissions
 #     api.create_user(username, password)
 #     permission = "^(" + username + ".*|amq.default)$"
 #     api.create_user_permission(username, '/', permission, permission, permission)
@@ -227,7 +226,6 @@ def publish_to_topic_mqtt(runMultipleInvocations, numberOfInvocations, isChained
 #         return redirect('profiles:change_info')
 
 
-
 # # @login_required
 # def stop_providing(request):
 #     """
@@ -238,7 +236,7 @@ def publish_to_topic_mqtt(runMultipleInvocations, numberOfInvocations, isChained
 #         provider.ready = False
 #         provider.save()
 #         publish_to_topic
-#(request, 'Stop', request.user.username)
+# (request, 'Stop', request.user.username)
 #         return redirect('providers_app:index')
 #     else:
 #         return redirect('providers_app:index')
@@ -449,89 +447,132 @@ def get_ready_providers():
         # last_ready_signal__gte = datetime.now(tz=timezone(TIME_ZONE)) - timedelta(minutes=10000)
     )
 
+# FIX communication with the provider for getting predicted runtimes wil have to be implemented ASAP
+"""
+Args:
+    provider: Provider object
+    services: List of compatible services objects
+Returns:
+    A dictionary mapping each service to its predicted runtime. ( for a specific provider )
+"""
+def get_predicted_runtimes(provider, services):
+    # NOTE this is used to build the cost matrix
+    # Implement the logic to call the provider and get the predicted runtime
+    try:
+        # Prepare the request payload
+        service_ids = [service.id for service in services]
+        payload = {
+            "provider_id": provider.user_id,
+            "service_ids": service_ids
+        }
 
-def find_provider(service):
-    # get ready providers
-    ready_providers = get_ready_providers()
-    print("Ready Providers: \n", ready_providers)
+        # Make the request over the broker
 
-    if not ready_providers.exists():
+        # Parse the response
+        # return the predicted runtimes dict
+        # return {service.id: runtimes.get(service.id, float('inf')) for service in services}
+
+    except Exception as e:
+        print(f"Error fetching runtimes from provider {provider.user_id}: {e}")
+        return {service.id: float('inf') for service in services}  # Assign high cost on failure
+
+def build_cost_matrix(providers, services):
+    cost_matrix = {}
+
+    for provider in providers:
+        # Filter services compatible with the provider
+
+        # NOTE This is only for testing. Actual implementation would require a service to have requirements 
+        compatible_services = [service for service in services]
+
+        # compatible_services = [service for service in services if provider.satisfies(service.requirements)]
+
+        # Fetch predicted runtimes in a batch
+        predicted_runtimes = get_predicted_runtimes(provider, compatible_services)
+
+        # Populate the cost matrix
+        cost_matrix[provider] = {
+            service: predicted_runtimes.get(service.id, float('inf')) for service in services
+        }
+
+    return cost_matrix
+
+def get_suitable_providers(services):
+    suitable_providers = set()
+    all_ready_providers = get_ready_providers()
+    for service in services:
+        for provider in all_ready_providers:
+            if provider.satisfies(service.requirements):
+                suitable_providers.add(provider)
+    return list(suitable_providers)
+
+def build_delay_dict(providers):
+    delay = {}
+    for provider in providers:
+        delay[provider.user_id] = provider.calculate_current_delay()
+    return delay
+
+def process_assignments(assignment, cost_matrix):
+    with transaction.atomic():
+        for service, provider in assignment.items():
+            # Lock the provider record
+            provider_locked = User.objects.select_for_update().get(pk=provider.pk)
+
+            # Create a Job instance
+            job = Job.objects.create(
+                provider=provider_locked,
+                service=service,
+                developer=service.developer,
+                # start_time=timezone.now(),
+                finished=False,
+                # Additional fields as required
+            )
+            job.save()
+
+            # Update provider's delay
+            predicted_runtime = cost_matrix[provider][service]
+
+            #TODO will have to check if provider_locked.delay.predicted_runtimes array is full ( cache is full ) for cache implementation later on.
+            provider_locked.add_delay(predicted_runtime)
+
+            # Update function invocations
+            service_key = str(service.id)
+            current_invocations = provider_locked.function_invocations.get(service_key, 0)
+            provider_locked.function_invocations[service_key] = current_invocations + 1
+
+            # Save provider
+            provider_locked.save()
+
+
+def find_providers(services):
+
+    # 1. Get Suitable Providers
+    providers = get_suitable_providers(services)
+
+    if not providers:
         print("No ready providers available.")
         return None
 
-    Job = apps.get_model('providers', 'Job')
-    active_jobs = Job.objects.filter(provider__in=ready_providers, finished=False)
+    # NOTE - cache will be incorporated in the future
 
-    provider_job_map = defaultdict(list)
-    for job in active_jobs:
-        provider_job_map[job.id].append(job)
+    # 2. Build Cost Matrix
+    cost_matrix = build_cost_matrix(providers, services)
 
-    suitable_providers_with_jobs = []
-    for provider in ready_providers:
-        jobs = provider_job_map.get(provider.id, [])
-        if jobs:
-            for job in jobs:
-                if job.satisfies(service.requirements):
-                    suitable_providers_with_jobs.append(provider, job)
-        else:
-            continue
+    # 3. Build Delay Dict
+    delay = build_delay_dict(providers)
+    
+    # 4. Get min cost provider by calling the ILP solver
+    assignment, total_cost = minimize_total_cost(providers, services, cost_matrix, delay)
 
-    if not suitable_providers_with_jobs:
-        print("No suitable providers found matching the requirements fort this service")
-
-    # fetch predicted runtimes
-    providers_with_pred_rt = []
-    for provider, job in suitable_providers_with_jobs:
-        try:
-            pred_rt_matrix = job.get_predicted_runtimes()
-            predicted_runtime = pred_rt_matrix.get(service.name)
-        except Exception as e:
-            print(f"error getting predicted runtimes for provider: {provider.id} :\n\t{e}")
-            continue
-
-        if predicted_runtime is not None:
-            try:
-                current_delay = job.calculate_current_delay()
-            except Exception as e:
-                print(f"error calculating current delay for Job: {job.id}:\n\t{e}")
-                current_delay = 0
-            providers_with_pred_rt.append((provider, job, predicted_runtime, current_delay))
-        else:
-            print(f"provider - {provider.id} does not hava a predicted runtime for service - {service.id}")
-            continue
-
-    if not providers_with_pred_rt:
-        print("No providers have predicted runtimes for the service.")
+    if assignment is None:
+        print("No optimal solution found")
         return None
 
-    # Sort providers based on delay (active_t + predicted_runtimes) and reputation scores
-    sorted_providers = sorted(
-        providers_with_pred_rt,
-        key=lambda x: (x[3], x[2], -x[0].reputation_score)
-        # Lower delay -> lower predicted runtime -> higher reputation
-    )
+    # 5. Process assignments - Invoke providers and update job status
+    process_assignments(assignment, cost_matrix)
 
-    top_n = 2
-    top_providers = sorted_providers[:top_n] if len(sorted_providers) >= top_n else sorted_providers
-    max_provider, selected_job, selected_pred_runtime, current_delay = random.choice(top_providers)
-
-    with transaction.atomic():
-        try:
-            job_locked = Job.objects.select_for_update().get(pk=selected_job.pk)
-            job_locked.add_delay(selected_pred_runtime)
-            service_key = str(service.id)
-            current_invocations = job_locked.provider.function_invocations.get(service_key, 0)
-            job_locked.provider.function_invocations[service_key] = current_invocations + 1
-            job_locked.provider.save()
-            job_locked.save()
-        except Exception as e:
-            print(f"error adding job: {selected_job.pk} - {e}")
-            return None
-
-    print("Scheduler is choosing this provider -> ", max_provider)
-
-    return max_provider
-
+    #NOTE  Assignment here is a dict mapping service to its max_provider. Wherever find_provider(service) was being called in the scheduler, it will have to be changed to send batched requests and call find_providers(services)
+    return assignment
 
 # MAIN CODE:
 
