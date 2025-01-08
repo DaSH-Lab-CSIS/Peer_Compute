@@ -20,6 +20,7 @@ import pickle
 import matplotlib.pyplot as plt
 import numpy as np
 from hybridcaching import HybridImageManager
+import os
 
 user_id = sys.argv[1]
 controller_ip = "10.8.1.48" #change to .46
@@ -30,6 +31,13 @@ BROKER_ID="broker.hivemq.com"
 channelName = "mychannel"
 chaincodeName = "monitoring"
 token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE2OTQxMjk2MzcsInVzZXJuYW1lIjoiY29udHJvbGxlciIsIm9yZ05hbWUiOiJPcmcxIiwiaWF0IjoxNjk0MDkzNjM3fQ.DNJZ4kB11PbDB4UO2HaMjwlqxgTbJ8b7JK3WsRzaePY"
+
+
+# Get the current process ID
+pid = os.getpid()
+
+# Print the PID
+print(f"PID: {pid}")
 
 client = docker.from_env()
 

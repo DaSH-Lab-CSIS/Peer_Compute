@@ -1,0 +1,6 @@
+{
+    "developer": 13,
+    "name": "504.dna-visualisation",
+    "docker_url": "spcleth/serverless-benchmarks:function.openwhisk.504.dna-visualisation.python-3.11",
+    "is_active": true
+}

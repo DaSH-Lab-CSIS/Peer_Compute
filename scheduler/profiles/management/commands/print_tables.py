@@ -23,20 +23,18 @@ class Command(BaseCommand):
             print("---")
             return
 
-        # Prepare data for tabulation
         provider_data = []
         for provider in providers:
-            # Format function_invocations as a sub-table
-            if provider.function_invocations:
-                # Create a mini-table string for function invocations
+            function_invocations = getattr(provider,'function_invocations', {})
+            if function_invocations:
                 func_invocations_table = tabulate(
                     [["Function ID", "Invocation Count"]] +
-                    [[func_id, count] for func_id, count in provider.function_invocations.items()],
-                    headers=[],  # Headers are included in the first row
+                    [[func_id, count] for func_id, count in function_invocations.items()],
+                    headers=[],
                     tablefmt="simple",
                     stralign="left"
                 )
-                # Indent the sub-table for better readability
+
                 func_invocations = "\n" + "\n".join(["    " + line for line in func_invocations_table.split("\n")])
             else:
                 func_invocations = "    No invocations"
@@ -66,7 +64,6 @@ class Command(BaseCommand):
             print("---")
             return
 
-        # Prepare data for tabulation
         developer_data = []
         for developer in developers:
             developer_data.append([
@@ -74,7 +71,7 @@ class Command(BaseCommand):
                 developer.active
             ])
 
-        # Define table headers
+
         headers = ["Developer ID", "Active"]
 
         print("\nDevelopers:")
@@ -99,6 +96,7 @@ class Command(BaseCommand):
                 service.developer.user_id if service.developer else "None",
                 service.provider.user_id if service.provider else "None",
                 service.active,
+
                 service.requirements
             ])
 
