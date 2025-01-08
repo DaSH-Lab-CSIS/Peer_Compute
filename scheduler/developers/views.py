@@ -21,6 +21,7 @@ import threading
 def index(request):
     return render(request, 'developers_app/index.html')
 
+
 # @login_required()
 @csrf_exempt
 def new_service(request):
@@ -31,13 +32,14 @@ def new_service(request):
         data = json.loads(request.body) 
         service = Services()
         try:
-            service.save(
-                developer = data.get('developer'), 
-                provider = get_default_provider(), 
-                name = data.get('name'),
-                docker_container = data.get('docker_url'),
-                active = data.get('is_active',True),
-            )
+            developer_id = data.get('developer')
+            developer_instance = User.objects.get(id = developer_id)
+            service.developer = developer_instance
+            service.provider = get_default_provider()
+            service.name = data.get('name')
+            service.docker_container = data.get('docker_url')
+            service.active = data.get('is_active', True)
+            service.save()
             messages.success(request, "New service created")
         except IntegrityError:
                 messages.error(request, "You already have a service with this name")
@@ -47,7 +49,7 @@ def new_service(request):
 
 # @login_required()
 def get_default_provider():
-    provider = User.objects.get(user_id = 3)
+    provider = User.objects.get(id = 16)
     return provider
 
 def user_services(request):
@@ -92,6 +94,11 @@ def delete_service(request, service_id):
 
 # @csrf_exempt
 # def run_service(request, service_id):
+#     print("in run service")
+#     student_list = User.objects.all()
+#     print(student_list.count())
+#     for student in student_list:
+#         print(student.user_id)
 #     response = ''
 #     try:
 #         service = Services.objects.get(id=(service_id+7))
@@ -100,41 +107,24 @@ def delete_service(request, service_id):
 #             data = json.loads(request.body)
 #             if (data['chained'] == True) :
 #                 for i in range(data['numberOfInvocations']):
-#                     response, provider, providing_time, job_id = request_handler(data, service, temp_time)
-#                     data['input'] = int(response['Result'])
+#                     request_handler(data, service, temp_time)
+                    
 #             else:
 #                 for i in range(data['numberOfInvocations']):
 #                 #     print("Invocation ", str(i), ": \n")
-#                     response, provider, providing_time, job_id = request_handler(data, service, temp_time)
-#             if response is None:
-#                 messages.error(request, "There are no available providers in the network")
-#                 return redirect('index')
-#             else:
-#                 messages.success(request, "Successfully sent a request to '{}' service of '{}'".format(service.name,
-#                                                                                                    service.developer))
+#                     request_handler(data, service, temp_time)
+            
 #         else:
 #             messages.error(request, "This service is disabled")
 
 #     except ObjectDoesNotExist:
 #         messages.error(request, "Incorrect service id")
+#         print("incorrect service id")
 #     # print("Response", response)
-#     return JsonResponse(
-#                   {'result': response['Result'],
-#                    'providing_time': providing_time,
-#                    'pull_time': response['pull_time'],
-#                    'run_time': response['run_time'],
-#                    'total_time': response['total_time'],
-#                    'provider': provider, 
-#                    'job_id': job_id})
-
+#     return JsonResponse({'response': 'There is no return or response for now.'})
 
 @csrf_exempt
 def run_service(request, service_id):
-    print("in run service")
-    student_list = User.objects.all()
-    print(student_list.count())
-    for student in student_list:
-        print(student.user_id)
     response = ''
     try:
         service = Services.objects.get(id=(service_id+7))
@@ -143,21 +133,32 @@ def run_service(request, service_id):
             data = json.loads(request.body)
             if (data['chained'] == True) :
                 for i in range(data['numberOfInvocations']):
-                    request_handler(data, service, temp_time)
-                    
+                    response, provider, providing_time, job_id = request_handler(data, service, temp_time)
+                    data['input'] = int(response['Result'])
             else:
                 for i in range(data['numberOfInvocations']):
                 #     print("Invocation ", str(i), ": \n")
-                    request_handler(data, service, temp_time)
-            
+                    response, provider, providing_time, job_id = request_handler(data, service, temp_time)
+            if response is None:
+                messages.error(request, "There are no available providers in the network")
+                return redirect('index')
+            else:
+                messages.success(request, "Successfully sent a request to '{}' service of '{}'".format(service.name,
+                                                                                                   service.developer))
         else:
             messages.error(request, "This service is disabled")
 
     except ObjectDoesNotExist:
         messages.error(request, "Incorrect service id")
-        print("incorrect service id")
     # print("Response", response)
-    return JsonResponse({'response': 'There is no return or response for now.'})
+    return JsonResponse(
+                  {'result': response['Result'],
+                   'providing_time': providing_time,
+                   'pull_time': response['pull_time'],
+                   'run_time': response['run_time'],
+                   'total_time': response['total_time'],
+                   'provider': provider, 
+                   'job_id': job_id})
 
 def run_service_async(request, service_id):
     response = ''
