@@ -34,6 +34,7 @@ class Command(BaseCommand):
                     tablefmt="simple",
                     stralign="left"
                 )
+
                 func_invocations = "\n" + "\n".join(["    " + line for line in func_invocations_table.split("\n")])
             else:
                 func_invocations = "    No invocations"
@@ -47,8 +48,10 @@ class Command(BaseCommand):
                 func_invocations
             ])
 
+        # Define table headers
         headers = ["Provider ID", "Active", "Ready", "RAM", "CPU", "Function Invocations"]
 
+        # Define table format with appropriate column alignment
         print("\nProviders:")
         print(tabulate(provider_data, headers=headers, tablefmt="fancy_grid", stralign="left", showindex=False))
         print("---")
@@ -68,6 +71,7 @@ class Command(BaseCommand):
                 developer.active
             ])
 
+
         headers = ["Developer ID", "Active"]
 
         print("\nDevelopers:")
@@ -82,9 +86,9 @@ class Command(BaseCommand):
             print("---")
             return
 
+        # Prepare data for tabulation
         service_data = []
         for service in services:
-            requirements = getattr(services, 'requirements',{})
             service_data.append([
                 service.id,
                 service.name,
@@ -92,10 +96,12 @@ class Command(BaseCommand):
                 service.developer.user_id if service.developer else "None",
                 service.provider.user_id if service.provider else "None",
                 service.active,
-                requirements
+
+                service.requirements
             ])
 
-        headers = ["Service ID","Service Name", "Service URL", "Developer ID", "Provider ID", "Active", "Requirements"]
+        # Define table headers
+        headers = ["Service ID", "Service Name","Service URL", "Developer ID", "Provider ID", "Active", "Requirements"]
 
         print("\nServices:")
         print(tabulate(service_data, headers=headers, tablefmt="fancy_grid", stralign="left", showindex=False))
@@ -109,6 +115,7 @@ class Command(BaseCommand):
             print("---")
             return
 
+        # Prepare data for tabulation
         job_data = []
         for job in jobs:
             job_data.append([
@@ -120,6 +127,7 @@ class Command(BaseCommand):
                 job.finished
             ])
 
+        # Define table headers
         headers = ["Job ID", "Provider ID", "Service Name", "Developer ID", "Start Time", "Finished"]
 
         print("\nJobs:")
