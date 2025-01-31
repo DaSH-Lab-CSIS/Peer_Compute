@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 import uuid
 from scheduler.settings import TIME_ZONE
 # from developers.models import Services
+from django.core.serializers.json import DjangoJSONEncoder
+import json
 
 
 class User(models.Model):
@@ -23,12 +25,19 @@ class User(models.Model):
     # network_bandwidth = models.DecimalField(null=True, max_digits=30, decimal_places=15)
     # gpu_available = models.BooleanField(default=False)
 
-    # NOTE Provider - Only fields 
-    function_invocations = models.JSONField(default=dict, blank=True)  # { function_id [str] : invocation_count [int] }
-    reputation_score = models.IntegerField(default=0)
-    delay = models.JSONField(default=dict, blank=True)  # { "active_t" : [int], "predicted_runtimes": [ [int],[int],...] }
-    time_of_last_startjob = models.DateTimeField(null=True, blank=True)
-    inflight_jobs = models.JSONField(default=dict, blank=True)
+    # NOTE Provider - Only fields
+    function_invocations = models.JSONField(default=dict, blank=True, null=True)  # { function_id [str] : invocation_count [int] }
+    reputation_score = models.IntegerField(default=0, null=True) # int
+    delay = models.JSONField(default=dict, null=True)
+    """{ 
+            "time_of_last_startjob" : [datetime], 
+            "inflight_jobs": { 
+                "job_id" : estimated_runtime [int]
+            }
+        }
+    """
+    # time_of_last_startjob = models.DateTimeField(null=True, blank=True)
+    # inflight_jobs = models.JSONField(default=dict, blank=True, null=True)
 
     """
     resolves a case that may occur even with other checks: -> non - provider has provider only fields populated
@@ -45,30 +54,21 @@ class User(models.Model):
                 check=models.Q(is_provider=True) | models.Q(delay={}),
                 name="delay_only_if_provider",
             ),
-            models.CheckConstraint(
-                check=models.Q(is_provider=True)
-                | models.Q(time_of_last_startjob__isnull=True),
-                name="time_of_last_startjob_only_if_provider",
-            ),
-            models.CheckConstraint(
-                check=models.Q(is_provider=True) | models.Q(inflight_jobs__len=0),
-                name="inflight_jobs_only_if_provider",
-            ),
         ]
 
-    def add_inflight_job(self, service_id):
+    def add_inflight_job(self, job_id, estimated_runtime):
         # Add a service ID to the inflight jobs at the end
-        if service_id not in self.inflight_jobs:
-            self.inflight_jobs.append(service_id)
+        if job_id not in self.inflight_jobs:
+            self.inflight_jobs.append(job_id)
             self.save()
 
     # if no args are passed, it will remove the first element from the inflight jobs array
-    def remove_inflight_job(self, service_id=None):
+    def remove_inflight_job(self, job_id=None):
         # Remove a service ID from the inflight jobs.
-        if service_id is not None:
+        if job_id is not None:
             if self.inflight_jobs:
-                if service_id in self.inflight_jobs:
-                    self.inflight_jobs.remove(service_id)
+                if job_id in self.inflight_jobs:
+                    self.inflight_jobs.remove(job_id)
                     self.save()
         else:
             if self.inflight_jobs:
@@ -82,59 +82,81 @@ class User(models.Model):
         self.reputation_score -= amount
 
     def reset_delay(self):
-        self.delay["active_t"] = 0
-        self.delay["predicted_runtimes"] = []
+        self.delay["time_of_last_startjob"] = 0
+        self.delay["inflight_jobs"] = []
         self.save()
 
-    def add_delay(self, predicted_runtime):
-        # self.delay['active_t'] += time
-        self.delay["predicted_runtimes"].append(predicted_runtime)
-        if len(self.delay["predicted_runtimes"]) == 1:
-            self.delay["active_t"] = datetime.now()
-        self.save()
+    def add_delay(self, new_delay):
+        print(f"\nEntering add_delay")
+        print(f"Current delay state: {self.delay}")
+        print(f"New delay value: {new_delay}")
+        print(f"Type of new delay: {type(new_delay)}")
+        
+        try:
+            if isinstance(new_delay, dict):
+                print("Converting dict to JSON string")
+                new_delay = json.dumps(new_delay, cls=DjangoJSONEncoder)
+            
+            print(f"Appending to inflight_jobs: {new_delay}")
+            self.delay["inflight_jobs"].append(new_delay)
+            
+            if len(self.delay["inflight_jobs"]) == 1:
+                current_time = datetime.now()
+                print(f"Setting time_of_last_startjob to: {current_time}")
+                # Convert datetime to ISO format string before saving
+                self.delay["time_of_last_startjob"] = current_time.isoformat()
 
-    def calculate_current_delay(self):
+            #NOTE this can be used to parse it back to datetime object
+            # datetime.fromisoformat(self.delay["time_of_last_startjob"])
+            
+            print(f"Final delay state: {self.delay}")
+            self.save()
+            print("Successfully saved in add_delay")
+        except Exception as e:
+            print(f"Error in add_delay: {str(e)}")
+            print(f"Current object state: {self.__dict__}")
+            raise
+
+        print("Exiting add_delay\n")
+
+    #NOTE It is assummed that this is the case pertaining to "just before job completion".
+    def calculate_current_delay(self, time_of_last_startjob):
         """
-        This calculation is only done when needed (i.e. scheduling)
+        This calculation is only done when needed (i.e. just before job creation)
         """
-        if not self.delay["predicted_runtimes"]:
+        if not self.delay["inflight_jobs"]:
+            print(f"No inflight jobs for {self.user_id}")
             return 0
 
         # elapsed time since the last job started
         current_time = datetime.now()
-        elapsed_time = (current_time - self.time_of_last_startjob).total_seconds()
+        elapsed_time = (current_time - self.delay["time_of_last_startjob"]).total_seconds()
 
-        remaining_time_for_current_job = max(0, self.delay["active_t"] - elapsed_time)
+        remaining_time_for_current_job = max(0, self.delay["time_of_last_startjob"] - elapsed_time)
 
-        total_delay = remaining_time_for_current_job + sum(self.delay["predicted_runtimes"][1:])
+        total_delay =  + sum(self.delay["inflight_jobs"][:]) - remaining_time_for_current_job
 
         return total_delay
 
-    def update_delay_after_completion(self):
+    def update_delay_after_completion(self, time_of_last_startjob):
         """
         Updates delay after a job completion.
          -> Remove the oldest predicted runtime
-         -> adjust active_t
+         -> adjust time_of_last_startjob
         """
-        if not self.delay["predicted_runtimes"]:
+        if not self.delay["inflight_jobs"]:
             return
 
-        current_time = datetime.now().timestamp()
-        elapsed_time = current_time - self.delay["active_t"]
+        # current_time = datetime.now().timestamp()
+        # elapsed_time = current_time - self.delay["time_of_last_startjob"]
 
         # Remove the predicted runtime of the completed job (the oldest one)
-        self.delay["predicted_runtimes"].pop(0)
-
-        if self.delay["predicted_runtimes"]:
-            # Adjust active_t based on remaining predicted runtimes
-            self.delay["active_t"] = max(
-                0, sum(self.delay["predicted_runtimes"]) - elapsed_time
-            )
-        else:
-            # If no jobs are remaining, reset active_t
-            self.delay["active_t"] = 0
-
+        self.delay["inflight_jobs"].pop(0)
+        self.delay["time_of_last_startjob"] = time_of_last_startjob
         self.save()
+
+    def update_delay_after_start(self, time_of_last_startjob):
+        self.delay["time_of_last_startjob"] = time_of_last_startjob
 
     def satisfies(self, requirements):
         # requirements expected to be a dict with key - value pairs like ram, cpu, gpu, etc.
@@ -187,3 +209,9 @@ class User(models.Model):
 
     def __str__(self):
         return f"User : {self.user_id}\n  \tprovider : {self.is_provider} \tdeveloper : {self.is_developer}"
+
+    def get_last_start_time(self):
+        # Assuming Job has a foreign key to User as provider
+        Job = apps.get_model('providers', 'Job')
+        last_job = Job.objects.filter(provider=self).order_by('-start_time').first()
+        return last_job.start_time if last_job else None
