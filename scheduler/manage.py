@@ -2,7 +2,25 @@
 """Django's command-line utility for administrative tasks."""
 import os
 import sys
+import atexit
+import signal
 
+def cleanup_pid_file(pid_file):
+    """Remove the PID file if it exists."""
+    if os.path.exists(pid_file):
+        os.remove(pid_file)
+        print(f"Deleted PID file: {pid_file}")
+
+
+def handle_signals(pid_file):
+    """Register signal handlers for cleanup."""
+    def signal_handler(signum, frame):
+        cleanup_pid_file(pid_file)
+        sys.exit(0)
+
+    # Register cleanup for common termination signals
+    signal.signal(signal.SIGINT, signal_handler)   # Handle Ctrl+C
+    signal.signal(signal.SIGTERM, signal_handler)  # Handle kill command
 
 def main():
     """Run administrative tasks."""
@@ -15,8 +33,22 @@ def main():
             "available on your PYTHONPATH environment variable? Did you "
             "forget to activate a virtual environment?"
         ) 
+        
+    # Get the current process ID
+    pid = os.getpid()
+    #Adding this code to write pid to a file
+
+    pid_file = "djpid.txt"
+
+    if not os.path.exists(pid_file):
+        with open(pid_file, "w") as file:
+            file.write(str(pid))
+    # Print the PID
+    print(f"PID: {pid}")
     execute_from_command_line(sys.argv)
 
+    atexit.register(cleanup_pid_file, pid_file)
+    handle_signals(pid_file)
 
 if __name__ == '__main__':
     main()
