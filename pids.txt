@@ -1,0 +1,12 @@
+PID: 1748925
+Performing system checks...
+
+System check identified no issues (0 silenced).
+November 18, 2024 - 19:32:36
+Django version 5.0.3, using settings 'scheduler.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+Connected from views.py/providers
+on_subscribe userdata is <paho.mqtt.client.Client object at 0x7f670bdd61d0>
+PID: 1748922
