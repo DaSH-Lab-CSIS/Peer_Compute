@@ -15,7 +15,7 @@ class Command(BaseCommand):
             'jobs',
             nargs='*',
             type=str,
-            help= 'Keyword "jobs" followed by a list of job IDs or ranges to print, e.g., "jobs 1", "jobs 1-3", "jobs 5,7-9".'
+            help= 'Keyword "jobs" followed by a list of job IDs or ranges to print, e.g., "jobs 1", "jobs 1-3", "jobs 5,7-9". !! Do not enclose the job IDs in []'
         )
 
     def parse_job_ids(self, job_args):
@@ -35,7 +35,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         job_args = options.get('jobs', [])
-        if not job_args or job_args[0] == 'jobs':
+        if not job_args or not job_args[0] == 'jobs':
             job_ids = None  # No specific job IDs provided; fetch all jobs
         else:
             job_ids = self.parse_job_ids(job_args)
@@ -276,7 +276,7 @@ class Command(BaseCommand):
                 )
             )
         else:
-            print("No unfinished jobs found.")
+            print("No unfinished jobs found. [ Pertaining to the provided job IDs if entered ]")
 
         print("---")
 
@@ -294,6 +294,6 @@ class Command(BaseCommand):
                 )
             )
         else:
-            print("No finished jobs found.")
+            print("No finished jobs found. [ Pertaining to the provided job IDs if entered ]")
 
         print("---")
