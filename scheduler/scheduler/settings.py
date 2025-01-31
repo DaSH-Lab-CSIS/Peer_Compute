@@ -84,14 +84,25 @@ WSGI_APPLICATION = 'scheduler.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/4.2/ref/settings/#databases
 
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.postgresql',
+#         'NAME':'peercompute',
+#         'USER':'postgres',
+#         'PASSWORD':'dash$123',
+#         'HOST':'database-uno.c5gy8c44i5qo.us-east-2.rds.amazonaws.com',
+#         'PORT':'5432',
+#     }
+# }
+
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME':'peercompute',
-        'USER':'postgres',
-        'PASSWORD':'dash$123',
-        'HOST':'database-uno.c5gy8c44i5qo.us-east-2.rds.amazonaws.com',
-        'PORT':'5432',
+    "default": {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": "peercompute_local_sn34kyp3t3",
+        "USER": "postgres",
+        "PASSWORD": "user123",
+        "HOST": "localhost",
+        "PORT": "5432",
     }
 }
 
