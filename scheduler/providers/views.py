@@ -1,5 +1,5 @@
 from collections import defaultdict
-from collections import defaultdict
+import pulp
 from django.apps import apps
 from django.db import transaction
 from django.shortcuts import render,get_object_or_404, redirect
@@ -19,8 +19,8 @@ from pytz import timezone
 from django.contrib import messages
 import paho.mqtt.client as mqtt
 import queue
-from profiles.models import User
-from providers.models import Job
+from profiles.models import *
+from providers.models import *
 from random import randint 
 from scheduler.settings import USE_FABRIC
 import fabric.views as fabric
@@ -105,7 +105,7 @@ def on_message(mqtt_client, userdata, msg):
                 provider = User.objects.get(user_id=user_id)
                 scoreset = {'cpu':float(provider.cpu_efficiency_score), 'memory':float(provider.memory_efficiency_score)}
                 mqtt_client.publish(topic=user_id, payload="EfficiencyScoreSet:"+json.dumps(scoreset),qos=2)
-            
+
 
 def on_subscribe(mqtt_client, userdata, mid, qos, properties=None):
     print("on_subscribe userdata is "+ str(mqtt_client))
@@ -186,13 +186,12 @@ def publish_to_topic_mqtt(runMultipleInvocations, numberOfInvocations, isChained
     return
 
 
-
 # def make_rmq_user(user):
 #     username = 'username' + str(user.user_id)
 #     password = 'username' + str(user.user_id) + '_mqtt'
 #     api = AdminAPI(url='http://' + RABBITMQ_HOST + ':' + RABBITMQ_MANAGEMENT_PORT, auth=(RABBITMQ_USER, RABBITMQ_PASS))
 
-#     #create user and set permissions 
+#     #create user and set permissions
 #     api.create_user(username, password)
 #     permission = "^(" + username + ".*|amq.default)$"
 #     api.create_user_permission(username, '/', permission, permission, permission)
@@ -227,7 +226,6 @@ def publish_to_topic_mqtt(runMultipleInvocations, numberOfInvocations, isChained
 #         return redirect('profiles:change_info')
 
 
-
 # # @login_required
 # def stop_providing(request):
 #     """
@@ -238,7 +236,7 @@ def publish_to_topic_mqtt(runMultipleInvocations, numberOfInvocations, isChained
 #         provider.ready = False
 #         provider.save()
 #         publish_to_topic
-#(request, 'Stop', request.user.username)
+# (request, 'Stop', request.user.username)
 #         return redirect('providers_app:index')
 #     else:
 #         return redirect('providers_app:index')
@@ -363,54 +361,72 @@ def set_reference_stats(request):
 def request_handler(data,service,start_time,run_async = False):
     print("In request handler.")
     provider = None
-    while(provider == None):
-        provider = find_provider(service)
-    print(provider)
+    job = None
     
-    job = Job.objects.create(provider = provider, start_time = start_time)
-    job.save()
+    while provider is None:
+        assignment = find_providers(service)
+        if assignment:
+            # Extract the provider from the assignment dictionary
+            provider = assignment[service]  # This will give us the User instance
+    print(f"Selected provider: {provider}")
+    
+    try:
+        job = Job.objects.filter(
+            provider=provider,
+            service=service,
+            finished=False
+        ).order_by('-start_time').first()
 
-    if USE_FABRIC:
-        r = fabric.invoke_new_job(str(job.id), str(service.id), str(service.developer_id),
-                                        str(provider.id), provider_org="Org1")
-        if 'jwt expired' in r.text or 'jwt malformed' in r.text or 'User was not found' in r.text:
-            token = fabric.register_user()
+        if not job:
+            print("Warning: No job found for the current assignment")
+            return
+
+        if USE_FABRIC:
             r = fabric.invoke_new_job(str(job.id), str(service.id), str(service.developer_id),
+                                    str(provider.id), provider_org="Org1")
+            if 'jwt expired' in r.text or 'jwt malformed' in r.text or 'User was not found' in r.text:
+                token = fabric.register_user()
+                r = fabric.invoke_new_job(str(job.id), str(service.id), str(service.developer_id),
                                         str(provider.id), provider_org="Org1",token=token)
 
-    task_link = service.docker_container 
-    task_developer = service.developer
-    input_val = data['input']
-    response_decoded = None
-    # if(data['chained'] == True): 
-    #     for i in range(data['numberOfInvocations']):
-    #         response = publish_to_topic(data['runMultipleInvocations'], data['numberOfInvocations'], data['chained'], input_val, provider,task_link,task_developer, job.id)
-    #     # total_time = response['pull_time'] + response['run_time']
-    #         response_decoded = json.loads(response.decode("utf-8"))
-    #         input_val = int(response_decoded['Result'])
-    # for i in range(data['numberOfInvocations']):
-    #response = publish_to_topic(data['runMultipleInvocations'], data['numberOfInvocations'], data['chained'], input_val, provider,task_link,task_developer, job.id)
-    #print("abt to pub to mqtt")
-     # add the below code in on_message.
-    publish_to_topic_mqtt(data['runMultipleInvocations'], data['numberOfInvocations'], data['chained'], input_val, provider,task_link,task_developer, job.id)
-    # response_decoded = json.loads(response.decode("utf-8"))
-    # # response_decoded = json.loads(response)
-    # print("response from provider: ", response_decoded)
-    # job.refresh_from_db()
-    # job.pull_time = response_decoded['pull_time']
-    # job.run_time = response_decoded['run_time']
-    # job.total_time = response_decoded['total_time']
-    # job.cost = (response_decoded['total_time'])
-    # job.response = response_decoded['Result']
-    # job.finished = True
-    # job.save()
-    # providing_time = int(((job.ack_time - job.start_time)/timedelta(microseconds=1))/1000) # Providing time in milliseconds
-    # if USE_FABRIC:
-    #     r = fabric.invoke_received_result(str(job.id))
-    #     if 'jwt expired' in r.text or 'jwt malformed' in r.text or 'User was not found' in r.text:
-    #         token = fabric.register_user()
-    #         r = fabric.invoke_received_result(str(job.id), token=token)
-    # return response_decoded, provider.id, providing_time, str(job.id)
+        task_link = service.docker_container 
+        task_developer = service.developer
+        input_val = data['input']
+        response_decoded = None
+        # if(data['chained'] == True): 
+        #     for i in range(data['numberOfInvocations']):
+        #         response = publish_to_topic(data['runMultipleInvocations'], data['numberOfInvocations'], data['chained'], input_val, provider,task_link,task_developer, job.id)
+        #     # total_time = response['pull_time'] + response['run_time']
+        #         response_decoded = json.loads(response.decode("utf-8"))
+        #         input_val = int(response_decoded['Result'])
+        # for i in range(data['numberOfInvocations']):
+        #response = publish_to_topic(data['runMultipleInvocations'], data['numberOfInvocations'], data['chained'], input_val, provider,task_link,task_developer, job.id)
+        #print("abt to pub to mqtt")
+        # add the below code in on_message.
+        publish_to_topic_mqtt(data['runMultipleInvocations'], data['numberOfInvocations'], data['chained'], input_val, provider,task_link,task_developer, job.id)
+        # response_decoded = json.loads(response.decode("utf-8"))
+        # # response_decoded = json.loads(response)
+        # print("response from provider: ", response_decoded)
+        # job.refresh_from_db()
+        # job.pull_time = response_decoded['pull_time']
+        # job.run_time = response_decoded['run_time']
+        # job.total_time = response_decoded['total_time']
+        # job.cost = (response_decoded['total_time'])
+        # job.response = response_decoded['Result']
+        # job.finished = True
+        # job.save()
+        # providing_time = int(((job.ack_time - job.start_time)/timedelta(microseconds=1))/1000) # Providing time in milliseconds
+        # if USE_FABRIC:
+        #     r = fabric.invoke_received_result(str(job.id))
+        #     if 'jwt expired' in r.text or 'jwt malformed' in r.text or 'User was not found' in r.text:
+        #         token = fabric.register_user()
+        #         r = fabric.invoke_received_result(str(job.id), token=token)
+        # return response_decoded, provider.id, providing_time, str(job.id)
+    except Exception as e:
+        print(f"Error in request_handler: {str(e)}")
+        raise
+
+    return job
 
 
 def finish_job(data):
@@ -449,90 +465,217 @@ def get_ready_providers():
         # last_ready_signal__gte = datetime.now(tz=timezone(TIME_ZONE)) - timedelta(minutes=10000)
     )
 
+# FIXME for now the predicited_runtimes fetch the last runtime of a service - provider combination. If the service has not run with a provider, when the service is registered, it will be benchmarked with all the providers and that runtime will be added to db as predicted_runtime.
+"""
+Args:
+    provider: Provider object
+    services: [List] of compatible services objects
+Returns:
+    A dictionary mapping each service to its predicted runtime. ( for ONE specific provider )
+"""
+def get_predicted_runtimes(provider, services):
+    print("Entering get_predicted_runtimes")
+    predicted_runtimes = {}
+    DEFAULT_RUNTIME = 1000  # milliseconds, adjust this based on your typical service runtime
+    
+    for service in services:
+        try:
+            latest_run_time = Job.get_latest_run_time(provider.id, service.id)
+            if latest_run_time is None:
+                # Use a default value instead of infinity
+                predicted_runtimes[service.id] = DEFAULT_RUNTIME
+                print(f"No previous runtime found for provider {provider.id} and service {service.id}. Using default: {DEFAULT_RUNTIME}")
+            else:
+                predicted_runtimes[service.id] = latest_run_time
+        except Job.DoesNotExist:
+            print(f"Warning: No job found for provider {provider.id} and service {service.id}")
+            predicted_runtimes[service.id] = DEFAULT_RUNTIME
+    
+    print(f"Predicted runtimes: {predicted_runtimes}")
+    print("Exiting get_predicted_runtimes")
+    return predicted_runtimes
 
-def find_provider(service):
-    # get ready providers
-    ready_providers = get_ready_providers()
-    print("Ready Providers: \n", ready_providers)
+def print_cost_matrix(cost_matrix):
+    """Pretty prints the cost matrix in a tabular format."""
+    print("Entering print_cost_matrix")
+    if not cost_matrix:
+        print("Empty cost matrix")
+        return
 
-    if not ready_providers.exists():
+    # Get all services (columns) from the first provider's dictionary
+    services = list(next(iter(cost_matrix.values())).keys())
+    
+    # Calculate column widths
+    provider_width = max(len(str(provider.user_id)) for provider in cost_matrix.keys())
+    service_widths = [max(len(str(service.id)), 8) for service in services]
+    
+    # Print header
+    header = f"{'Provider':>{provider_width}} |"
+    header += "".join(f" {'Service '+str(service.id):^{width}}" for service, width in zip(services, service_widths))
+    print("\n" + "="*(len(header)))
+    print(header)
+    print("="*(len(header)))
+    
+    # Print each row
+    for provider, costs in cost_matrix.items():
+        # Convert UUID to string for formatting
+        row = f"{str(provider.user_id):>{provider_width}} |"
+        row += "".join(f" {costs[service]:^{width}.2f}" for service, width in zip(services, service_widths))
+        print(row)
+    
+    print("="*(len(header)) + "\n")
+    print("Exiting print_cost_matrix")
+
+def build_cost_matrix(providers, services):
+    print("Entering build_cost_matrix")
+    cost_matrix = {}
+
+    for provider in providers:
+        # Filter services compatible with the provider
+
+        # NOTE This is only for testing. Actual implementation would require a service to have requirements 
+        compatible_services = services
+
+        # compatible_services = [service for service in services if provider.satisfies(service.requirements)]
+
+        # Fetch predicted runtimes in a batch
+        predicted_runtimes = get_predicted_runtimes(provider, compatible_services)
+
+        # Populate the cost matrix
+        cost_matrix[provider] = {
+            service: predicted_runtimes.get(service.id, float('inf')) for service in services
+        }
+
+    print_cost_matrix(cost_matrix)
+    print("Exiting build_cost_matrix")
+    return cost_matrix
+
+# NOTE This is for when services would have requirements. Function unused for now.
+def get_suitable_providers(services):
+    suitable_providers = set()
+    all_ready_providers = get_ready_providers()
+    for service in services:
+        for provider in all_ready_providers:
+            if provider.satisfies(service.requirements):
+                suitable_providers.add(provider)
+    return list(suitable_providers)
+
+# FIX figure out the right way to calculate delays
+def build_delay_dict(providers):
+    print("Entering build_delay_dict")
+    delay = {}
+    for provider in providers:
+        try:
+            time_of_last_startjob = provider.get_last_start_time()
+            print(f"Time of last start job for {provider.user_id}: {time_of_last_startjob}")
+            delay[provider] = provider.calculate_current_delay(time_of_last_startjob)
+            print(f"Delay for {provider.user_id}: {delay[provider]}")
+        except Exception as e:
+            print(f"First attempt error for provider {provider.user_id} - {e}")
+            try:
+                provider.reset_delay()  # Reset the delay
+                time_of_last_startjob = provider.get_last_start_time()
+                delay[provider] = provider.calculate_current_delay(time_of_last_startjob)
+                print(f"After reset - Delay for {provider.user_id}: {delay[provider]}")
+            except Exception as retry_error:
+                print(f"Error after reset for provider {provider.user_id} - {retry_error}")
+    print(f"Delay dictionary: {delay}")
+    print("Exiting build_delay_dict")
+    return delay
+
+def process_assignments(assignment, cost_matrix):
+    print("\nEntering process_assignments")
+    with transaction.atomic():
+        for service, provider in assignment.items():
+            print(f"\nProcessing assignment - Service: {service.id}, Provider: {provider.user_id}")
+            
+            # Lock the provider record
+            provider_locked = User.objects.select_for_update().get(pk=provider.pk)
+            print(f"Provider locked: {provider_locked.user_id}")
+            
+            # Create a Job instance
+            job = Job.objects.create(
+                provider=provider_locked,
+                service=service,
+                developer=service.developer,
+                finished=False,
+            )
+            print(f"Created job with ID: {job.id}")
+            
+            # Update provider's delay
+            predicted_runtime = cost_matrix[provider][service]
+            print(f"Predicted runtime: {predicted_runtime}")
+            print(f"Current provider delay state: {provider_locked.delay}")
+            
+            try:
+                provider_locked.add_delay(predicted_runtime)
+                print("Successfully added delay")
+            except Exception as e:
+                print(f"Error adding delay: {str(e)}")
+                print(f"Type of predicted_runtime: {type(predicted_runtime)}")
+                print(f"Value of predicted_runtime: {predicted_runtime}")
+                raise
+
+            print(f"Updated provider delay state: {provider_locked.delay}")
+            
+            # Update function invocations
+            service_key = str(service.id)
+            current_invocations = provider_locked.function_invocations.get(service_key, 0)
+            provider_locked.function_invocations[service_key] = current_invocations + 1
+            
+            try:
+                provider_locked.save()
+                print("Successfully saved provider")
+            except Exception as e:
+                print(f"Error saving provider: {str(e)}")
+                print(f"Provider state at save: {provider_locked.__dict__}")
+                raise
+
+    print("Exiting process_assignments\n")
+
+
+def find_providers(services):
+    print("Debug: Entering find_providers")
+    if not isinstance(services, list):
+        services = [services]
+
+    # 1. Get Suitable Providers
+    #NOTE ideally get_suitable_providers should be called since we want to keep the no. of providers in the cost_matrix at a min.
+    suitable_providers = get_ready_providers()
+    print(*suitable_providers, sep=' | ')
+    if not suitable_providers:
         print("No ready providers available.")
         return None
 
-    Job = apps.get_model('providers', 'Job')
-    active_jobs = Job.objects.filter(provider__in=ready_providers, finished=False)
+    # NOTE - cache will be incorporated in the future
 
-    provider_job_map = defaultdict(list)
-    for job in active_jobs:
-        provider_job_map[job.id].append(job)
+    # 2. Build Cost Matrix
+    cost_matrix = build_cost_matrix(suitable_providers, services)
 
-    suitable_providers_with_jobs = []
-    for provider in ready_providers:
-        jobs = provider_job_map.get(provider.id, [])
-        if jobs:
-            for job in jobs:
-                if job.satisfies(service.requirements):
-                    suitable_providers_with_jobs.append(provider, job)
-        else:
-            continue
+    # 3. Build Delay Dict
+    delay = build_delay_dict(suitable_providers)
 
-    if not suitable_providers_with_jobs:
-        print("No suitable providers found matching the requirements fort this service")
+    # 4. Get min cost provider by calling the ILP solver
+    workers = list(cost_matrix.keys())
+    assignment, total_cost = minimize_total_cost(suitable_providers, services, cost_matrix, delay)
 
-    # fetch predicted runtimes
-    providers_with_pred_rt = []
-    for provider, job in suitable_providers_with_jobs:
-        try:
-            pred_rt_matrix = job.get_predicted_runtimes()
-            predicted_runtime = pred_rt_matrix.get(service.name)
-        except Exception as e:
-            print(f"error getting predicted runtimes for provider: {provider.id} :\n\t{e}")
-            continue
-
-        if predicted_runtime is not None:
-            try:
-                current_delay = job.calculate_current_delay()
-            except Exception as e:
-                print(f"error calculating current delay for Job: {job.id}:\n\t{e}")
-                current_delay = 0
-            providers_with_pred_rt.append((provider, job, predicted_runtime, current_delay))
-        else:
-            print(f"provider - {provider.id} does not hava a predicted runtime for service - {service.id}")
-            continue
-
-    if not providers_with_pred_rt:
-        print("No providers have predicted runtimes for the service.")
+    if assignment is None:
+        print("Warning: No optimal solution found")
         return None
 
-    # Sort providers based on delay (active_t + predicted_runtimes) and reputation scores
-    sorted_providers = sorted(
-        providers_with_pred_rt,
-        key=lambda x: (x[3], x[2], -x[0].reputation_score)
-        # Lower delay -> lower predicted runtime -> higher reputation
-    )
+    # 5. Process assignments - Invoke providers and update job status
+    process_assignments(assignment, cost_matrix)
 
-    top_n = 2
-    top_providers = sorted_providers[:top_n] if len(sorted_providers) >= top_n else sorted_providers
-    max_provider, selected_job, selected_pred_runtime, current_delay = random.choice(top_providers)
+    # NOTE  Assignment here is a dict mapping service to its max_provider. Wherever find_provider(service) was being called in the scheduler, it will have to be changed to send batched requests and call find_providers(services)
+    return assignment
 
-    with transaction.atomic():
-        try:
-            job_locked = Job.objects.select_for_update().get(pk=selected_job.pk)
-            job_locked.add_delay(selected_pred_runtime)
-            service_key = str(service.id)
-            current_invocations = job_locked.provider.function_invocations.get(service_key, 0)
-            job_locked.provider.function_invocations[service_key] = current_invocations + 1
-            job_locked.provider.save()
-            job_locked.save()
-        except Exception as e:
-            print(f"error adding job: {selected_job.pk} - {e}")
-            return None
-
-    print("Scheduler is choosing this provider -> ", max_provider)
-
-    return max_provider
-
-
+def find_provider(service):
+    # NOTE - Logic for this function can be defined later if a different provider selection algorithm is needed for one service.
+    """
+    Find the max provider for the given service.
+    """
+    service = [service]
+    return find_providers(service)
 # MAIN CODE:
 
 get_mclient()
