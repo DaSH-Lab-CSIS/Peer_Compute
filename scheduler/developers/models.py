@@ -26,9 +26,9 @@ class Services(models.Model):
         # Each developer can only have one service with a specific name
         unique_together = ['name', 'developer']
 
-    def predict_runtime(self):
-        pred_rt = 0.0
-        """
-        implement logic for calculating predicted runtime 
-        """
-        return pred_rt
+    # def predict_runtime(self):
+    #     pred_rt = 0.0
+    #     """
+    #     implement logic for calculating predicted runtime 
+    #     """
+    #     return pred_rt

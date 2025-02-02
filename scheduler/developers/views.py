@@ -148,7 +148,8 @@ def run_service(request, service_id):
         else:
             messages.error(request, "This service is disabled")
 
-    except ObjectDoesNotExist:
+    except ObjectDoesNotExist as e:
+        print(f"ObjectDoesNotExist: {e}")
         messages.error(request, "Incorrect service id")
     # print("Response", response)
     return JsonResponse(
