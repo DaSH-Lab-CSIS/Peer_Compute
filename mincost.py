@@ -8,36 +8,37 @@ import time
 
 
 # takes 4 inputs: 1. list of providers
-#                 2. list of jobs
-#                 3. cost_matrix; a dict of dicts in form Provider : {Job : cost}
+#                 2. list of services
+#                 3. cost_matrix; a dict of dicts in form Provider : {service : cost}
 #                 4. delay dict; a dict of delay in EACH provider. 
 
-# returns 2 values: 1. a dict with keys as jobs and values as providers for the min cost combination
+# returns 2 values: 1. a dict with keys as services and values as providers for the min cost combination
 #                   2. total cost (including delays) of the min cost combination
-def minimize_total_cost(workers, jobs, cost_matrix, delay):
+def minimize_total_cost(providers, services, cost_matrix, delay):
     l = time.time()
-    # Create a binary variable for each combination of worker and job
-    # this denotes if that combination of worker and job is chosen (1) or not (0) p.s. 'chosen' below is just a label.
-    # for each job there is one worker who has value(x[worker,job]==1 and rest all workers for that job have x == 0)
-    x = pulp.LpVariable.dicts('chosen', ((worker, job) for worker in workers for job in jobs), cat='Binary')
+    # Create a binary variable for each combination of provider and service
+    # this denotes if that combination of provider and service is chosen (1) or not (0) p.s. 'chosen' below is just a label.
+    # for each service there is one provider who has value(x[provider,service]==1 and rest all providers for that service have x == 0)
+    x = pulp.LpVariable.dicts('chosen', ((provider, service) for provider in providers for service in services), cat='Binary')
     
     # pulp.LpMinimize will minimise the objective function
     prob = pulp.LpProblem("Minimize_Total_Cost", pulp.LpMinimize)
     
     # += opertator is to add constraints or objective functions to the problem
-    # Objective function: total cost of runtimes + delay once per worker
+    # Objective function: total cost of runtimes + delay once per provider
     # Objective function is the expression to minimise/maximise
     # for loops are basically summation symbols here since it is inside lpSum.
-    # the if statement are so that 1 taken because if a worker has taken more than 1 jobs it the delay should still
-    # be multiplied with 1 and not the number of jobs.
+    # the if statement are so that 1 taken because if a provider has taken more than 1 services it the delay should still
+    # be multiplied with 1 and not the number of services.
 
-    prob += pulp.lpSum(x[worker, job] * cost_matrix[worker][job] for worker in workers for job in jobs) + pulp.lpSum(delay[worker] * (pulp.lpSum(x[(worker, job)] for job in jobs) if pulp.lpSum(x[(worker, job)] for job in jobs) <= 1 else 1) for worker in workers)
+    prob += pulp.lpSum(x[provider, service] * cost_matrix[provider][service] for provider in providers for service in services) + pulp.lpSum(delay[provider] * (pulp.lpSum(x[(provider, service)] for service in services) if pulp.lpSum(x[(provider, service)] for service in services) <= 1 else 1) for provider in providers)
+
 
     
-    # Constraints: each job must be assigned to exactly one worker
+    # Constraints: each service must be assigned to exactly one provider
     # Constraints are inequalities or equalities instead of an expression
-    for job in jobs:
-        prob += pulp.lpSum(x[worker, job] for worker in workers) == 1
+    for service in services:
+        prob += pulp.lpSum(x[provider, service] for provider in providers) == 1
     
     prob.solve()
     print("Time taken for Min Cost Algo: " + str(prob.solutionTime))
@@ -49,39 +50,39 @@ def minimize_total_cost(workers, jobs, cost_matrix, delay):
     
     # Store the min cost combination in a dict
     assignment = {}
-    for worker in workers:
-        for job in jobs:
-            if pulp.value(x[worker, job]) == 1:
-                assignment[job] = worker
+    for provider in providers:
+        for service in services:
+            if pulp.value(x[provider, service]) == 1:
+                assignment[service] = provider
 
-    # Calculate the total cost considering only recruited workers
-    total_cost = sum(cost_matrix[assignment[job]][job] for job in jobs)
-    total_cost += sum(delay[worker] for worker in workers if any(pulp.value(x[worker, job]) == 1 for job in jobs))
+    # Calculate the total cost considering only recruited providers
+    total_cost = sum(cost_matrix[assignment[service]][service] for service in services)
+    total_cost += sum(delay[provider] for provider in providers if any(pulp.value(x[provider, service]) == 1 for service in services))
     
     print("Time taken in wallclock sec by lp algo: ", time.time()-l)
     return assignment, total_cost
 
 
-# # Generate workers and jobs
-# workers = ['Worker1', 'Worker2', 'Worker3', 'Worker4', 'Worker5', 'Worker6']
-# jobs = ['Job1', 'Job2', 'Job3', 'Job4', 'Job5', 'Job6', 'Job7', 'Job8', 'Job9', 'Job10']
+# # Generate providers and services
+# providers = ['provider1', 'provider2', 'provider3', 'provider4', 'provider5', 'provider6']
+# services = ['service1', 'service2', 'service3', 'service4', 'service5', 'service6', 'service7', 'service8', 'service9', 'service10']
 
 # # Define fixed cost matrix
 # cost_matrix = {
-#     'Worker1': {'Job1': 10, 'Job2': 15, 'Job3': 20, 'Job4': 25, 'Job5': 30, 'Job6': 35, 'Job7': 40, 'Job8': 45, 'Job9': 50, 'Job10': 55},
-#     'Worker2': {'Job1': 20, 'Job2': 25, 'Job3': 30, 'Job4': 35, 'Job5': 40, 'Job6': 45, 'Job7': 50, 'Job8': 55, 'Job9': 60, 'Job10': 65},
-#     'Worker3': {'Job1': 30, 'Job2': 35, 'Job3': 40, 'Job4': 45, 'Job5': 50, 'Job6': 55, 'Job7': 60, 'Job8': 65, 'Job9': 70, 'Job10': 75},
-#     'Worker4': {'Job1': 40, 'Job2': 45, 'Job3': 50, 'Job4': 55, 'Job5': 60, 'Job6': 65, 'Job7': 70, 'Job8': 75, 'Job9': 80, 'Job10': 85},
-#     'Worker5': {'Job1': 50, 'Job2': 55, 'Job3': 60, 'Job4': 65, 'Job5': 70, 'Job6': 75, 'Job7': 80, 'Job8': 85, 'Job9': 90, 'Job10': 95},
-#     'Worker6': {'Job1': 60, 'Job2': 65, 'Job3': 70, 'Job4': 75, 'Job5': 80, 'Job6': 85, 'Job7': 90, 'Job8': 95, 'Job9': 100, 'Job10': 105}
+#     'provider1': {'service1': 10, 'service2': 15, 'service3': 20, 'service4': 25, 'service5': 30, 'service6': 35, 'service7': 40, 'service8': 45, 'service9': 50, 'service10': 55},
+#     'provider2': {'service1': 20, 'service2': 25, 'service3': 30, 'service4': 35, 'service5': 40, 'service6': 45, 'service7': 50, 'service8': 55, 'service9': 60, 'service10': 65},
+#     'provider3': {'service1': 30, 'service2': 35, 'service3': 40, 'service4': 45, 'service5': 50, 'service6': 55, 'service7': 60, 'service8': 65, 'service9': 70, 'service10': 75},
+#     'provider4': {'service1': 40, 'service2': 45, 'service3': 50, 'service4': 55, 'service5': 60, 'service6': 65, 'service7': 70, 'service8': 75, 'service9': 80, 'service10': 85},
+#     'provider5': {'service1': 50, 'service2': 55, 'service3': 60, 'service4': 65, 'service5': 70, 'service6': 75, 'service7': 80, 'service8': 85, 'service9': 90, 'service10': 95},
+#     'provider6': {'service1': 60, 'service2': 65, 'service3': 70, 'service4': 75, 'service5': 80, 'service6': 85, 'service7': 90, 'service8': 95, 'service9': 100, 'service10': 105}
 # }
 
 # # Define fixed delay dictionary
 # delay = {
-#     'Worker1': 0, 'Worker2': 20, 'Worker3': 10, 'Worker4': 30, 'Worker5': 15, 'Worker6': 25
+#     'provider1': 0, 'provider2': 20, 'provider3': 10, 'provider4': 30, 'provider5': 15, 'provider6': 25
 # }
-# assignment, total_cost = minimize_total_cost(workers, jobs, cost_matrix, delay)
+# assignment, total_cost = minimize_total_cost(providers, services, cost_matrix, delay)
 
-# print("Job Assignments:")
+# print("service Assignments:")
 # print(assignment)
 # print("Total Cost (including delay):", total_cost)
