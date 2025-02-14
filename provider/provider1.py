@@ -21,6 +21,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from hybridcaching import HybridImageManager
 import os
+import tempfile
+import socket
 
 user_id = sys.argv[1]
 controller_ip = "10.8.1.48" #change to .46
@@ -291,6 +293,156 @@ def run_docker(body, container_name, inputData=None):
     print("Actual Runtime " + str(run_time))
     # Plot real-time predictions
     #plot_predictions(predictions)
+    return result, pull_time, run_time, container_name
+
+def run_and_invoke_docker(body, container_name, payload) -> dict:
+
+
+    #open a file and write the payload to it
+    #with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
+    #    json.dump(payload, f)
+    #    f.flush()
+    #    input_file = f.name
+
+    # Create output file
+    #output_file = tempfile.NamedTemporaryFile(delete=False).name
+            
+    # Mount configurations for both input and output files
+    #mounts = {
+    #    input_file: {'bind': '/tmp/input.json', 'mode': 'ro'},
+    #    output_file: {'bind': '/tmp/output.json', 'mode': 'rw'}
+    #}
+
+    start_pull_time = time.time()
+    #image = client.images.pull(body)
+    print("inside run_docker with body : " + body)
+    image = imagePuller.request_image(body)
+    print("Out of Hybrid Caching manager and inside run_docker again")
+    print(image)
+    pull_time = int((time.time() - start_pull_time) *1000)
+    
+    start_run_time = 0
+    cont = None
+    try:
+        cont = client.containers.run(image,
+                                     name=container_name,
+                                     detach=True,
+                                     ports={'8080/tcp': None}, #None dynamically allocates a port
+                                     environment={
+                                         'AWS_ACCESS_KEY_ID': os.getenv('AWS_ACCESS_KEY_ID'),
+                                         'AWS_SECRET_ACCESS_KEY': os.getenv('AWS_SECRET_ACCESS_KEY'), 
+                                         'AWS_REGION': os.getenv('AWS_REGION')
+                                     }
+                                     )
+        
+        # Wait a bit for container to start
+        time.sleep(1)
+        cont.reload()  # Refresh container data
+        port_info = cont.ports.get('8080/tcp')
+        host_port = port_info[0]['HostPort'] #get the port
+        print(host_port)
+        
+        # Make POST request to container
+        response = requests.post(f'http://localhost:{host_port}', 
+                               json=payload,
+                               headers={'Content-Type': 'application/json'})
+        
+    except Exception as e:
+        print(e)
+        container_name += "t"
+        cont = client.containers.run(image,
+                                     name=container_name,
+                                     detach=True, 
+                                     ports={'8080/tcp': None},
+                                     environment={
+                                         'AWS_ACCESS_KEY_ID': os.getenv('AWS_ACCESS_KEY_ID'),
+                                         'AWS_SECRET_ACCESS_KEY': os.getenv('AWS_SECRET_ACCESS_KEY'),
+                                         'AWS_REGION': os.getenv('AWS_REGION')
+                                     }
+                                     )
+        
+        # Wait a bit for container to start
+        time.sleep(1)
+        cont.reload()  # Refresh container data
+        port_info = cont.ports.get('8080/tcp')
+        host_port = port_info[0]['HostPort']
+        print(host_port)
+        
+        # Make POST request to container
+        response = requests.post(f'http://localhost:{host_port}',
+                               json=payload, 
+                               headers={'Content-Type': 'application/json'})
+
+    start_run_time = time.time()
+    #result = "this is result" #remove this line uncomment below line
+    #result = result.decode("utf-8") #this gives the Hello from Docker msg.
+    
+    print("Run Started!")
+    print(body)
+    timeout = 3000
+    stack = []
+    run_vars = {}
+    #cont = client.containers.get(container_name)
+    count = 0
+    if(cont==None):print("cont is None")
+    while ((cont != None) and ((str(cont.status) == 'running') or (str(cont.status) == 'created'))):
+        if(time.time()-start_run_time > timeout):
+            print("timeout exceeded (cont not killed)")
+            break
+        #elapsed_time += stop_time
+        s = cont.stats(decode=False, stream=False)
+        if(s['memory_stats'] != {}):
+            #stack.clear() #to get stats streamed throughout the process remove this line
+            stack.clear() #only to save time
+            stack.append(s)
+        else: break
+        count+=1
+
+    # Read result from output file
+    #with open(output_file, 'r') as f:
+    #    result = f.read()
+    #print("Result from container:", result)
+    #print(response.json())
+    result = response.json()
+    print(result)
+    #print(stack) #uncomment this to get full stats
+    run_time = int((time.time() - start_run_time)*1000)
+    #print(count)
+    # run_vars['time_indexed_stats'] = time_indexed_stats
+    run_vars['memory_usage'] = stack[0]['memory_stats']['usage']
+    run_vars['cpu_usage'] = stack[0]['cpu_stats']['cpu_usage']['total_usage']
+    #adding new lines for io_usage
+    # blkio_read=0
+    # blkio_write=0
+    # for entry in stack[0]['blkio_stats']['io_service_bytes_recursive']:
+    #     if entry['op'] == 'Read':
+    #         blkio_read += entry['value']
+    #     elif entry['op'] == 'Write':
+    #         blkio_write += entry['value']
+    # run_vars['io_read_stats'] = blkio_read
+    # run_vars['io_write_stats'] = blkio_write
+    #updated code till here
+    run_vars['actual_runtime'] = run_time
+    global cpu_efficiency_score
+    run_vars['cpu_efficiency_score'] = cpu_efficiency_score
+    global memory_efficiency_score
+    run_vars['memory_efficiency_score'] = memory_efficiency_score
+    # the below is service specific and has to be made for each service.
+    append_data_to_file(run_vars, 'TrainingData/eff_score_data.txt')
+    run_vars['service']=body # this is the task link
+
+    print("Predicted Runtime:")
+    print(trainAndPredict(run_vars))
+    #print(predict_runtime(model, run_vars['time_indexed_stats'])) #a list of stats with timestamps
+    print("Actual Runtime " + str(run_time))
+    # Plot real-time predictions
+    #plot_predictions(predictions)
+
+    # Cleanup temporary files
+    #os.unlink(input_file)
+    #os.unlink(output_file)
+    cont.stop()  #remove this line to keep container running
+    cont.remove()
     return result, pull_time, run_time, container_name
 
 def delete_container_and_image(body, container_name):
