@@ -1,4 +1,4 @@
-from threading import Thread
+from threading import Thread, Event, Lock
 import zmq
 import sys
 import requests
@@ -21,6 +21,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from hybridcaching import HybridImageManager
 import os
+import signal
+import sys
 import tempfile
 import socket
 
@@ -42,6 +44,11 @@ pid = os.getpid()
 print(f"PID: {pid}")
 
 client = docker.from_env()
+procedural_shutdown_event = Event()
+pending_jobs = 0  #despite the name, this is flag indicating whether something is running or not. 
+pending_jobs_lock = Lock()
+last_message_time = time.time()
+
 
 # REGISTER_URL = 'https://' + controller_ip + ":" + controller_port + "/profiles/register_user/"
 ACK_URL = "http://" + controller_ip + ":" + controller_port + "/providers/job_ack/"
@@ -74,29 +81,40 @@ def on_connect(mqtt_client, userdata, flags, rc, callback_api_version):
 
 def on_message(mqtt_client, userdata, msg):
     print(f'Received message on topic: {msg.topic} with payload: {msg.payload}')
-    
+    global last_message_time
+    last_message_time = time.time()
+
     try: 
         data = json.loads(msg.payload.decode("utf-8"))
         if(data["stage"] == "dockernotrun"):
             data["stage"] = "dockerrunning"
+            with pending_jobs_lock:
+                global pending_jobs
+                pending_jobs += 1
+                print(f"Pending jobs incremented: {pending_jobs}")
             
             # response = {'Result': [], 'run_time': [], 'pull_time': [], 'total_time': []}
             # on_request initially returned a dictionary.
-            if(data['runMultipleInvocations'] == True):
-                if(data['numberOfInvocations'] == 1) :
+            try: 
+                if(data['runMultipleInvocations'] == True):
+                    if(data['numberOfInvocations'] == 1) :
+                        on_request(data)
+                    elif(data['isChained'] == False):
+                        for i in range(data['numberOfInvocations']):
+                            container_name = str(data['job_id']) + "_container_" + str(i)
+                            temp = on_request(data)
+                            # response['Result'].append(temp['Result'])
+                            # response['run_time'].append(temp['run_time'])
+                            # response['pull_time'].append(temp['pull_time'])
+                            # response['total_time'].append(temp['total_time'])
+                    else: 
+                        on_chained_request(data)
+                else:
                     on_request(data)
-                elif(data['isChained'] == False):
-                    for i in range(data['numberOfInvocations']):
-                        container_name = str(data['job_id']) + "_container_" + str(i)
-                        temp = on_request(data)
-                        # response['Result'].append(temp['Result'])
-                        # response['run_time'].append(temp['run_time'])
-                        # response['pull_time'].append(temp['pull_time'])
-                        # response['total_time'].append(temp['total_time'])
-                else: 
-                    on_chained_request(data)
-            else:
-                on_request(data)
+            finally: 
+                with pending_jobs_lock:
+                    pending_jobs -= 1
+                    print(f"Pending jobs decremented: {pending_jobs}")        
             
             # mqtt_client.publish(user_id, json.dumps(response).encode("utf-8"),qos=2)
             #mqtt_client.loop_stop()
@@ -127,17 +145,30 @@ requests.get("http://localhost:8000/providers/startup/"+user_id)
 
 
 mclient = mqtt.Client(callback_api_version= mqtt.CallbackAPIVersion.VERSION2)
+# sets up LWT for non-procedural disconnections
+LWT_TOPIC = f"{user_id}"
+LWT_MESSAGE = "offline_non-procedurally"
+mclient.will_set(topic=LWT_TOPIC, payload=LWT_MESSAGE, qos=2, retain=False) 
 # make a socket bind to tcp and make a dealer
 mclient.on_connect = on_connect
 mclient.on_message = on_message
 mclient.on_subscribe= on_subscribe
 
-mclient.connect(host=BROKER_ID,port=1883)
+mclient.connect(host=BROKER_ID,port=1883, keepalive=5)
 #client subscribe is in on_connect
 mclient.loop_start() #different thread
 
 mclient.publish(topic="EVERYONE", payload="start_connect"+user_id, qos=2)
 mclient.publish(topic="EVERYONE", payload="get_efficiency_score"+user_id, qos=2)
+
+def procedural_shutdown(sig, frame):
+    print("Commencing procedural shutdown...")
+    procedural_shutdown_event.set()
+    requests.get(url=NOT_READY_URL + user_id) #This should set provider to not ready on scheduler
+
+#This will call the shutdown_handler function when the SIGINT or SIGTERM signal is received from system
+signal.signal(signal.SIGINT, procedural_shutdown)   # Ctrl+C induced signal
+signal.signal(signal.SIGTERM, procedural_shutdown)  # we may not need to handle this signal    
 
 #LINEAR REGRESSION LOGIC
 
@@ -651,8 +682,28 @@ def set_reference_stats_for_service(service_id):
 ## mqtt implementation
 
 
-while(True):
-    a=1
+#while(True):
+#    a=1
+
+while True:
+    if procedural_shutdown_event.is_set():
+        time_since_last_message = time.time() - last_message_time 
+        with pending_jobs_lock:
+            if pending_jobs == 0 and time_since_last_message >= 2: #if no job is actively running and no queued messages have been recieved in the past two seconds it will break out of the while loop
+                print("No pending jobs. Exiting main loop.")
+                break
+    else:        
+        time.sleep(1) #or you can just do a=1
+
+# After the loop, perform cleanup
+# Stop the MQTT client
+mclient.publish(topic=LWT_TOPIC, payload="offline_procedurally", qos=2)
+mclient.loop_stop()
+mclient.disconnect()
+
+
+print("All jobs completed. Exiting procedurally.")
+
 
 
 def job_queue():
