@@ -78,7 +78,7 @@ def get_benchmarks_for(user_id, benchmark):
 def penalise(user_id, penalty_type):
     provider = User.objects.get(user_id=user_id)
     if penalty_type == 1:
-        provider.reputation_score -= len(service_queue)*non_procedural_shutdown_multiplier + non_procedural_shutdown_penalty #queuesize + fix penalty
+        provider.reputation_score -= service_queue.qsize()*non_procedural_shutdown_multiplier + non_procedural_shutdown_penalty #queuesize + fix penalty
         print("Penalised provider ", user_id, " for quitting non-procedurally")
         #TODO reallocation of jobs not done yet.
     elif penalty_type == 0:

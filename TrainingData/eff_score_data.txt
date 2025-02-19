@@ -29,3 +29,5 @@
 {"memory_usage": 3411968, "cpu_usage": 51168388623, "actual_runtime": 54055, "cpu_efficiency_score": 1.0, "memory_efficiency_score": 1.0}
 {"memory_usage": 9789440, "cpu_usage": 52836962847, "actual_runtime": 58055, "cpu_efficiency_score": 1.0, "memory_efficiency_score": 1.0}
 {"memory_usage": 12619776, "cpu_usage": 53884753458, "actual_runtime": 60279, "cpu_efficiency_score": 1.0, "memory_efficiency_score": 1.0}
+{"memory_usage": 9682944, "cpu_usage": 50756510704, "actual_runtime": 54017, "cpu_efficiency_score": 1.0, "memory_efficiency_score": 1.0}
+{"memory_usage": 9658368, "cpu_usage": 50807444600, "actual_runtime": 53658, "cpu_efficiency_score": 1.0, "memory_efficiency_score": 1.0}
