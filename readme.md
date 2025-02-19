@@ -1,7 +1,7 @@
 example curl
 ```
 
-  curl -X POST "http://localhost:8000/developers/run_service/3" \
+  curl -X POST "http://localhost:8000/developers/run_service/12" \
   -H "Accept: */*" \
   -H "User-Agent: Thunder Client (https://www.thunderclient.com)" \
   -H "Content-Type: application/json" \
@@ -25,10 +25,18 @@ curl -X POST "http://localhost:8000/providers/set_reference_stats_for_service/" 
 curl -X POST "http://localhost:8000/providers/set_reference_stats_for_service/" -H "Content-Type: application/json" -d '{"service_id":"satyam098/testimage_largeruntime"}'
 ```
 services:
+[old]
 run_service/3 - (hello world),  
 run_service/5 - (largeruntime),
 run_service/6 - video_encoding benchmark from vswarmease.
 reference provider: ```34933555-5cca-41fb-aded-4ab7900c48d5```
+default developer user_id: ```0316778b-d20b-4415-a993-d95172340c2d```
+default developer id: ```11``` This one we will be using.
+
+Sample new_service req (it will use the default provider if developer field is not added in json.)
+```
+curl -X POST "http://localhost:8000/providers/new_service/" -H "Content-Type: application/json" -d '{"name":"010.sleep.python", "docker_url":"peercompute/benchmark.010.sleep.python-3.9","developer":11}'
+```
 
 ## TODO
 Set_reference_stats_for_service/<str: service_id> Here service_id is not the service_id but instead the task link. Get the task link from this service id in views.py/provider itself, use that instead and continue remaining without any changes.   
