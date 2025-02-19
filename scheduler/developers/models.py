@@ -9,12 +9,12 @@ class Services(models.Model):
         limit_choices_to={'is_developer': True},
         related_name='services_as_developer'
     )
-    provider = models.ForeignKey(
-        User,
-        on_delete=models.CASCADE,
-        limit_choices_to={'is_provider': True},
-        related_name='services_as_provider'
-    )
+    # provider = models.ForeignKey(
+    #     User,
+    #     on_delete=models.CASCADE,
+    #     limit_choices_to={'is_provider': True},
+    #     related_name='services_as_provider'
+    # )
     name = models.CharField(max_length=30)
     docker_container = models.URLField()
     active = models.BooleanField(default=False)
