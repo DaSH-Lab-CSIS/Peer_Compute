@@ -55,6 +55,8 @@ ACK_URL = "http://" + controller_ip + ":" + controller_port + "/providers/job_ac
 NOT_READY_URL = "http://" + controller_ip + ":" + controller_port + "/providers/not_ready/"
 READY_URL = "http://" + controller_ip + ":" + controller_port + "/providers/ready/"
 
+requests.get(url=READY_URL+user_id)
+# TODO make a request to ready url as soon as this script has run, ie j write a line here.
 runs_list = [] #this stores all data in all runs for a specific job.
 # def create_thread_and_subscribe(user_id):
 #     provider_thread = Thread(target= thread_target, args= (controller_ip,controller_port,user_id))
@@ -697,6 +699,7 @@ while True:
 
 # After the loop, perform cleanup
 # Stop the MQTT client
+print("performing procedural shutdown")
 mclient.publish(topic=LWT_TOPIC, payload="offline_procedurally", qos=2)
 mclient.loop_stop()
 mclient.disconnect()

@@ -32,16 +32,18 @@ def new_service(request):
         data = json.loads(request.body) 
         service = Services()
         try:
-            developer_id = data.get('developer')
+            developer_id = data.get('developer', 11) # default developer id
             developer_instance = User.objects.get(id = developer_id)
             service.developer = developer_instance
-            service.provider = get_default_provider()
+            # NEW change, remove after migration is successfuly.
+            # service.provider = get_default_provider()
             service.name = data.get('name')
             service.docker_container = data.get('docker_url')
             service.active = data.get('is_active', True)
             service.save()
             messages.success(request, "New service created")
         except IntegrityError:
+                # name and developer are unique together in the Service model def.
                 messages.error(request, "You already have a service with this name")
     else:
        return JsonResponse({'error': 'Invalid request method'})
@@ -127,7 +129,7 @@ def delete_service(request, service_id):
 def run_service(request, service_id):
     response = ''
     try:
-        service = Services.objects.get(id=(service_id+7))
+        service = Services.objects.get(id=(service_id)) # legacy +7 bug was here.
         if service.active:
             temp_time = datetime.now(tz=timezone(TIME_ZONE))
             data = json.loads(request.body)
