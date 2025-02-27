@@ -95,17 +95,21 @@ WSGI_APPLICATION = 'scheduler.wsgi.application'
 #     }
 # }
 
+
+# SUPABASE
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
-        "NAME": "peercompute_local_sn34kyp3t3",
-        "USER": "postgres",
-        "PASSWORD": "user123",
-        "HOST": "localhost",
+        "NAME": "postgres",
+        "USER": "postgres.uufnsxmqnwegackubear",
+        "PASSWORD": "16G6MNonNa7ny9pG",
+        "HOST": "aws-0-ap-south-1.pooler.supabase.com",
         "PORT": "5432",
+        "OPTIONS": {
+            "options": "-c pool_mode=session"
+        },
     }
 }
-
 
 # Password validation
 # https://docs.djangoproject.com/en/4.2/ref/settings/#auth-password-validators
