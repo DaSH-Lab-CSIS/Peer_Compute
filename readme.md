@@ -205,3 +205,17 @@ cache = Cache('cache_dir')  # Initialize your cache
 cache.clear()  # Clear the entire cache
 print("Disk cache cleared.")
 ```
+
+### Local S3 emul
+
+```bash
+docker run -d \
+  -p 9000:9000 \
+  -p 9001:9001 \
+  --name minio \
+  -e "MINIO_ROOT_USER=minioadmin" \
+  -e "MINIO_ROOT_PASSWORD=minioadminpassword" \
+  -v /home/user/Documents/Serverless_Scheduler/S3Emul/data:/data \
+  --restart=always \
+  quay.io/minio/minio server /data --console-address ":9001"
+```
