@@ -27,6 +27,14 @@ import fabric.views as fabric
 import csv
 import random
 from providers.mincost import minimize_total_cost
+global procedural_shutdown_penalty
+procedural_shutdown_penalty = 0
+global non_procedural_shutdown_penalty
+non_procedural_shutdown_penalty = 0
+global non_procedural_shutdown_multiplier
+non_procedural_shutdown_multiplier = 0.67
+global prediction_deviation_points
+global prediction_deviation_points_multiplier
 # Create your views here.
 data_dict = None
 BROKER_ID = "broker.hivemq.com"
@@ -67,6 +75,17 @@ def get_benchmarks_for(user_id, benchmark):
     print(reference_stats)
     update_efficiency_score_in_models(user_id,provider_cpu_usage, provider_memory_usage, reference_cpu_usage, reference_memory_usage)
 
+def penalise(user_id, penalty_type):
+    provider = User.objects.get(user_id=user_id)
+    if penalty_type == 1:
+        provider.reputation_score -= service_queue.qsize()*non_procedural_shutdown_multiplier + non_procedural_shutdown_penalty #queuesize + fix penalty
+        print("Penalised provider ", user_id, " for quitting non-procedurally")
+        #TODO reallocation of jobs not done yet.
+    elif penalty_type == 0:
+        provider.reputation_score -= procedural_shutdown_penalty
+        print("Did not penalise provider ", user_id, " for quitting procedurally")
+    provider.save()
+
 # mqtt client callbacks:
 def on_connect(mqtt_client, userdata, flags, rc, callback_api_version):
     mqtt_client.subscribe(topic="EVERYONE")
@@ -95,6 +114,12 @@ def on_message(mqtt_client, userdata, msg):
             get_benchmarks_for(user_id=user_id, benchmark=benchmark) #this will also update models.
         elif(msg.payload.decode("utf-8").startswith("Stats for Reference Provider: ")):
             print("Stats added to TrainingData/Reference_Provider_Data.txt")
+        elif(msg.payload.decode("utf-8").startswith("offline_non-procedurally")):    
+            penalise(msg.topic, 1)
+            print(msg.topic + "was disconnected non-procedurally")
+        elif(msg.payload.decode("utf-8").startswith("offline_procedurally")):    
+            penalise(msg.topic, 0)
+            print(msg.topic + "was disconnected procedurally")  
         if(msg.topic=="EVERYONE"):
             if(msg.payload.decode("utf-8").startswith("start_connect")):
                 print("connecting to ", msg.payload.decode("utf-8")[13:])
