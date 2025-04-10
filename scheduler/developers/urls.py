@@ -9,7 +9,7 @@ urlpatterns = [
     path('start_service/', start_service, name='start_service'),
     path('delete_service/', delete_service, name='delete_service'),
     path('run_service/<int:service_id>', run_service, name='run_service'),
-    path('run_service_async/', run_service_async, name='run_service_async'),
+    path('run_service_async/<int:service_id>', run_service_async, name='run_service_async'),
     path('user_jobs/', user_jobs, name='user_jobs'),
     path('job_info/', job_info, name='job_info'),
 ]
