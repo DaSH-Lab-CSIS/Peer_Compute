@@ -12,5 +12,5 @@ def generate_input_for_generator(size):
         'server-address': '127.0.0.1', 
         'server-port': 8001,
         'repetitions': 10,
-        'output-bucket': 'peercomputebucket1'
+        'output-bucket': 'peercomputebucket2'
         }

@@ -163,16 +163,18 @@ def run_service(request, service_id):
                    'provider': provider, 
                    'job_id': job_id})
 
+@csrf_exempt
 def run_service_async(request, service_id):
     response = ''
     try:
         service = Services.objects.get(id=service_id)
         if service.active:
+            data = json.loads(request.body)
             temp_time = datetime.now(tz=timezone(TIME_ZONE))
-            # request_handler(request, service, temp_time, run_async=True)
-            x = threading.Thread(target=request_handler, args=(request, service, temp_time, True))
+            # request_handler(data, service, temp_time, run_async=True)
+            x = threading.Thread(target=request_handler, args=(data, service, temp_time, True))
             x.start()
-            if find_provider() is None:
+            if find_provider(service) is None:
                 messages.error(request, "There are no available providers in the network")
                 return redirect('index')
             else:

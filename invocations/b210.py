@@ -2,7 +2,7 @@ import glob, os
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from s3_utils import upload_to_s3
+from invocations.s3_utils import upload_to_s3
 
 def buckets_count():
     return (1, 1)
@@ -36,10 +36,11 @@ def generate_input(data_dir, size, benchmarks_bucket, input_paths, output_paths,
 def generate_input_for_generator(size):
     input_paths = ['input']
     output_paths = ['output']
-    benchmarks_bucket = 'peercomputebucket1'
+    benchmarks_bucket = 'peercomputebucket2'
     import os
     data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'serverless-benchmarks-data', '200.multimedia', '210.thumbnailer')
     payload = generate_input(data_dir, size, benchmarks_bucket, input_paths, output_paths)
+    return payload
     print(payload)
 
 if __name__ == "__main__":
