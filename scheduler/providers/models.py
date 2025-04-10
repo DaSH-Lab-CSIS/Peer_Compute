@@ -12,6 +12,17 @@ from django.core.exceptions import ValidationError
 
 class Job(models.Model):
     id = models.AutoField(primary_key=True)
+    # New state field
+    STATUS_CHOICES = [
+        ('CREATED', 'Created'),
+        ('SENT', 'Sent to Provider'),
+        ('ACKNOWLEDGED', 'Acknowledged by Provider'),
+        ('COMPLETED', 'Completed'),
+        ('FAILED', 'Failed'),
+    ]
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='CREATED')
+    recovery_attempts = models.IntegerField(default=0)
+    last_recovery_attempt = models.DateTimeField(null=True, blank=True)
     provider = models.ForeignKey(
         User,
         on_delete=models.CASCADE,
@@ -27,7 +38,7 @@ class Job(models.Model):
         null=True,
         blank=True,
         # REVIEW if this comment is present this needs to be done.
-        # allowing null values till pushing to postgres. THIS WILL BE REMOVED POST THAT. [ Job is an instance of a Service it can't have a null service reference ]
+        # allowing null values till production ready. THIS WILL BE REMOVED POST THAT. [ Job is an instance of a Service it can't have a null service reference ]
     )
     developer = models.ForeignKey(
         User,
@@ -36,7 +47,7 @@ class Job(models.Model):
         related_name="jobs_as_developer",
         null=True,
         blank=True,
-        # allowing null values till pushing to postgres. THIS WILL BE REMOVED POST THAT.
+        # allowing null values till production ready. THIS WILL BE REMOVED POST THAT.
     )
     start_time = models.DateTimeField(auto_now_add=True)
     ack_time = models.DateTimeField(null=True, blank=True)  # Only set when job is acknowledged
@@ -57,6 +68,17 @@ class Job(models.Model):
 
         if latest_job:
             return latest_job.run_time
+        else:
+            return None
+
+    def get_latest_pull_time(provider_id, service_id):
+        latest_job = Job.objects.filter(
+            provider_id = provider_id,
+            service_id = service_id
+        ).latest('pull_time')
+
+        if latest_job:
+            return latest_job.pull_time
         else:
             return None
 
