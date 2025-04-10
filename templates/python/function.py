@@ -59,7 +59,7 @@ if __name__ == "__main__":
         'server-address': 'host.docker.internal',  # This allows connecting to host machine from inside container
         'server-port': 8001,
         'repetitions': 10,
-        'output-bucket': 'peercomputebucket1'
+        'output-bucket': 'peercomputebucket2'
     }
     result = handler(test_event)
     print(result)

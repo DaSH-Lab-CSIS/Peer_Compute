@@ -1,4 +1,7 @@
 from threading import Thread, Event, Lock
+import threading
+
+import concurrent
 import zmq
 import sys
 import requests
@@ -27,9 +30,14 @@ import tempfile
 import socket
 
 user_id = sys.argv[1]
-controller_ip = "10.8.1.48" #change to .46
+# Add the project root directory to Python's path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Change from relative to absolute import
+from invocations.invoker import get_payload
+
+controller_ip = "10.8.1.18" #change to whichever is running django
 controller_port = "8000"
-#BROKER_ID = "10.60.12.47"
+# BROKER_ID = "10.8.1.18"
 BROKER_ID="broker.hivemq.com"
 #uncomment requests.get ACK READY NOT READY
 channelName = "mychannel"
@@ -81,6 +89,31 @@ def on_connect(mqtt_client, userdata, flags, rc, callback_api_version):
     else:
         print('Bad connection. Code:', rc)
 
+def process_dockernotrun_request(data):
+    global pending_jobs
+    with pending_jobs_lock:
+        pending_jobs += 1
+        print(f"Pending jobs incremented: {pending_jobs}")
+    
+    try: 
+        if(data['runMultipleInvocations'] == True):
+            if(data['numberOfInvocations'] == 1) :
+                on_request(data)
+            elif(data['isChained'] == False):
+                for i in range(data['numberOfInvocations']):
+                    container_name = str(data['job_id']) + "_container_" + str(i)
+                    on_request(data)
+            else: 
+                on_chained_request(data)
+        else:
+            on_request(data)
+    except Exception as e:
+        print(str(e))
+    finally: 
+        with pending_jobs_lock:
+            pending_jobs -= 1
+            print(f"Pending jobs decremented: {pending_jobs}")
+
 def on_message(mqtt_client, userdata, msg):
     print(f'Received message on topic: {msg.topic} with payload: {msg.payload}')
     global last_message_time
@@ -90,43 +123,16 @@ def on_message(mqtt_client, userdata, msg):
         data = json.loads(msg.payload.decode("utf-8"))
         if(data["stage"] == "dockernotrun"):
             data["stage"] = "dockerrunning"
-            with pending_jobs_lock:
-                global pending_jobs
-                pending_jobs += 1
-                print(f"Pending jobs incremented: {pending_jobs}")
-            
-            # response = {'Result': [], 'run_time': [], 'pull_time': [], 'total_time': []}
-            # on_request initially returned a dictionary.
-            try: 
-                if(data['runMultipleInvocations'] == True):
-                    if(data['numberOfInvocations'] == 1) :
-                        on_request(data)
-                    elif(data['isChained'] == False):
-                        for i in range(data['numberOfInvocations']):
-                            container_name = str(data['job_id']) + "_container_" + str(i)
-                            temp = on_request(data)
-                            # response['Result'].append(temp['Result'])
-                            # response['run_time'].append(temp['run_time'])
-                            # response['pull_time'].append(temp['pull_time'])
-                            # response['total_time'].append(temp['total_time'])
-                    else: 
-                        on_chained_request(data)
-                else:
-                    on_request(data)
-            finally: 
-                with pending_jobs_lock:
-                    pending_jobs -= 1
-                    print(f"Pending jobs decremented: {pending_jobs}")        
-            
-            # mqtt_client.publish(user_id, json.dumps(response).encode("utf-8"),qos=2)
-            #mqtt_client.loop_stop()
-            #mqtt_client.disconnect()
+            # Offload heavy processing to a separate thread
+            Thread(target=process_dockernotrun_request, args=(data,)).start()
+        
     except:
-        #print(str({msg.payload}))
-        if(msg.payload.decode("utf-8")=="calculate_efficiency"):
-            calc_benchmark_stats()
-        if(msg.payload.decode("utf-8").startswith("EfficiencyScoreSet:")):
-            scoreset = json.loads(msg.payload[19:])
+        payload_str = msg.payload.decode("utf-8")
+        if(payload_str == "calculate_efficiency"):
+            # Offload efficiency calculations to a separate thread
+            Thread(target=calc_benchmark_stats).start()
+        elif(payload_str.startswith("EfficiencyScoreSet:")):
+            scoreset = json.loads(payload_str[19:])
             global cpu_efficiency_score
             cpu_efficiency_score = scoreset['cpu']
             global memory_efficiency_score
@@ -134,9 +140,10 @@ def on_message(mqtt_client, userdata, msg):
             print("Fetched this provider's efficiency score set")
             print(cpu_efficiency_score)
             print(memory_efficiency_score)
-        if(msg.payload.decode("utf-8").startswith("ref_run_service_id/")):
-            service_id = msg.payload.decode("utf-8")[19:]
-            set_reference_stats_for_service(service_id)
+        elif(payload_str.startswith("ref_run_service_id/")):
+            service_id = payload_str[19:]
+            # Offload reference stats collection to a separate thread
+            Thread(target=set_reference_stats_for_service, args=(service_id,)).start()
 
 
 def on_subscribe(mqtt_client, userdata, mid, qos, properties=None):
@@ -156,7 +163,7 @@ mclient.on_connect = on_connect
 mclient.on_message = on_message
 mclient.on_subscribe= on_subscribe
 
-mclient.connect(host=BROKER_ID,port=1883, keepalive=5)
+mclient.connect(host=BROKER_ID,port=1883, keepalive=100)
 #client subscribe is in on_connect
 mclient.loop_start() #different thread
 
@@ -328,9 +335,27 @@ def run_docker(body, container_name, inputData=None):
     #plot_predictions(predictions)
     return result, pull_time, run_time, container_name
 
-def run_and_invoke_docker(body, container_name, payload) -> dict:
+def monitor_container(cont, start_run_time, timeout):
+    stack = []
+    count = 0
+    while(str(cont.status)=='created'):
+        cont.reload()
+    while ((cont != None) and ((str(cont.status) == 'running') )):
+        if(time.time()-start_run_time > timeout):
+            print("timeout exceeded (cont not killed)")
+            break
+        s = cont.stats(decode=False, stream=False)
+        if(s['memory_stats'] != {}):
+            stack.clear()
+            stack.append(s)
+        else: break
+        count+=1
+    return stack
 
 
+def run_and_invoke_docker(body, container_name) -> dict:
+
+    print("[run_and_invoke_docker]")
     #open a file and write the payload to it
     #with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
     #    json.dump(payload, f)
@@ -348,23 +373,31 @@ def run_and_invoke_docker(body, container_name, payload) -> dict:
 
     start_pull_time = time.time()
     #image = client.images.pull(body)
-    print("inside run_docker with body : " + body)
+    print("inside run_and_invoke_docker with body : " + body)
     image = imagePuller.request_image(body)
-    print("Out of Hybrid Caching manager and inside run_docker again")
+    print("Out of Hybrid Caching manager and inside run_and_invoke_docker again")
     print(image)
     pull_time = int((time.time() - start_pull_time) *1000)
     
-    start_run_time = 0
+    start_run_time = time.time()
     cont = None
+    benchmark_no=body.split("/")[1].split(".")[1] # get number from peercompute/benchmark.010....
+    payload=get_payload(benchmark_no, "small")
+    # Temporarily override payload with a fixed value
+    
+    print(payload)
+    response = None
+    future=None
     try:
+        print("container started running")
         cont = client.containers.run(image,
                                      name=container_name,
                                      detach=True,
                                      ports={'8080/tcp': None}, #None dynamically allocates a port
                                      environment={
-                                         'AWS_ACCESS_KEY_ID': os.getenv('AWS_ACCESS_KEY_ID'),
-                                         'AWS_SECRET_ACCESS_KEY': os.getenv('AWS_SECRET_ACCESS_KEY'), 
-                                         'AWS_REGION': os.getenv('AWS_REGION')
+                                         'AWS_ACCESS_KEY_ID': 'AKIA3KAG6W36BSXOEHWD',
+                                         'AWS_SECRET_ACCESS_KEY': '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', 
+                                         'AWS_REGION': 'ap-south-1'
                                      }
                                      )
         
@@ -373,64 +406,32 @@ def run_and_invoke_docker(body, container_name, payload) -> dict:
         cont.reload()  # Refresh container data
         port_info = cont.ports.get('8080/tcp')
         host_port = port_info[0]['HostPort'] #get the port
-        print(host_port)
-        
-        # Make POST request to container
-        response = requests.post(f'http://localhost:{host_port}', 
-                               json=payload,
-                               headers={'Content-Type': 'application/json'})
+        print("container name ID: ", cont.id)
+        print("container name: ", cont.name)
+        # Make POST request to container # blocking
         
     except Exception as e:
         print(e)
-        container_name += "t"
-        cont = client.containers.run(image,
-                                     name=container_name,
-                                     detach=True, 
-                                     ports={'8080/tcp': None},
-                                     environment={
-                                         'AWS_ACCESS_KEY_ID': os.getenv('AWS_ACCESS_KEY_ID'),
-                                         'AWS_SECRET_ACCESS_KEY': os.getenv('AWS_SECRET_ACCESS_KEY'),
-                                         'AWS_REGION': os.getenv('AWS_REGION')
-                                     }
-                                     )
-        
-        # Wait a bit for container to start
-        time.sleep(1)
-        cont.reload()  # Refresh container data
-        port_info = cont.ports.get('8080/tcp')
-        host_port = port_info[0]['HostPort']
-        print(host_port)
-        
-        # Make POST request to container
-        response = requests.post(f'http://localhost:{host_port}',
-                               json=payload, 
-                               headers={'Content-Type': 'application/json'})
 
-    start_run_time = time.time()
+    finally:
+        print(body)
+        timeout = 3000
+        print("monitoring container")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor_for_cont_monitoring:
+            # Submit the monitoring task to the executor
+            future = executor_for_cont_monitoring.submit(monitor_container, cont, start_run_time, timeout)
+            print("container monitored")
+            response = requests.post(f'http://localhost:{host_port}', 
+                                json=payload,
+                                headers={'Content-Type': 'application/json'},
+                                timeout=30)  # Increased timeout to 5 minutes (300 seconds)
+            print("post request sent")
+
     #result = "this is result" #remove this line uncomment below line
     #result = result.decode("utf-8") #this gives the Hello from Docker msg.
-    
-    print("Run Started!")
-    print(body)
-    timeout = 3000
-    stack = []
-    run_vars = {}
-    #cont = client.containers.get(container_name)
-    count = 0
-    if(cont==None):print("cont is None")
-    while ((cont != None) and ((str(cont.status) == 'running') or (str(cont.status) == 'created'))):
-        if(time.time()-start_run_time > timeout):
-            print("timeout exceeded (cont not killed)")
-            break
-        #elapsed_time += stop_time
-        s = cont.stats(decode=False, stream=False)
-        if(s['memory_stats'] != {}):
-            #stack.clear() #to get stats streamed throughout the process remove this line
-            stack.clear() #only to save time
-            stack.append(s)
-        else: break
-        count+=1
 
+    stack=future.result()
+    run_vars={}
     # Read result from output file
     #with open(output_file, 'r') as f:
     #    result = f.read()
@@ -439,7 +440,7 @@ def run_and_invoke_docker(body, container_name, payload) -> dict:
     result = response.json()
     print(result)
     #print(stack) #uncomment this to get full stats
-    run_time = int((time.time() - start_run_time)*1000)
+    run_time = int((time.time() - start_run_time)*1000) # get in ms
     #print(count)
     # run_vars['time_indexed_stats'] = time_indexed_stats
     run_vars['memory_usage'] = stack[0]['memory_stats']['usage']
@@ -463,7 +464,8 @@ def run_and_invoke_docker(body, container_name, payload) -> dict:
     # the below is service specific and has to be made for each service.
     append_data_to_file(run_vars, 'TrainingData/eff_score_data.txt')
     run_vars['service']=body # this is the task link
-
+    print("runtime data: ")
+    print(run_vars)
     print("Predicted Runtime:")
     print(trainAndPredict(run_vars))
     #print(predict_runtime(model, run_vars['time_indexed_stats'])) #a list of stats with timestamps
@@ -507,8 +509,9 @@ def on_request(json_data) :
     if json_data['inputData'] == "None":
         json_data['inputData'] = None
 
-    r, pull_time, run_time, container_name = run_docker(json_data['task_link'], str(str(json_data['job_id'])+"_container_"), json_data['inputData'])
-    total_time = math.ceil(((pull_time + run_time)/100.0))*100
+    print("[on_request] in provider1.py")
+    r, pull_time, run_time, container_name = run_and_invoke_docker(json_data['task_link'], str(str(json_data['job_id'])+"_container_")) #TODO
+    total_time = math.ceil(((pull_time + run_time)/100.0))*100 
     print(pull_time, run_time, total_time)
     # HF_set_time(str(json_data['job_id']), total_time)
     # HF_invoke_balance_transfer(str(json_data['provider_id']), str(json_data['task_developer']))
