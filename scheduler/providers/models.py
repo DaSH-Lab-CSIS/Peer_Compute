@@ -12,17 +12,17 @@ from django.core.exceptions import ValidationError
 
 class Job(models.Model):
     id = models.AutoField(primary_key=True)
-    # New state field
-    STATUS_CHOICES = [
-        ('CREATED', 'Created'),
-        ('SENT', 'Sent to Provider'),
-        ('ACKNOWLEDGED', 'Acknowledged by Provider'),
-        ('COMPLETED', 'Completed'),
-        ('FAILED', 'Failed'),
-    ]
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='CREATED')
-    recovery_attempts = models.IntegerField(default=0)
-    last_recovery_attempt = models.DateTimeField(null=True, blank=True)
+    # # New state field
+    # STATUS_CHOICES = [
+    #     ('CREATED', 'Created'),
+    #     ('SENT', 'Sent to Provider'),
+    #     ('ACKNOWLEDGED', 'Acknowledged by Provider'),
+    #     ('COMPLETED', 'Completed'),
+    #     ('FAILED', 'Failed'),
+    # ]
+    # status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='CREATED')
+    # recovery_attempts = models.IntegerField(default=0)
+    # last_recovery_attempt = models.DateTimeField(null=True, blank=True)
     provider = models.ForeignKey(
         User,
         on_delete=models.CASCADE,
