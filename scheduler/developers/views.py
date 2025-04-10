@@ -110,12 +110,12 @@ def delete_service(request, service_id):
 #             if (data['chained'] == True) :
 #                 for i in range(data['numberOfInvocations']):
 #                     request_handler(data, service, temp_time)
-                    
+
 #             else:
 #                 for i in range(data['numberOfInvocations']):
 #                 #     print("Invocation ", str(i), ": \n")
 #                     request_handler(data, service, temp_time)
-            
+
 #         else:
 #             messages.error(request, "This service is disabled")
 
@@ -139,8 +139,10 @@ def run_service(request, service_id):
                     data['input'] = int(response['Result'])
             else:
                 for i in range(data['numberOfInvocations']):
-                #     print("Invocation ", str(i), ": \n")
-                    response, provider, providing_time, job_id = request_handler(data, service, temp_time)
+                    #     print("Invocation ", str(i), ": \n")
+                    response, provider, providing_time, job_id = request_handler(
+                        data, service, temp_time
+                    )
             if response is None:
                 messages.error(request, "There are no available providers in the network")
                 return redirect('index')
@@ -186,6 +188,67 @@ def run_service_async(request, service_id):
 
     return redirect('index')
 
+@csrf_exempt
+def run_service_async_batch(request):
+    """
+    Processes a batch of requests from the load balancer.
+    Each request in the batch is processed asynchronously.
+    """
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Invalid request method'}, status=405)
+    
+    try:
+        # Parse the batch of requests
+        batch_data = json.loads(request.body)
+        if 'requests' not in batch_data:
+            return JsonResponse({'error': 'Invalid batch format'}, status=400)
+        
+        results = []
+        temp_time = datetime.now(tz=timezone(TIME_ZONE))
+        
+        # Process each request in the batch asynchronously
+        for req_data in batch_data['requests']:
+            try:
+                service_id = req_data.get('serviceID')
+                if not service_id:
+                    results.append({'error': 'Missing serviceID'})
+                    continue
+                    
+                service = Services.objects.get(id=service_id)
+                
+                if not service.active:
+                    results.append({'error': f'Service {service_id} is disabled'})
+                    continue
+                
+                # Start a thread to process this request asynchronously 
+                #NOTE This is a non-blocking call -> threads continue to run in background after response is sent.
+                x = threading.Thread(
+                    target=request_handler, 
+                    args=(req_data, service, temp_time, True)
+                )
+                x.start()
+                
+                results.append({
+                    'status': 'success',
+                    'message': f'Async request started for service {service_id}',
+                    'service_name': service.name
+                })
+                
+            except ObjectDoesNotExist:
+                results.append({'error': f'Service {service_id} not found'})
+            except Exception as e:
+                results.append({'error': f'Failed to process request: {str(e)}'})
+        
+        return JsonResponse({
+            'status': 'success', 
+            'batch_size': len(batch_data['requests']),
+            'results': results
+        })
+        
+    except json.JSONDecodeError:
+        return JsonResponse({'error': 'Invalid JSON'}, status=400)
+    except Exception as e:
+        return JsonResponse({'error': f'Batch processing failed: {str(e)}'}, status=500)
 
 # @login_required()
 def user_jobs(request):
