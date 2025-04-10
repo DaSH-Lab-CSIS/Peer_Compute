@@ -1,7 +1,12 @@
+# START BROKER ON .18
+```bash
+mosquitto -v -c /home/user/Documents/Serverless_Scheduler/broker/moqsuitto.conf
+```
+
 example curl
 ```
 
-  curl -X POST "http://localhost:8000/developers/run_service/12" \
+  curl -X POST "http://localhost:8000/developers/run_service_async/18" \
   -H "Accept: */*" \
   -H "User-Agent: Thunder Client (https://www.thunderclient.com)" \
   -H "Content-Type: application/json" \
@@ -11,6 +16,7 @@ example curl
 	"input": "None",
 	"runMultipleInvocations": false
   }'
+  
 ```
 ```
   curl -X GET "http://localhost:8000/providers/calculate_efficiency/34933555-5cca-41fb-aded-4ab7900c48d5" 
@@ -24,11 +30,33 @@ curl -X POST "http://localhost:8000/providers/set_reference_stats_for_service/" 
 ```
 curl -X POST "http://localhost:8000/providers/set_reference_stats_for_service/" -H "Content-Type: application/json" -d '{"service_id":"satyam098/testimage_largeruntime"}'
 ```
+# Benchmark Mapping
+
+This file provides a mapping of benchmark numbers to their corresponding identifiers.
+| Benchmark Number | Mapping | Name |
+|-----------------|---------|------|
+| 010 | 13 | peercompute/benchmark.010.sleep.python-3.9 |
+| 020 | invalid | peercompute/benchmark.020.network-benchmark.python-3.9 |
+| 030 | invalid | peercompute/benchmark.030.clock-synchronization.python-3.9 |
+| 040 | invalid | peercompute/benchmark.040.server-reply.python-3.9 |
+| 110 | 17 | peercompute/benchmark.110.dynamic-html.python-3.9 |
+| 120 | 18 | peercompute/benchmark.120.uploader.python-3.9 |
+| 210 | 19 | peercompute/benchmark.210.thumbnailer.python-3.9 |
+| 220 | invalid | - |
+| 311 | 20 | peercompute/benchmark.311.compression.python-3.9 |
+| 411 | invalid | benchmark.411.image-recognition.python-3.9 |
+| 501 | 21 | peercompute/benchmark.501.graph-pagerank-3.9 |
+| 502 | 22 | peercompute/benchmark.502.graph-mst-3.9 |
+| 503 | 23 | peercompute/benchmark.503.graph-bfs-3.9 |
+| 504 | 24 | peercompute/benchmark.504.dna-visualisation.python-3.9 |
+
+Note: Benchmarks marked as "invalid" are those identified as inactive in the invoker.py file.
+
 services:
 [old]
 run_service/3 - (hello world),  
-run_service/5 - (largeruntime),
-run_service/6 - video_encoding benchmark from vswarmease.
+run_service/12 - (largeruntime),
+run_service/13 - 010 benchmark SEBS
 reference provider: ```34933555-5cca-41fb-aded-4ab7900c48d5```
 default developer user_id: ```0316778b-d20b-4415-a993-d95172340c2d```
 default developer id: ```11``` This one we will be using.

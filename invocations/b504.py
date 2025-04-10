@@ -21,10 +21,11 @@ def generate_input(data_dir, size, benchmarks_bucket, input_paths, output_paths,
 def generate_input_for_generator(size):
     input_paths = ['input']
     output_paths = ['output']
-    benchmarks_bucket = 'peercomputebucket1'
+    benchmarks_bucket = 'peercomputebucket2'
     import os
     data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'serverless-benchmarks-data', '500.scientific', '504.dna-visualisation')
     payload = generate_input(data_dir, size, benchmarks_bucket, input_paths, output_paths, upload_to_s3)
+    return payload
     print(payload)
 
 if __name__ == "__main__":

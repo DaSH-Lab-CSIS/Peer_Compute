@@ -41,6 +41,7 @@ global prediction_deviation_points_multiplier
 # Create your views here.
 data_dict = None
 BROKER_ID = "broker.hivemq.com"
+# BROKER_ID = "10.8.1.18"
 reference_provider_id = '34933555-5cca-41fb-aded-4ab7900c48d5'
 file_path = "/home/user/Documents/Serverless_Scheduler/SchedInfo.csv"
 
@@ -92,7 +93,7 @@ def penalise(user_id, penalty_type):
 # mqtt client callbacks:
 def on_connect(mqtt_client, userdata, flags, rc, callback_api_version):
     mqtt_client.subscribe(topic="EVERYONE")
-    print("Connected from views.py/providers")
+    print("Connected to mqtt from views.py/providers")
 
 def on_message(mqtt_client, userdata, msg):
     print('from views.py/providers ')
@@ -211,7 +212,6 @@ def publish_to_topic_mqtt(runMultipleInvocations, numberOfInvocations, isChained
     
     # IMP # 
     #return json.dumps(data_dict)
-    return
 
 
 # def make_rmq_user(user):
@@ -485,6 +485,7 @@ def request_handler(data, service, start_time, run_async=False):
                 raise
     
     raise Exception("Request handler failed after multiple attempts")
+
 
 
 def finish_job(data):
