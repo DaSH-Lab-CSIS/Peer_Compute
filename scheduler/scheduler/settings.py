@@ -95,6 +95,18 @@ WSGI_APPLICATION = 'scheduler.wsgi.application'
 #     }
 # }
 
+# # Local db 
+# DATABASES = {
+#     "default": {
+#         "ENGINE": "django.db.backends.postgresql",
+#         "NAME": "peercompute_local_sn34kyp3t3",
+#         "USER": "postgres",
+#         "PASSWORD": "user123",
+#         "HOST": "localhost",
+#         "PORT": "5432",
+#     }
+# }
+
 
 # SUPABASE
 DATABASES = {
@@ -110,6 +122,7 @@ DATABASES = {
         },
     }
 }
+
 
 # Password validation
 # https://docs.djangoproject.com/en/4.2/ref/settings/#auth-password-validators
