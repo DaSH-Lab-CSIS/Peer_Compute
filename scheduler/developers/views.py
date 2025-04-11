@@ -176,7 +176,16 @@ def run_service_async(request, service_id):
             # request_handler(data, service, temp_time, run_async=True)
             x = threading.Thread(target=request_handler, args=(data, service, temp_time, True))
             x.start()
-            if find_provider(service) is None:
+            
+            # Check if there are available providers without waiting for the result
+            # Use direct DB query to avoid calling find_provider which might cause errors
+            available_providers = User.objects.filter(
+                active=True,
+                is_provider=True,
+                ready=True
+            ).exists()
+            
+            if not available_providers:
                 messages.error(request, "There are no available providers in the network")
                 return redirect('index')
             else:
@@ -194,7 +203,7 @@ def run_service_async(request, service_id):
 def run_service_async_batch(request):
     """
     Processes a batch of requests from the load balancer.
-    Each request in the batch is processed asynchronously.
+    Sends the entire batch to request_handler to process at once.
     """
     if request.method != 'POST':
         return JsonResponse({'error': 'Invalid request method'}, status=405)
@@ -205,10 +214,13 @@ def run_service_async_batch(request):
         if 'requests' not in batch_data:
             return JsonResponse({'error': 'Invalid batch format'}, status=400)
         
+        # Collect all services and request data
+        services = []
+        requests_data = []
         results = []
         temp_time = datetime.now(tz=timezone(TIME_ZONE))
         
-        # Process each request in the batch asynchronously
+        # First pass - collect valid services and data
         for req_data in batch_data['requests']:
             try:
                 service_id = req_data.get('serviceID')
@@ -222,17 +234,13 @@ def run_service_async_batch(request):
                     results.append({'error': f'Service {service_id} is disabled'})
                     continue
                 
-                # Start a thread to process this request asynchronously 
-                #NOTE This is a non-blocking call -> threads continue to run in background after response is sent.
-                x = threading.Thread(
-                    target=request_handler, 
-                    args=(req_data, service, temp_time, True)
-                )
-                x.start()
+                # Add to our processing lists
+                services.append(service)
+                requests_data.append(req_data)
                 
                 results.append({
-                    'status': 'success',
-                    'message': f'Async request started for service {service_id}',
+                    'status': 'pending',
+                    'message': f'Service {service_id} queued for processing',
                     'service_name': service.name
                 })
                 
@@ -241,9 +249,18 @@ def run_service_async_batch(request):
             except Exception as e:
                 results.append({'error': f'Failed to process request: {str(e)}'})
         
+        # Process all collected services in a single thread
+        if services:
+            x = threading.Thread(
+                target=request_handler, 
+                args=(requests_data, services, temp_time, True)
+            )
+            x.start()
+        
         return JsonResponse({
             'status': 'success', 
             'batch_size': len(batch_data['requests']),
+            'processed': len(services),
             'results': results
         })
         
