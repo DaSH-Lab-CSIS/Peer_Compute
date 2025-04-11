@@ -23,21 +23,21 @@ POST "http://scheduler1:8000/api/process" \
 -d '{
   "requests": [
     {
-      "serviceID": 12,
+      "serviceID": 13,
       "numberOfInvocations": 1,
       "chained": false,
       "input": "None",
       "runMultipleInvocations": false
     },
     {
-      "serviceID": 12,
+      "serviceID": 13,
       "numberOfInvocations": 1,
       "chained": false,
       "input": "None",
       "runMultipleInvocations": false
     },
     {
-      "serviceID": 12,
+      "serviceID": 13,
       "numberOfInvocations": 1,
       "chained": false,
       "input": "None",
