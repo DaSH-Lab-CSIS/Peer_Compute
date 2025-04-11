@@ -19,3 +19,5 @@ S3Emul/*
 *.pyzw
 invocations/__pycache__/
 scheduler/developers/__pycache__/
+*/__MACOSX/
+*/.DS_Store
