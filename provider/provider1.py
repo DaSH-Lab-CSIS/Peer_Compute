@@ -439,7 +439,7 @@ def run_and_invoke_docker(body, container_name) -> dict:
     #print(response.json())
     result = response.json()
     print(result)
-    #print(stack) #uncomment this to get full stats
+    print(stack) #uncomment this to get full stats
     run_time = int((time.time() - start_run_time)*1000) # get in ms
     #print(count)
     # run_vars['time_indexed_stats'] = time_indexed_stats

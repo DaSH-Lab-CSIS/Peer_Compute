@@ -147,6 +147,7 @@ def get_mclient():
         mclient.on_message = on_message
         mclient.on_subscribe= on_subscribe
         mclient.connect(host=BROKER_ID,port=1883)
+        mclient.subscribe("ROTATION")  # Subscribe to ROTATION topic
         mclient.loop_start()
     return mclient
 
@@ -957,6 +958,10 @@ def process_assignments(assignment, cost_matrix):
 
     print("Exiting process_assignments\n")
 
+    # Publish ILP_DONE to ROTATION topic after processing assignments
+    mqtt_client = get_mclient()
+    mqtt_client.publish(topic="ROTATION", payload="ILP_DONE", qos=2)
+    print("Published ILP_DONE to ROTATION topic")
 
 def find_providers(services, jobs=None):
     print("Debug: Entering find_providers")
