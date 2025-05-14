@@ -35,7 +35,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Change from relative to absolute import
 from invocations.invoker import get_payload
 
-controller_ip = "10.8.1.18" #change to whichever is running django
+controller_ip = "0.0.0.0" #change to whichever is running django
 controller_port = "8000"
 # BROKER_ID = "10.8.1.18"
 BROKER_ID="broker.hivemq.com"
@@ -382,7 +382,7 @@ def run_and_invoke_docker(body, container_name) -> dict:
     start_run_time = time.time()
     cont = None
     benchmark_no=body.split("/")[1].split(".")[1] # get number from peercompute/benchmark.010....
-    payload=get_payload(benchmark_no, "small")
+    payload=get_payload(benchmark_no, "large")
     # Temporarily override payload with a fixed value
     
     print(payload)
