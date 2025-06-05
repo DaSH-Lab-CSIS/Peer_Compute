@@ -1,0 +1,13 @@
+[2025-06-05 17:53:40.659] [loadbalancer] [SYSTEM] === EXPERIMENT SESSION START ===
+[2025-06-05 17:53:40.659] [loadbalancer] [STDOUT] Experiment logging started for loadbalancer
+[2025-06-05 17:53:40.659] [loadbalancer] [STDOUT] Starting loadbalancer with experiment logging: True
+[2025-06-05 17:53:41.101] [loadbalancer] [STDOUT] SCHEDULER_URLS: ['http://10.8.1.18:8000/developers/run_service_async_batch/']
+[2025-06-05 17:53:41.103] [loadbalancer] [SYSTEM] === EXPERIMENT SESSION END ===
+[2025-06-05 17:57:50.314] [loadbalancer] [SYSTEM] === EXPERIMENT SESSION START ===
+[2025-06-05 17:57:50.314] [loadbalancer] [STDOUT] Experiment logging started for loadbalancer
+[2025-06-05 17:57:50.798] [loadbalancer] [STDOUT] MQTT client started successfully
+[2025-06-05 17:57:50.954] [loadbalancer] [STDOUT] Connected successfully to MQTT broker
+[2025-06-05 17:57:51.112] [loadbalancer] [STDOUT] Subscribed with QOS: [ReasonCode(Suback, 'Granted QoS 0')]
+[2025-06-05 17:57:51.270] [loadbalancer] [STDOUT] Subscribed with QOS: [ReasonCode(Suback, 'Granted QoS 0')]
+[2025-06-05 18:25:43.728] [loadbalancer] [STDOUT] MQTT client stopped
+[2025-06-05 18:25:43.728] [loadbalancer] [SYSTEM] === EXPERIMENT SESSION END ===

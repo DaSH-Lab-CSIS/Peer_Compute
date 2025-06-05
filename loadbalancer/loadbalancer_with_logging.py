@@ -30,9 +30,24 @@ def check_experiment_mode():
         return False
 
 def setup_logging_paths():
-    """Setup logging paths"""
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    logs_dir = os.path.join(base_dir, 'experiment_logs')
+    """Setup logging paths based on current algorithm"""
+    # Check for algorithm-specific logging
+    experiment_algorithm = os.environ.get('EXPERIMENT_ALGORITHM')
+    experiment_log_dir = os.environ.get('EXPERIMENT_LOG_DIR')
+    
+    if experiment_log_dir:
+        logs_dir = experiment_log_dir
+    elif experiment_algorithm:
+        # Create algorithm-specific directory
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        logs_dir = os.path.join(base_dir, 'experiment_logs', timestamp, experiment_algorithm)
+    else:
+        # Default behavior
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        logs_dir = os.path.join(base_dir, 'experiment_logs', timestamp)
+    
     os.makedirs(logs_dir, exist_ok=True)
     return logs_dir
 

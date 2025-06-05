@@ -23,10 +23,15 @@ def check_server_status():
 
 def run_comprehensive_experiment():
     """Run a comprehensive experiment comparing all algorithms"""
+    # Create a timestamp for this experiment
+    experiment_timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+    print(f"Experiment Timestamp: {experiment_timestamp}")
+    
     print("=" * 60)
     print("SCHEDULING ALGORITHM COMPARISON EXPERIMENT")
     print("=" * 60)
     print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Logs will be saved in: experiment_logs/{experiment_timestamp}")
     print(f"Testing algorithms: {', '.join(ALGORITHMS)}")
     print()
     
@@ -44,12 +49,14 @@ def run_comprehensive_experiment():
         response = requests.post(f"{BASE_URL}/experiment/start/", json={
             "algorithms": ALGORITHMS,
             "iterations": 15,
-            "services_per_iteration": 5
+            "services_per_iteration": 5,
+            "experiment_timestamp": experiment_timestamp  # Pass timestamp to backend
         }, timeout=10)
         
         if response.status_code == 200:
             result = response.json()
             print("✅ Experiment started successfully!")
+            print(f"   Experiment Logs: experiment_logs/{experiment_timestamp}")
             print(f"   Algorithms: {result['algorithms']}")
             print(f"   Iterations: {result['iterations']}")
             print(f"   Services per iteration: {result['services_per_iteration']}")

@@ -143,9 +143,12 @@ class ProviderLogger(ExperimentLogger):
     """Logger specifically for providers"""
     
     def __init__(self, provider_id: str):
+        # Get current log directory (may be algorithm-specific)
+        current_log_dir = settings.get_experiment_logs_dir()
+        os.makedirs(current_log_dir, exist_ok=True)
+        
         # Create provider-specific log file
-        logs_dir = settings.EXPERIMENT_LOGS_DIR
-        log_file = os.path.join(logs_dir, f"provider_{provider_id}_stdout.log")
+        log_file = os.path.join(current_log_dir, f"provider_{provider_id}_stdout.log")
         super().__init__(log_file, "provider", provider_id)
 
 
@@ -153,8 +156,11 @@ class LoadBalancerLogger(ExperimentLogger):
     """Logger specifically for load balancer"""
     
     def __init__(self, node_id: str = None):
-        logs_dir = settings.EXPERIMENT_LOGS_DIR
-        log_file = os.path.join(logs_dir, "loadbalancer_stdout.log")
+        # Get current log directory (may be algorithm-specific)
+        current_log_dir = settings.get_experiment_logs_dir()
+        os.makedirs(current_log_dir, exist_ok=True)
+        
+        log_file = os.path.join(current_log_dir, "loadbalancer_stdout.log")
         super().__init__(log_file, "loadbalancer", node_id)
 
 
@@ -178,8 +184,19 @@ def setup_scheduler_logging():
     if not settings.EXPERIMENT_MODE or not settings.EXPERIMENT_STDOUT_LOGGING:
         return None
     
-    if _scheduler_logger is None:
+    # Get current log directory (may be algorithm-specific)
+    current_log_dir = settings.get_experiment_logs_dir()
+    os.makedirs(current_log_dir, exist_ok=True)
+    
+    # Create new logger if needed or if directory changed
+    if _scheduler_logger is None or _scheduler_logger.log_file_path != os.path.join(current_log_dir, 'scheduler_stdout.log'):
+        # Stop existing logger if any
+        if _scheduler_logger:
+            _scheduler_logger.stop_logging()
+        
+        # Create new logger with current directory
         _scheduler_logger = SchedulerLogger()
+        _scheduler_logger.log_file_path = os.path.join(current_log_dir, 'scheduler_stdout.log')
         _scheduler_logger.start_logging()
     
     return _scheduler_logger

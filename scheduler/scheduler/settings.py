@@ -11,6 +11,8 @@ https://docs.djangoproject.com/en/4.2/ref/settings/
 """
 
 from pathlib import Path
+import os
+from datetime import datetime
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -178,10 +180,30 @@ ALGORITHM_METRICS_FILE = '/home/user/Documents/Serverless_Scheduler_sn34kyp3t3/a
 
 # Stdout logging configuration for experiment mode
 EXPERIMENT_STDOUT_LOGGING = True  # Enable stdout logging when EXPERIMENT_MODE is True
-EXPERIMENT_LOGS_DIR = '/home/user/Documents/Serverless_Scheduler_sn34kyp3t3/experiment_logs'
-SCHEDULER_LOG_FILE = '/home/user/Documents/Serverless_Scheduler_sn34kyp3t3/experiment_logs/scheduler_stdout.log'
-LOADBALANCER_LOG_FILE = '/home/user/Documents/Serverless_Scheduler_sn34kyp3t3/experiment_logs/loadbalancer_stdout.log'
-PROVIDER_LOG_FILE = '/home/user/Documents/Serverless_Scheduler_sn34kyp3t3/experiment_logs/provider_stdout.log'
+EXPERIMENT_LOGS_BASE_DIR = '/home/user/Documents/Serverless_Scheduler_sn34kyp3t3/experiment_logs'
+
+# Dynamic log directory - can be overridden by environment variables
+def get_experiment_logs_dir():
+    """Get the current experiment logs directory"""
+    # Check if algorithm-specific directory is set via environment
+    experiment_algorithm = os.environ.get('EXPERIMENT_ALGORITHM')
+    experiment_log_dir = os.environ.get('EXPERIMENT_LOG_DIR')
+    
+    if experiment_log_dir:
+        return experiment_log_dir
+    elif experiment_algorithm:
+        # Create algorithm-specific directory
+        timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        return os.path.join(EXPERIMENT_LOGS_BASE_DIR, timestamp, experiment_algorithm)
+    else:
+        # Default behavior
+        timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        return os.path.join(EXPERIMENT_LOGS_BASE_DIR, timestamp)
+
+EXPERIMENT_LOGS_DIR = get_experiment_logs_dir()
+SCHEDULER_LOG_FILE = os.path.join(EXPERIMENT_LOGS_DIR, 'scheduler_stdout.log')
+LOADBALANCER_LOG_FILE = os.path.join(EXPERIMENT_LOGS_DIR, 'loadbalancer_stdout.log')
+PROVIDER_LOG_FILE = os.path.join(EXPERIMENT_LOGS_DIR, 'provider_stdout.log')
 
 # Algorithm-specific settings
 ROUND_ROBIN_STATE_FILE = '/home/user/Documents/Serverless_Scheduler_sn34kyp3t3/round_robin_state.json'

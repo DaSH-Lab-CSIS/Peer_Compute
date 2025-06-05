@@ -360,3 +360,112 @@ if settings.EXPERIMENT_MODE:
 ```
 
 This allows analysis of algorithm performance on actual production workloads. 
+
+## Experiment Logs Directory Structure
+
+Experiment logs are now organized with a timestamp-based directory structure:
+
+```
+experiment_logs/
+└── YYYY-MM-DD_HH-MM-SS/
+    ├── scheduler_stdout.log
+    ├── loadbalancer_stdout.log
+    ├── provider_<provider_id>_stdout.log
+    └── ...
+```
+
+### Log Directory Features
+- Each experiment creates a unique timestamped directory
+- Prevents log file overwriting between experiments
+- Easy tracking of experiment sessions
+- Consistent naming across all components (scheduler, loadbalancer, providers)
+
+### Accessing Logs
+
+```bash
+# List all experiment log directories
+ls experiment_logs/
+
+# View logs for a specific experiment
+cat experiment_logs/2024-01-15_14-30-45/scheduler_stdout.log
+```
+
+### Log Retention
+
+- Manually delete old log directories to manage disk space
+- Consider implementing log rotation or cleanup scripts for long-running systems 
+
+## Randomized Testbed Approach
+
+The new randomized testbed system ensures fair algorithm comparison by running the same workload against all algorithms with algorithm-specific logging.
+
+### Directory Structure
+```
+experiment_logs/
+└── YYYY-MM-DD_HH-MM-SS/
+    ├── experiment_summary.json
+    ├── testbed_used.json
+    ├── ILP/
+    │   ├── scheduler_stdout.log
+    │   ├── loadbalancer_stdout.log
+    │   └── provider_<id>_stdout.log
+    ├── MRU/
+    │   ├── scheduler_stdout.log
+    │   ├── loadbalancer_stdout.log
+    │   └── provider_<id>_stdout.log
+    ├── ROUND_ROBIN/
+    │   └── ...
+    └── BELADY/
+        └── ...
+```
+
+### Running Randomized Testbed Experiments
+
+#### Step 1: Generate a Testbed
+```bash
+# Generate a reproducible randomized testbed
+python randomized_testbed.py
+
+# This creates a file like: testbed_2024-01-15_14-30-45_seed12345.json
+```
+
+#### Step 2: Run Algorithm Comparison
+```bash
+# Run the same testbed against all algorithms
+python testbed_runner.py testbed_2024-01-15_14-30-45_seed12345.json
+```
+
+#### Step 3: Analyze Results
+```bash
+# Analyze logs across all algorithms
+python analyze_experiment_logs.py --logs-dir experiment_logs/2024-01-15_14-30-45 --console
+```
+
+### Testbed Configuration
+
+Customize testbed generation in `randomized_testbed.py`:
+
+```python
+testbed_gen = RandomizedTestbed(seed=12345)  # Fixed seed for reproducibility
+batches = testbed_gen.generate_testbed(
+    num_batches=20,              # Number of request batches
+    min_jobs_per_batch=1,        # Minimum jobs per batch
+    max_jobs_per_batch=8,        # Maximum jobs per batch
+    min_invocations=1,           # Minimum invocations per job
+    max_invocations=3,           # Maximum invocations per job
+    function_ids=[18, 19, 20, 21, 22, 23],  # Available function IDs
+    min_batch_interval=2.0,      # Minimum seconds between batches
+    max_batch_interval=10.0      # Maximum seconds between batches
+)
+```
+
+### Belady Pre-computation
+
+For Belady's algorithm, the system pre-computes the optimal schedule using complete future knowledge:
+
+```bash
+# Pre-compute optimal Belady schedule (optional, for analysis)
+python belady_precomputation.py testbed_2024-01-15_14-30-45_seed12345.json
+```
+
+This generates theoretical optimal results for comparison with other algorithms. 

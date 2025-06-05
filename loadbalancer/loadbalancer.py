@@ -8,6 +8,11 @@ from fastapi import FastAPI, Request, BackgroundTasks
 from pydantic import BaseModel
 import paho.mqtt.client as mqtt
 from contextlib import asynccontextmanager
+import sys
+from datetime import datetime
+
+# Import logging functionality from loadbalancer_with_logging
+from loadbalancer_with_logging import check_experiment_mode, LoadBalancerLogger, setup_logging_paths
 
 # Configuration
 class Config:
@@ -51,6 +56,9 @@ settings = Config()
 
 # Global variable to track ILP state - initially "done" to allow first batch to be sent
 ilp_state = "done"
+
+# Global logger for experiment mode
+logger = None
 
 # Batch state
 class BatchState:
@@ -229,6 +237,16 @@ async def check_timeout_task():
 @app.on_event("startup")
 async def startup_event():
     """Start the background task to check for batch timeouts and initialize MQTT"""
+    # Check if experiment mode is enabled
+    global logger
+    experiment_mode = check_experiment_mode()
+    logger = None
+    
+    if experiment_mode:
+        logs_dir = setup_logging_paths()
+        logger = LoadBalancerLogger(logs_dir)
+        logger.start_logging()
+    
     # Start the batch timeout checker
     asyncio.create_task(check_timeout_task())
     
@@ -247,6 +265,11 @@ async def shutdown_event():
     mclient.loop_stop()
     mclient.disconnect()
     print("MQTT client stopped")
+    
+    # Stop logging if experiment mode was enabled
+    global logger
+    if logger:
+        logger.stop_logging()
 
 @app.post("/submit")
 async def submit_request(request: Request, background_tasks: BackgroundTasks):

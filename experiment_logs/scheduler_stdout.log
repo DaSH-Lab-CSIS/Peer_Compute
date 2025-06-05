@@ -30,3 +30,116 @@ Starting development server at http://0.0.0.0:8000/
 Quit the server with CONTROL-C.
 [2025-06-02 13:46:23.798] [scheduler:dashlab3] [STDOUT] on_subscribe userdata is <paho.mqtt.client.Client object at 0x7ff62250a2f0>
 [2025-06-02 13:46:23.954] [scheduler:dashlab3] [STDOUT] on_subscribe userdata is <paho.mqtt.client.Client object at 0x7ff62250a2f0>
+[2025-06-05 12:04:16.940] [scheduler:dashlab3] [SYSTEM] === EXPERIMENT SESSION START ===
+[2025-06-05 12:04:16.940] [scheduler:dashlab3] [STDOUT] Experiment logging started for scheduler:dashlab3
+[2025-06-05 12:04:16.940] [scheduler:dashlab3] [STDOUT] PID: 3870922
+[2025-06-05 12:04:17.454] [scheduler:dashlab3] [SYSTEM] === EXPERIMENT SESSION START ===
+[2025-06-05 12:04:17.454] [scheduler:dashlab3] [STDOUT] Experiment logging started for scheduler:dashlab3
+[2025-06-05 12:04:17.454] [scheduler:dashlab3] [STDOUT] PID: 3870925
+[2025-06-05 12:04:17.654] [scheduler:dashlab3] [STDERR] Watching for file changes with StatReloader
+[2025-06-05 12:04:17.654] [scheduler:dashlab3] [STDOUT] Performing system checks...
+[2025-06-05 12:04:18.275] [scheduler:dashlab3] [STDOUT] System check identified no issues (0 silenced).
+[2025-06-05 12:04:18.405] [scheduler:dashlab3] [STDOUT] Connected to mqtt from views.py/providers
+[2025-06-05 12:04:18.561] [scheduler:dashlab3] [STDOUT] on_subscribe userdata is <paho.mqtt.client.Client object at 0x7fdb8516a200>
+[2025-06-05 12:04:18.718] [scheduler:dashlab3] [STDOUT] on_subscribe userdata is <paho.mqtt.client.Client object at 0x7fdb8516a200>
+[2025-06-05 12:04:18.990] [scheduler:dashlab3] [STDOUT] June 05, 2025 - 12:04:18
+Django version 5.0.3, using settings 'scheduler.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+[2025-06-05 12:07:39.217] [scheduler:dashlab3] [STDERR] Not Found: /sse
+[2025-06-05 12:07:39.219] [scheduler:dashlab3] [STDERR] Not Found: /sse
+[2025-06-05 12:07:39.219] [scheduler:dashlab3] [STDERR] [05/Jun/2025 12:07:39] "GET /sse HTTP/1.1" 404 2419
+[2025-06-05 12:07:39.219] [scheduler:dashlab3] [STDERR] [05/Jun/2025 12:07:39] "GET /sse HTTP/1.1" 404 2419
+[2025-06-05 12:11:05.935] [scheduler:dashlab3] [STDOUT] Deleted PID file: djpid.txt
+[2025-06-05 12:11:09.612] [scheduler:dashlab3] [SYSTEM] === EXPERIMENT SESSION START ===
+[2025-06-05 12:11:09.613] [scheduler:dashlab3] [STDOUT] Experiment logging started for scheduler:dashlab3
+[2025-06-05 12:11:09.613] [scheduler:dashlab3] [STDOUT] PID: 3871316
+[2025-06-05 12:11:09.901] [scheduler:dashlab3] [SYSTEM] === EXPERIMENT SESSION START ===
+[2025-06-05 12:11:09.901] [scheduler:dashlab3] [STDOUT] Experiment logging started for scheduler:dashlab3
+[2025-06-05 12:11:09.901] [scheduler:dashlab3] [STDOUT] PID: 3871319
+[2025-06-05 12:11:10.089] [scheduler:dashlab3] [STDERR] Watching for file changes with StatReloader
+[2025-06-05 12:11:10.090] [scheduler:dashlab3] [STDOUT] Performing system checks...
+[2025-06-05 12:11:10.365] [scheduler:dashlab3] [STDOUT] System check identified no issues (0 silenced).
+[2025-06-05 12:11:10.480] [scheduler:dashlab3] [STDOUT] Connected to mqtt from views.py/providers
+[2025-06-05 12:11:10.619] [scheduler:dashlab3] [STDOUT] on_subscribe userdata is <paho.mqtt.client.Client object at 0x7fd5b6bca200>
+[2025-06-05 12:11:10.622] [scheduler:dashlab3] [STDOUT] June 05, 2025 - 12:11:10
+Django version 5.0.3, using settings 'scheduler.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+[2025-06-05 12:11:10.758] [scheduler:dashlab3] [STDOUT] on_subscribe userdata is <paho.mqtt.client.Client object at 0x7fd5b6bca200>
+[2025-06-05 12:13:32.104] [scheduler:dashlab3] [STDOUT] Deleted PID file: djpid.txt
+[2025-06-05 12:13:34.988] [scheduler:dashlab3] [SYSTEM] === EXPERIMENT SESSION START ===
+[2025-06-05 12:13:34.988] [scheduler:dashlab3] [STDOUT] Experiment logging started for scheduler:dashlab3
+[2025-06-05 12:13:34.988] [scheduler:dashlab3] [STDOUT] PID: 3871466
+[2025-06-05 12:13:35.278] [scheduler:dashlab3] [SYSTEM] === EXPERIMENT SESSION START ===
+[2025-06-05 12:13:35.278] [scheduler:dashlab3] [STDOUT] Experiment logging started for scheduler:dashlab3
+[2025-06-05 12:13:35.278] [scheduler:dashlab3] [STDOUT] PID: 3871469
+[2025-06-05 12:13:35.475] [scheduler:dashlab3] [STDERR] Watching for file changes with StatReloader
+[2025-06-05 12:13:35.476] [scheduler:dashlab3] [STDOUT] Performing system checks...
+[2025-06-05 12:13:35.751] [scheduler:dashlab3] [STDOUT] System check identified no issues (0 silenced).
+[2025-06-05 12:13:35.868] [scheduler:dashlab3] [STDOUT] Connected to mqtt from views.py/providers
+[2025-06-05 12:13:35.971] [scheduler:dashlab3] [STDOUT] June 05, 2025 - 12:13:35
+Django version 5.0.3, using settings 'scheduler.settings'
+Starting development server at http://0.0.0.0:8002/
+Quit the server with CONTROL-C.
+[2025-06-05 12:13:36.006] [scheduler:dashlab3] [STDOUT] on_subscribe userdata is <paho.mqtt.client.Client object at 0x7f0b9dbc2200>
+[2025-06-05 12:13:36.147] [scheduler:dashlab3] [STDOUT] on_subscribe userdata is <paho.mqtt.client.Client object at 0x7f0b9dbc2200>
+[2025-06-05 12:13:51.005] [scheduler:dashlab3] [STDERR] Not Found: /register_user/
+[2025-06-05 12:13:51.006] [scheduler:dashlab3] [STDERR] [05/Jun/2025 12:13:51] "POST /register_user/ HTTP/1.1" 404 2453
+[2025-06-05 12:14:54.574] [scheduler:dashlab3] [STDERR] Internal Server Error: /profiles/register_user/
+Traceback (most recent call last):
+  File "/home/user/Documents/Serverless_Scheduler_sn34kyp3t3/.venv/lib/python3.10/site-packages/django/core/handlers/exception.py", line 55, in inner
+    response = get_response(request)
+  File "/home/user/Documents/Serverless_Scheduler_sn34kyp3t3/.venv/lib/python3.10/site-packages/django/core/handlers/base.py", line 197, in _get_response
+    response = wrapped_callback(request, *callback_args, **callback_kwargs)
+  File "/home/user/Documents/Serverless_Scheduler_sn34kyp3t3/.venv/lib/python3.10/site-packages/django/views/decorators/csrf.py", line 65, in _view_wrapper
+    return view_func(request, *args, **kwargs)
+  File "/home/user/Documents/Serverless_Scheduler_sn34kyp3t3/scheduler/profiles/views.py", line 16, in register_user
+    data = json.loads(request.body)
+  File "/home/user/.pyenv/versions/3.10.12/lib/python3.10/json/__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+  File "/home/user/.pyenv/versions/3.10.12/lib/python3.10/json/decoder.py", line 337, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+  File "/home/user/.pyenv/versions/3.10.12/lib/python3.10/json/decoder.py", line 353, in raw_decode
+    obj, end = self.scan_once(s, idx)
+json.decoder.JSONDecodeError: Expecting property name enclosed in double quotes: line 2 column 3 (char 4)
+[2025-06-05 12:14:54.575] [scheduler:dashlab3] [STDERR] [05/Jun/2025 12:14:54] "POST /profiles/register_user/ HTTP/1.1" 500 88027
+[2025-06-05 12:15:17.857] [scheduler:dashlab3] [STDOUT] Deleted PID file: djpid.txt
+[2025-06-05 12:15:31.396] [scheduler:dashlab3] [SYSTEM] === EXPERIMENT SESSION START ===
+[2025-06-05 12:15:31.396] [scheduler:dashlab3] [STDOUT] Experiment logging started for scheduler:dashlab3
+[2025-06-05 12:15:31.396] [scheduler:dashlab3] [STDOUT] PID: 3871587
+[2025-06-05 12:15:31.685] [scheduler:dashlab3] [SYSTEM] === EXPERIMENT SESSION START ===
+[2025-06-05 12:15:31.685] [scheduler:dashlab3] [STDOUT] Experiment logging started for scheduler:dashlab3
+[2025-06-05 12:15:31.685] [scheduler:dashlab3] [STDOUT] PID: 3871590
+[2025-06-05 12:15:31.878] [scheduler:dashlab3] [STDERR] Watching for file changes with StatReloader
+[2025-06-05 12:15:31.878] [scheduler:dashlab3] [STDOUT] Performing system checks...
+[2025-06-05 12:15:32.174] [scheduler:dashlab3] [STDOUT] System check identified no issues (0 silenced).
+[2025-06-05 12:15:32.304] [scheduler:dashlab3] [STDOUT] Connected to mqtt from views.py/providers
+[2025-06-05 12:15:32.387] [scheduler:dashlab3] [STDOUT] June 05, 2025 - 12:15:32
+Django version 5.0.3, using settings 'scheduler.settings'
+Starting development server at http://0.0.0.0:8002/
+Quit the server with CONTROL-C.
+[2025-06-05 12:15:32.459] [scheduler:dashlab3] [STDOUT] on_subscribe userdata is <paho.mqtt.client.Client object at 0x7fca94802200>
+[2025-06-05 12:15:32.616] [scheduler:dashlab3] [STDOUT] on_subscribe userdata is <paho.mqtt.client.Client object at 0x7fca94802200>
+[2025-06-05 12:16:33.580] [scheduler:dashlab3] [STDERR] Internal Server Error: /profiles/register_user/
+Traceback (most recent call last):
+  File "/home/user/Documents/Serverless_Scheduler_sn34kyp3t3/.venv/lib/python3.10/site-packages/django/core/handlers/exception.py", line 55, in inner
+    response = get_response(request)
+  File "/home/user/Documents/Serverless_Scheduler_sn34kyp3t3/.venv/lib/python3.10/site-packages/django/core/handlers/base.py", line 197, in _get_response
+    response = wrapped_callback(request, *callback_args, **callback_kwargs)
+  File "/home/user/Documents/Serverless_Scheduler_sn34kyp3t3/.venv/lib/python3.10/site-packages/django/views/decorators/csrf.py", line 65, in _view_wrapper
+    return view_func(request, *args, **kwargs)
+  File "/home/user/Documents/Serverless_Scheduler_sn34kyp3t3/scheduler/profiles/views.py", line 16, in register_user
+    data = json.loads(request.body)
+  File "/home/user/.pyenv/versions/3.10.12/lib/python3.10/json/__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+  File "/home/user/.pyenv/versions/3.10.12/lib/python3.10/json/decoder.py", line 337, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+  File "/home/user/.pyenv/versions/3.10.12/lib/python3.10/json/decoder.py", line 353, in raw_decode
+    obj, end = self.scan_once(s, idx)
+json.decoder.JSONDecodeError: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)
+[2025-06-05 12:16:33.581] [scheduler:dashlab3] [STDERR] [05/Jun/2025 12:16:33] "POST /profiles/register_user/ HTTP/1.1" 500 87510
+[2025-06-05 12:17:15.682] [scheduler:dashlab3] [STDERR] /home/user/Documents/Serverless_Scheduler_sn34kyp3t3/.venv/lib/python3.10/site-packages/django/db/models/fields/__init__.py:1659: RuntimeWarning: DateTimeField User.last_ready_signal received a naive datetime (2025-06-05 12:17:15.547014) while time zone support is active.
+  warnings.warn(
+[2025-06-05 12:17:15.707] [scheduler:dashlab3] [STDERR] [05/Jun/2025 12:17:15] "POST /profiles/register_user/ HTTP/1.1" 200 89
+[2025-06-05 12:19:31.436] [scheduler:dashlab3] [STDOUT] Deleted PID file: djpid.txt

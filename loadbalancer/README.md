@@ -175,3 +175,20 @@ When the load balancer sends a batch to a scheduler, it uses the following forma
 - **Connection check failed**: Your scheduler servers are not reachable. Verify they are running.
 - **No active schedulers available**: None of the configured schedulers are responding. The batch will be kept in memory.
 - **ModuleNotFoundError**: Make sure you've installed all the required packages: `pip install fastapi uvicorn httpx pydantic` 
+
+## Experiment Logging
+
+The load balancer supports an optional experiment logging mode. To enable logging:
+
+1. In the scheduler's `settings.py`, set:
+   ```python
+   EXPERIMENT_MODE = True
+   EXPERIMENT_STDOUT_LOGGING = True
+   ```
+
+2. Alternatively, set the environment variable:
+   ```bash
+   export EXPERIMENT_MODE=true
+   ```
+
+When enabled, logs will be saved in the `experiment_logs` directory with detailed timestamps and stream information. 

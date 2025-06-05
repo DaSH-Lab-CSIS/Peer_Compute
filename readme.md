@@ -281,3 +281,16 @@ docker run -d \
   --restart=always \
   quay.io/minio/minio server /data --console-address ":9001"
 ```
+
+## Experiment Logging
+
+Experiment logs are now organized in a timestamp-based directory structure:
+
+```
+experiment_logs/
+└── YYYY-MM-DD_HH-MM-SS/
+    ├── scheduler_stdout.log
+    ├── loadbalancer_stdout.log
+    ├── provider_<provider_id>_stdout.log
+    └── ...
+```
