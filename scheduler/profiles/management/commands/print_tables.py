@@ -58,30 +58,19 @@ class Command(BaseCommand):
             function_invocations = getattr(provider,'function_invocations', {})
             if function_invocations:
                 func_invocations_table = tabulate(
-<<<<<<< HEAD
                     [["Function ID", "Invocation Count"]]
                     + [
                         [func_id, count]
                         for func_id, count in provider.function_invocations.items()
                     ],
                     headers=[],  # Headers are included in the first row
-=======
-                    [["Function ID", "Invocation Count"]] +
-                    [[func_id, count] for func_id, count in function_invocations.items()],
-                    headers=[],
->>>>>>> cd1e618e05340cf4a4fdb9486854d7e0a53ca008
                     tablefmt="simple",
                     stralign="left",
                 )
-<<<<<<< HEAD
                 # Indent the sub-table for better readability
                 func_invocations = "\n" + "\n".join(
                     ["    " + line for line in func_invocations_table.split("\n")]
                 )
-=======
-
-                func_invocations = "\n" + "\n".join(["    " + line for line in func_invocations_table.split("\n")])
->>>>>>> cd1e618e05340cf4a4fdb9486854d7e0a53ca008
             else:
                 func_invocations = "    No invocations"
 
@@ -180,7 +169,6 @@ class Command(BaseCommand):
         # Prepare data for tabulation
         service_data = []
         for service in services:
-<<<<<<< HEAD
             service_data.append(
                 [
                     service.id,
@@ -192,18 +180,6 @@ class Command(BaseCommand):
                     service.requirements,
                 ]
             )
-=======
-            service_data.append([
-                service.id,
-                service.name,
-                service.docker_container,
-                service.developer.user_id if service.developer else "None",
-                service.provider.user_id if service.provider else "None",
-                service.active,
-
-                service.requirements
-            ])
->>>>>>> cd1e618e05340cf4a4fdb9486854d7e0a53ca008
 
         # Define table headers
         headers = [

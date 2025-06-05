@@ -7,6 +7,7 @@ import httpx
 from fastapi import FastAPI, Request, BackgroundTasks
 from pydantic import BaseModel
 import paho.mqtt.client as mqtt
+from contextlib import asynccontextmanager
 
 # Configuration
 class Config:
@@ -15,7 +16,7 @@ class Config:
         self.BATCH_TIMEOUT_SECONDS = 5.0
         #NOTE Not for permanent use.
         self.SCHEDULER_URLS = [
-            "http://10.8.1.18:8000/developers/run_service_async_batch", #default for empty config file
+            "http://10.8.1.18:8000/developers/run_service_async_batch/", #default for empty config file
         ]
         
         # Load from config file if it exists
@@ -41,6 +42,7 @@ class Config:
                         elif key == 'SCHEDULER_URLS':
                             try:
                                 self.SCHEDULER_URLS = json.loads(value)
+                                print(f"SCHEDULER_URLS: {self.SCHEDULER_URLS}")
                             except json.JSONDecodeError:
                                 print(f"Error parsing SCHEDULER_URLS: {value}")
 

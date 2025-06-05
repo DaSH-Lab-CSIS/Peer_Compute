@@ -32,8 +32,15 @@ def main():
             "Couldn't import Django. Are you sure it's installed and "
             "available on your PYTHONPATH environment variable? Did you "
             "forget to activate a virtual environment?"
-        ) 
-        
+        ) from exc
+    
+    # Setup experiment logging for runserver command
+    if len(sys.argv) > 1 and sys.argv[1] == 'runserver':
+        from django.conf import settings
+        if settings.EXPERIMENT_MODE and settings.EXPERIMENT_STDOUT_LOGGING:
+            from providers.experiment_logging import setup_scheduler_logging
+            setup_scheduler_logging()
+    
     # Get the current process ID
     pid = os.getpid()
     #Adding this code to write pid to a file

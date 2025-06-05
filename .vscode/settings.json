@@ -1,6 +1,19 @@
 {
+    "editor.fontLigatures": true,
     "workbench.colorCustomizations": {
+        "tab.activeBackground": "#393939",
+        "tab.activeBorder": "#ff0000",
+        "tab.activeForeground": "#ffffff",
+        "tab.inactiveForeground": "#6e6e6e",
         "minimap.background": "#00000000",
-        "scrollbar.shadow": "#00000000"
-    }
+        "scrollbar.shadow": "#00000000",
+        "gitDecoration.addedResourceForeground": "#00ff00",
+        "gitDecoration.modifiedResourceForeground": "#ff9500",
+        "gitDecoration.deletedResourceForeground": "#FF0000",
+        "gitDecoration.untrackedResourceForeground": "#09efefc8",
+        "gitDecoration.ignoredResourceForeground": "#b8a1a1f4",
+        "gitDecoration.conflictingResourceForeground": "#FF00FF",
+        "gitDecoration.stageModifiedResourceForeground": "#617bd9",
+        "gitDecoration.stageDeletedResourceForeground": "#800080",
+    },
 }

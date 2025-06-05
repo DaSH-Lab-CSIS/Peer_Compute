@@ -1,0 +1,150 @@
+Entering request_handler
+Debug: Entering find_providers
+[16/May/2025 08:31:07] "POST /developers/run_service_async_batch/ HTTP/1.1" 200 288
+User : cd0fb427-c6d8-4e76-b922-9480c0b69fa6
+        provider : True         developer : False
+User : f601eaa3-eb96-451b-884d-6c26970e96aa
+        provider : True         developer : False
+Entering build_cost_matrix
+Entering get_predicted_runtimes
+Warning: No job found for provider 25 and service 18
+Warning: No job found for provider 25 and service 19
+Predicted runtimes: {18: 1000, 19: 1000}
+Exiting get_predicted_runtimes
+Entering get_predicted_runtimes
+Warning: No job found for provider 24 and service 18
+Warning: No job found for provider 24 and service 19
+Predicted runtimes: {18: 1000, 19: 1000}
+Exiting get_predicted_runtimes
+Entering print_cost_matrix
+
+============================================================
+                            Provider | Service 18 Service 19
+============================================================
+cd0fb427-c6d8-4e76-b922-9480c0b69fa6 | 1000.00  1000.00 
+f601eaa3-eb96-451b-884d-6c26970e96aa | 1000.00  1000.00 
+============================================================
+
+Exiting print_cost_matrix
+Exiting build_cost_matrix
+Entering build_delay_dict
+Time of last start job for cd0fb427-c6d8-4e76-b922-9480c0b69fa6: None
+No previous jobs for provider cd0fb427-c6d8-4e76-b922-9480c0b69fa6
+Time of last start job for f601eaa3-eb96-451b-884d-6c26970e96aa: None
+No previous jobs for provider f601eaa3-eb96-451b-884d-6c26970e96aa
+Delay dictionary: {<User: User : cd0fb427-c6d8-4e76-b922-9480c0b69fa6
+        provider : True         developer : False>: 0, <User: User : f601eaa3-eb96-451b-884d-6c26970e96aa
+        provider : True         developer : False>: 0}
+Exiting build_delay_dict
+Welcome to the CBC MILP Solver 
+Version: 2.10.3 
+Build Date: Dec 15 2019 
+
+command line - /home/user/Documents/Serverless_Scheduler_sn34kyp3t3/.venv/lib/python3.10/site-packages/pulp/solverdir/cbc/linux/64/cbc /tmp/7d013b0954e34bd28fa3c05333dd8236-pulp.mps -timeMode elapsed -branch -printingOptions all -solution /tmp/7d013b0954e34bd28fa3c05333dd8236-pulp.sol (default strategy 1)
+At line 2 NAME          MODEL
+At line 3 ROWS
+At line 7 COLUMNS
+At line 24 RHS
+At line 27 BOUNDS
+At line 32 ENDATA
+Problem MODEL has 2 rows, 4 columns and 4 elements
+Coin0008I MODEL read with 0 errors
+Option for timeMode changed from cpu to elapsed
+Continuous objective value is 2000 - 0.00 seconds
+Cgl0004I processed model has 0 rows, 0 columns (0 integer (0 of which binary)) and 0 elements
+Cbc3007W No integer variables - nothing to do
+Cuts at root node changed objective from 2000 to -1.79769e+308
+Probing was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+Gomory was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+Knapsack was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+Clique was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+MixedIntegerRounding2 was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+FlowCover was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+TwoMirCuts was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+ZeroHalf was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+
+Result - Optimal solution found
+
+Objective value:                2000.00000000
+Enumerated nodes:               0
+Total iterations:               0
+Time (CPU seconds):             0.00
+Time (Wallclock seconds):       0.00
+
+Option for printingOptions changed from normal to all
+Total time (CPU seconds):       0.00   (Wallclock seconds):       0.00
+
+Time taken for Min Cost Algo: 0.004433393478393555
+Time taken in wallclock sec by lp algo:  0.005115985870361328
+
+Entering process_assignments
+
+Processing assignment - Service: 18, Provider: cd0fb427-c6d8-4e76-b922-9480c0b69fa6
+Provider locked: cd0fb427-c6d8-4e76-b922-9480c0b69fa6
+Created job with ID: 2701
+Predicted runtime: 1000
+Current provider delay state: {}
+
+Entering add_delay
+Current delay state: {}
+New delay value: 1000
+Type of new delay: <class 'int'>
+Appending to inflight_jobs: 1000
+Error in add_delay: 'inflight_jobs'
+Current object state: {'_state': <django.db.models.base.ModelState object at 0x7fa5f8d18e80>, 'id': 25, 'user_id': UUID('cd0fb427-c6d8-4e76-b922-9480c0b69fa6'), 'is_provider': True, 'is_developer': False, 'active': True, 'ready': True, 'last_ready_signal': datetime.datetime(2025, 5, 16, 8, 30, 34, 173133, tzinfo=datetime.timezone.utc), 'location': 'SOME_LOCATION', 'ram': 24, 'cpu': 12, 'cpu_efficiency_score': None, 'memory_efficiency_score': None, 'function_invocations': {}, 'cached_images': {}, 'disk_cache_usage': 0, 'reputation_score': 0, 'delay': {}}
+Error adding delay: 'inflight_jobs'
+Type of predicted_runtime: <class 'int'>
+Value of predicted_runtime: 1000
+Updated provider delay state: 0
+Successfully saved provider
+
+Processing assignment - Service: 19, Provider: cd0fb427-c6d8-4e76-b922-9480c0b69fa6
+Provider locked: cd0fb427-c6d8-4e76-b922-9480c0b69fa6
+Created job with ID: 2702
+Predicted runtime: 1000
+Current provider delay state: 0
+
+Entering add_delay
+Current delay state: 0
+New delay value: 1000
+Type of new delay: <class 'int'>
+Appending to inflight_jobs: 1000
+Error in add_delay: 'int' object is not subscriptable
+Current object state: {'_state': <django.db.models.base.ModelState object at 0x7fa5f8d1baf0>, 'id': 25, 'user_id': UUID('cd0fb427-c6d8-4e76-b922-9480c0b69fa6'), 'is_provider': True, 'is_developer': False, 'active': True, 'ready': True, 'last_ready_signal': datetime.datetime(2025, 5, 16, 8, 30, 34, 173133, tzinfo=datetime.timezone.utc), 'location': 'SOME_LOCATION', 'ram': 24, 'cpu': 12, 'cpu_efficiency_score': None, 'memory_efficiency_score': None, 'function_invocations': {'18': 1}, 'cached_images': {}, 'disk_cache_usage': 0, 'reputation_score': 0, 'delay': 0}
+Error adding delay: 'int' object is not subscriptable
+Type of predicted_runtime: <class 'int'>
+Value of predicted_runtime: 1000
+Updated provider delay state: 0
+Successfully saved provider
+Sending job 2701 to provider cd0fb427-c6d8-4e76-b922-9480c0b69fa6
+in pub to topic mqtt
+Job 2701 successfully sent to provider cd0fb427-c6d8-4e76-b922-9480c0b69fa6
+Sending job 2702 to provider cd0fb427-c6d8-4e76-b922-9480c0b69fa6
+in pub to topic mqtt
+Job 2702 successfully sent to provider cd0fb427-c6d8-4e76-b922-9480c0b69fa6
+Exiting process_assignments
+
+Published ILP_DONE to ROTATION topic
+in pub to topic mqtt
+Job 2701 successfully sent to provider cd0fb427-c6d8-4e76-b922-9480c0b69fa6
+in pub to topic mqtt
+Job 2702 successfully sent to provider cd0fb427-c6d8-4e76-b922-9480c0b69fa6
+on_subscribe userdata is <paho.mqtt.client.Client object at 0x7fa5f9791e70>
+on_subscribe userdata is <paho.mqtt.client.Client object at 0x7fa5f9791e70>
+from views.py/providers 
+Received message on topic: cd0fb427-c6d8-4e76-b922-9480c0b69fa6 with payload: b'{"provider_id": "cd0fb427-c6d8-4e76-b922-9480c0b69fa6", "task_link": "peercompute/benchmark.120.uploader.python-3.9", "task_developer": "0316778b-d20b-4415-a993-d95172340c2d", "job_id": 2701, "numberOfInvocations": 1, "isChained": false, "inputData": "None", "runMultipleInvocations": false, "stage": "dockernotrun"}'
+pulled but docker not run
+on_subscribe userdata is <paho.mqtt.client.Client object at 0x7fa5f9791e70>
+from views.py/providers 
+Received message on topic: ROTATION with payload: b'ILP_DONE'
+ROTATION ILP_DONE
+from views.py/providers 
+Received message on topic: cd0fb427-c6d8-4e76-b922-9480c0b69fa6 with payload: b'{"provider_id": "cd0fb427-c6d8-4e76-b922-9480c0b69fa6", "task_link": "peercompute/benchmark.210.thumbnailer.python-3.9", "task_developer": "0316778b-d20b-4415-a993-d95172340c2d", "job_id": 2702, "numberOfInvocations": 1, "isChained": false, "inputData": "None", "runMultipleInvocations": false, "stage": "dockernotrun"}'
+pulled but docker not run
+on_subscribe userdata is <paho.mqtt.client.Client object at 0x7fa5f9791e70>
+from views.py/providers 
+Received message on topic: cd0fb427-c6d8-4e76-b922-9480c0b69fa6 with payload: b'{"provider_id": "cd0fb427-c6d8-4e76-b922-9480c0b69fa6", "task_link": "peercompute/benchmark.120.uploader.python-3.9", "task_developer": "0316778b-d20b-4415-a993-d95172340c2d", "job_id": 2701, "numberOfInvocations": 1, "isChained": false, "inputData": "None", "runMultipleInvocations": false, "stage": "dockernotrun"}'
+pulled but docker not run
+from views.py/providers 
+Received message on topic: cd0fb427-c6d8-4e76-b922-9480c0b69fa6 with payload: b'{"provider_id": "cd0fb427-c6d8-4e76-b922-9480c0b69fa6", "task_link": "peercompute/benchmark.210.thumbnailer.python-3.9", "task_developer": "0316778b-d20b-4415-a993-d95172340c2d", "job_id": 2702, "numberOfInvocations": 1, "isChained": false, "inputData": "None", "runMultipleInvocations": false, "stage": "dockernotrun"}'
+pulled but docker not run

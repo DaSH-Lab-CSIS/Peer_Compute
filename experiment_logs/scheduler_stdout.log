@@ -1,0 +1,32 @@
+[2025-06-02 13:46:01.942] [scheduler:dashlab3] [SYSTEM] === EXPERIMENT SESSION START ===
+[2025-06-02 13:46:01.942] [scheduler:dashlab3] [STDOUT] Experiment logging started for scheduler:dashlab3
+[2025-06-02 13:46:02.029] [scheduler:dashlab3] [STDOUT] on_subscribe userdata is <paho.mqtt.client.Client object at 0x7f9c27af5f90>
+[2025-06-02 13:46:02.185] [scheduler:dashlab3] [STDOUT] on_subscribe userdata is <paho.mqtt.client.Client object at 0x7f9c27af5f90>
+[2025-06-02 13:46:11.939] [scheduler:dashlab3] [SYSTEM] === EXPERIMENT SESSION START ===
+[2025-06-02 13:46:11.939] [scheduler:dashlab3] [STDOUT] Experiment logging started for scheduler:dashlab3
+[2025-06-02 13:46:12.049] [scheduler:dashlab3] [STDOUT] on_subscribe userdata is <paho.mqtt.client.Client object at 0x7f5999499f90>
+[2025-06-02 13:46:12.204] [scheduler:dashlab3] [STDOUT] on_subscribe userdata is <paho.mqtt.client.Client object at 0x7f5999499f90>
+[2025-06-02 13:46:15.146] [scheduler:dashlab3] [SYSTEM] === EXPERIMENT SESSION START ===
+[2025-06-02 13:46:15.146] [scheduler:dashlab3] [STDOUT] Experiment logging started for scheduler:dashlab3
+[2025-06-02 13:46:15.146] [scheduler:dashlab3] [STDOUT] PID: 1239920
+[2025-06-02 13:46:15.337] [scheduler:dashlab3] [STDERR] Watching for file changes with StatReloader
+[2025-06-02 13:46:15.338] [scheduler:dashlab3] [STDOUT] Performing system checks...
+[2025-06-02 13:46:15.611] [scheduler:dashlab3] [STDOUT] System check identified no issues (0 silenced).
+[2025-06-02 13:46:15.764] [scheduler:dashlab3] [STDOUT] June 02, 2025 - 13:46:15
+Django version 5.0.3, using settings 'scheduler.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+[2025-06-02 13:46:22.856] [scheduler:dashlab3] [STDERR] /home/user/Documents/Serverless_Scheduler_sn34kyp3t3/scheduler/manage.py changed, reloading.
+[2025-06-02 13:46:23.049] [scheduler:dashlab3] [SYSTEM] === EXPERIMENT SESSION START ===
+[2025-06-02 13:46:23.049] [scheduler:dashlab3] [STDOUT] Experiment logging started for scheduler:dashlab3
+[2025-06-02 13:46:23.049] [scheduler:dashlab3] [STDOUT] PID: 1239977
+[2025-06-02 13:46:23.241] [scheduler:dashlab3] [STDERR] Watching for file changes with StatReloader
+[2025-06-02 13:46:23.241] [scheduler:dashlab3] [STDOUT] Performing system checks...
+[2025-06-02 13:46:23.516] [scheduler:dashlab3] [STDOUT] System check identified no issues (0 silenced).
+[2025-06-02 13:46:23.643] [scheduler:dashlab3] [STDOUT] Connected to mqtt from views.py/providers
+[2025-06-02 13:46:23.667] [scheduler:dashlab3] [STDOUT] June 02, 2025 - 13:46:23
+Django version 5.0.3, using settings 'scheduler.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+[2025-06-02 13:46:23.798] [scheduler:dashlab3] [STDOUT] on_subscribe userdata is <paho.mqtt.client.Client object at 0x7ff62250a2f0>
+[2025-06-02 13:46:23.954] [scheduler:dashlab3] [STDOUT] on_subscribe userdata is <paho.mqtt.client.Client object at 0x7ff62250a2f0>

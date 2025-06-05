@@ -18,6 +18,32 @@ example curl
   }'
   
 ```
+> for multiple services
+```
+curl -X POST "http://localhost:8000/developers/run_service_async_batch" \
+  -H "Accept: */*" \
+  -H "User-Agent: Thunder Client (https://www.thunderclient.com)" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "requests": [
+      {
+        "serviceID": 18,
+        "numberOfInvocations": 1,
+        "chained": false,
+        "input": "None",
+        "runMultipleInvocations": false
+      },
+      {
+        "serviceID": 19,
+        "numberOfInvocations": 1,
+        "chained": false,
+        "input": "None",
+        "runMultipleInvocations": false
+      }
+    ]
+  }'
+  
+```
 ```
   curl -X GET "http://localhost:8000/providers/calculate_efficiency/34933555-5cca-41fb-aded-4ab7900c48d5" 
 ```

@@ -165,3 +165,25 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# Scheduling Algorithm Configuration
+SCHEDULING_ALGORITHM = 'ILP'  # Options: 'ILP', 'MRU', 'BELADY', 'ROUND_ROBIN'
+
+#NOTE - Config for Experiment 5.
+
+# Experiment Configuration
+EXPERIMENT_MODE = True  # Set to True to enable experiment data collection
+EXPERIMENT_LOG_FILE = '/home/user/Documents/Serverless_Scheduler_sn34kyp3t3/experiment_results.csv'
+ALGORITHM_METRICS_FILE = '/home/user/Documents/Serverless_Scheduler_sn34kyp3t3/algorithm_metrics.csv'
+
+# Stdout logging configuration for experiment mode
+EXPERIMENT_STDOUT_LOGGING = True  # Enable stdout logging when EXPERIMENT_MODE is True
+EXPERIMENT_LOGS_DIR = '/home/user/Documents/Serverless_Scheduler_sn34kyp3t3/experiment_logs'
+SCHEDULER_LOG_FILE = '/home/user/Documents/Serverless_Scheduler_sn34kyp3t3/experiment_logs/scheduler_stdout.log'
+LOADBALANCER_LOG_FILE = '/home/user/Documents/Serverless_Scheduler_sn34kyp3t3/experiment_logs/loadbalancer_stdout.log'
+PROVIDER_LOG_FILE = '/home/user/Documents/Serverless_Scheduler_sn34kyp3t3/experiment_logs/provider_stdout.log'
+
+# Algorithm-specific settings
+ROUND_ROBIN_STATE_FILE = '/home/user/Documents/Serverless_Scheduler_sn34kyp3t3/round_robin_state.json'
+MRU_HISTORY_SIZE = 100  # Number of recent assignments to keep in memory
+BELADY_PREDICTION_WINDOW = 50  # Number of future requests to consider (for simulation)

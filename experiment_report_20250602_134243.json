@@ -1,0 +1,55 @@
+{
+  "experiment_name": "Algorithm_Comparison_20250602_134221",
+  "start_time": "2025-06-02T13:42:21.193204",
+  "end_time": "2025-06-02T13:42:43.607328",
+  "algorithms": {
+    "ILP": {
+      "total_assignments": 75,
+      "total_cost": 60000.0,
+      "average_cost": 4000.0,
+      "min_cost": 4000.0,
+      "max_cost": 4000.0,
+      "average_assignment_time": 0.03804432551066081,
+      "cache_hit_rate": 0.0,
+      "total_cache_hits": 0,
+      "total_cache_misses": 75,
+      "assignments_count": 15
+    },
+    "MRU": {
+      "total_assignments": 75,
+      "total_cost": 60000.0,
+      "average_cost": 4000.0,
+      "min_cost": 4000.0,
+      "max_cost": 4000.0,
+      "average_assignment_time": 0.0002768993377685547,
+      "cache_hit_rate": 0.0,
+      "total_cache_hits": 0,
+      "total_cache_misses": 75,
+      "assignments_count": 15
+    },
+    "BELADY": {
+      "total_assignments": 75,
+      "total_cost": 63000.0,
+      "average_cost": 4200.0,
+      "min_cost": 4000.0,
+      "max_cost": 5000.0,
+      "average_assignment_time": 0.14339871406555177,
+      "cache_hit_rate": 0.0,
+      "total_cache_hits": 0,
+      "total_cache_misses": 75,
+      "assignments_count": 15
+    },
+    "ROUND_ROBIN": {
+      "total_assignments": 75,
+      "total_cost": 67000.0,
+      "average_cost": 4466.666666666667,
+      "min_cost": 4000.0,
+      "max_cost": 5000.0,
+      "average_assignment_time": 0.00048074722290039065,
+      "cache_hit_rate": 0.0,
+      "total_cache_hits": 0,
+      "total_cache_misses": 75,
+      "assignments_count": 15
+    }
+  }
+}

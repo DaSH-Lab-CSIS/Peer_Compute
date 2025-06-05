@@ -1,5 +1,8 @@
 from django.urls import path
-from .views import publish_to_topic_mqtt, ready, not_ready,  job_ack, calculate_efficiency, providerStartup, set_reference_stats, recover_pending_jobs
+from .views import (publish_to_topic_mqtt, ready, not_ready, job_ack, calculate_efficiency, 
+                   providerStartup, set_reference_stats, start_algorithm_experiment, 
+                   get_experiment_status, switch_scheduling_algorithm, generate_experiment_report,
+                   get_algorithm_metrics, reset_algorithm_metrics, toggle_experiment_mode)
 
 urlpatterns = [
     # path('make_rmq_user/', make_rmq_user, name='make_rmq_user'),
@@ -12,5 +15,14 @@ urlpatterns = [
     path('calculate_efficiency/<str:user_id>', calculate_efficiency, name='calculate_efficiency'),
     path('startup/<str:user_id>', providerStartup, name='startup'),
     path('set_reference_stats_for_service/', set_reference_stats, name='set_reference_stats'),
-    path('recover_jobs/', recover_pending_jobs, name='recover_jobs')
+    # path('recover_jobs/', recover_pending_jobs, name='recover_jobs')
+    
+    # Experiment and Algorithm Control Endpoints
+    path('experiment/start/', start_algorithm_experiment, name='start_experiment'),
+    path('experiment/status/', get_experiment_status, name='experiment_status'),
+    path('experiment/report/', generate_experiment_report, name='experiment_report'),
+    path('experiment/toggle/', toggle_experiment_mode, name='toggle_experiment'),
+    path('algorithm/switch/', switch_scheduling_algorithm, name='switch_algorithm'),
+    path('algorithm/metrics/', get_algorithm_metrics, name='algorithm_metrics'),
+    path('algorithm/reset/', reset_algorithm_metrics, name='reset_algorithm_metrics'),
 ]
