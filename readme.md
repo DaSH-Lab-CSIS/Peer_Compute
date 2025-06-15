@@ -44,6 +44,7 @@ curl -X POST "http://localhost:8000/developers/run_service_async_batch" \
   }'
   
 ```
+
 ```
   curl -X GET "http://localhost:8000/providers/calculate_efficiency/34933555-5cca-41fb-aded-4ab7900c48d5" 
 ```

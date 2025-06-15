@@ -111,33 +111,82 @@ def on_message(mqtt_client, userdata, msg):
             # receive_job_data(data_dic t)
     except:
         print(msg.topic,msg.payload.decode("utf-8"))
-        if(msg.payload.decode("utf-8").startswith("Benchmark:")):
+        payload_str = msg.payload.decode("utf-8")
+        
+        # Handle new MQTT-based provider signals
+        if payload_str == "STARTUP":
+            print(f"Provider {msg.topic} sent STARTUP signal via MQTT")
+            # Call the same logic as providerStartup HTTP endpoint
+            try:
+                providerStartup_mqtt(msg.topic)
+                # Provider is already connected via MQTT, just acknowledge
+            except Exception as e:
+                print(f"Error handling STARTUP signal from {msg.topic}: {str(e)}")
+                
+        elif payload_str == "READY":
+            print(f"Provider {msg.topic} sent READY signal via MQTT")
+            # Call the same logic as ready HTTP endpoint
+            try:
+               ready_mqtt(msg.topic)
+            except User.DoesNotExist:
+                print(f"Provider {msg.topic} not found in database")
+            except Exception as e:
+                print(f"Error handling READY signal from {msg.topic}: {str(e)}")
+                
+        elif payload_str == "NOT_READY":
+            print(f"Provider {msg.topic} sent NOT_READY signal via MQTT")
+            # Call the same logic as not_ready HTTP endpoint
+            try:
+                not_ready_mqtt(msg.topic)
+            except User.DoesNotExist:
+                print(f"Provider {msg.topic} not found in database")
+            except Exception as e:
+                print(f"Error handling NOT_READY signal from {msg.topic}: {str(e)}")
+                
+        elif payload_str.startswith("ACK:"):
+            job_id = payload_str[4:]  # Extract job_id after "ACK:"
+            print(f"Provider {msg.topic} sent ACK signal for job {job_id} via MQTT")
+            # Call the same logic as job_ack HTTP endpoint
+            try:
+                job_ack_mqtt(job_id)
+            except Job.DoesNotExist:
+                print(f"Job {job_id} not found in database")
+            except Exception as e:
+                print(f"Error handling ACK signal for job {job_id}: {str(e)}")
+        
+        # Existing message handlers
+        elif(payload_str.startswith("Benchmark:")):
             # this is in topic user_id not EVERYONE
             print("In except, will print benchmark...")
-            benchmark = json.loads(msg.payload.decode("utf-8")[10:])
+            benchmark = json.loads(payload_str[10:])
             user_id = list(benchmark.keys())[0]
             get_benchmarks_for(user_id=user_id, benchmark=benchmark) #this will also update models.
-        elif(msg.payload.decode("utf-8").startswith("Stats for Reference Provider: ")):
+        elif(payload_str.startswith("Stats for Reference Provider: ")):
             print("Stats added to TrainingData/Reference_Provider_Data.txt")
-        elif(msg.payload.decode("utf-8").startswith("offline_non-procedurally")):    
+        elif(payload_str.startswith("offline_non-procedurally")):    
             penalise(msg.topic, 1)
             print(msg.topic + "was disconnected non-procedurally")
-        elif(msg.payload.decode("utf-8").startswith("offline_procedurally")):    
+        elif(payload_str.startswith("offline_procedurally")):    
             penalise(msg.topic, 0)
             print(msg.topic + "was disconnected procedurally")  
         if(msg.topic=="EVERYONE"):
-            if(msg.payload.decode("utf-8").startswith("start_connect")):
-                print("connecting to ", msg.payload.decode("utf-8")[13:])
-                mqtt_client.subscribe(topic=msg.payload.decode("utf-8")[13:])
-            if(msg.payload.decode("utf-8").startswith("get_efficiency_score")):
-                
-                user_id=msg.payload.decode("utf-8")[20:]
+            if(payload_str.startswith("start_connect")):
+                user_id = payload_str[13:]
+                print("connecting to ", user_id)
+                mqtt_client.subscribe(topic=user_id)
+                # Send confirmation back to provider
+                mqtt_client.publish(topic=user_id, payload="SUBSCRIPTION_CONFIRMED", qos=2)
+                print(f"Sent subscription confirmation to {user_id}")
+            if(payload_str.startswith("get_efficiency_score")):
+
+                user_id=payload_str[20:]
                 provider = User.objects.get(user_id=user_id)
                 # Fix: Handle None values with default of 1.0
                 cpu_score = 1.0 if provider.cpu_efficiency_score is None else float(provider.cpu_efficiency_score)
                 memory_score = 1.0 if provider.memory_efficiency_score is None else float(provider.memory_efficiency_score)
                 scoreset = {'cpu': cpu_score, 'memory': memory_score}
                 mqtt_client.publish(topic=user_id, payload="EfficiencyScoreSet:"+json.dumps(scoreset),qos=2)
+                
 
 
 def on_subscribe(mqtt_client, userdata, mid, qos, properties=None):
@@ -290,6 +339,13 @@ def ready(request,user_id):
         messages.error(request, "Wrong request method.")
     return JsonResponse({'message' : 'Not ready ran successfully.'})
 
+def ready_mqtt(user_id):
+    provider = User.objects.get(user_id=user_id)
+    provider.ready = True
+    provider.last_ready_signal = datetime.now(tz=timezone(TIME_ZONE))
+    provider.save()
+    
+
 
 # @login_required
 @csrf_exempt
@@ -305,6 +361,11 @@ def not_ready(request, user_id):
         messages.error(request, "Wrong request method.")
     return JsonResponse({'message' : 'Not ready ran successfully.'})
 
+def not_ready_mqtt(user_id):
+    provider = User.objects.get(user_id=user_id)
+    provider.ready = False
+    provider.save()
+
 # # @login_required
 @csrf_exempt
 def job_ack(request, job_id):
@@ -315,6 +376,12 @@ def job_ack(request, job_id):
     else:
         messages.error(request, "Wrong request method.")
     return JsonResponse({'message' : 'Job acknowledge time updated successfully.'})
+
+
+def job_ack_mqtt(job_id):
+    job = get_object_or_404(Job, pk=job_id)
+    job.ack_time = datetime.now(tz=timezone(TIME_ZONE))
+    job.save(update_fields=['ack_time'])
 
 def calculate_efficiency(request, user_id):
     # TODO
@@ -332,6 +399,13 @@ def providerStartup(request, user_id):
     #subscribe to EVERYONE in on_connect
     client.subscribe(topic=user_id)
     return JsonResponse({'State':'scheduler connected to provider user_id'})
+
+def providerStartup_mqtt(user_id):
+    print("Provider ", user_id, " started...")
+    client = get_mclient()
+    #subscribe to EVERYONE in on_connect
+    client.subscribe(topic=user_id)
+
 
 @csrf_exempt
 def set_reference_stats(request):

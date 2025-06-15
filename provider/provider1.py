@@ -28,6 +28,7 @@ import signal
 import sys
 import tempfile
 import socket
+import subprocess
 
 user_id = sys.argv[1]
 # Add the project root directory to Python's path
@@ -35,7 +36,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Change from relative to absolute import
 from invocations.invoker import get_payload
 
-controller_ip = "0.0.0.0" #change to whichever is running django
+controller_ip = "10.8.1.18" #change to whichever is running django
 controller_port = "8000"
 # BROKER_ID = "10.8.1.18"
 BROKER_ID="broker.hivemq.com"
@@ -59,11 +60,13 @@ last_message_time = time.time()
 
 
 # REGISTER_URL = 'https://' + controller_ip + ":" + controller_port + "/profiles/register_user/"
-ACK_URL = "http://" + controller_ip + ":" + controller_port + "/providers/job_ack/"
-NOT_READY_URL = "http://" + controller_ip + ":" + controller_port + "/providers/not_ready/"
-READY_URL = "http://" + controller_ip + ":" + controller_port + "/providers/ready/"
+# Removed HTTP URL definitions - switching to MQTT-based signaling
+# ACK_URL = "http://" + controller_ip + ":" + controller_port + "/providers/job_ack/"
+# NOT_READY_URL = "http://" + controller_ip + ":" + controller_port + "/providers/not_ready/"
+# READY_URL = "http://" + controller_ip + ":" + controller_port + "/providers/ready/"
 
-requests.get(url=READY_URL+user_id)
+# Remove early READY signal - will be sent after MQTT connection
+# requests.get(url=READY_URL+user_id)
 # TODO make a request to ready url as soon as this script has run, ie j write a line here.
 runs_list = [] #this stores all data in all runs for a specific job.
 # def create_thread_and_subscribe(user_id):
@@ -80,6 +83,9 @@ DISK_LIMIT = 2000 * 1024 * 1024
 
 imagePuller = HybridImageManager(memory_limit=MEMORY_LIMIT, disk_limit=DISK_LIMIT)
 # MQTT
+
+# Add a flag to track subscription confirmation
+subscription_confirmed = False
 
 def on_connect(mqtt_client, userdata, flags, rc, callback_api_version):
     if rc == 0:
@@ -116,7 +122,7 @@ def process_dockernotrun_request(data):
 
 def on_message(mqtt_client, userdata, msg):
     print(f'Received message on topic: {msg.topic} with payload: {msg.payload}')
-    global last_message_time
+    global last_message_time, subscription_confirmed
     last_message_time = time.time()
 
     try: 
@@ -128,8 +134,18 @@ def on_message(mqtt_client, userdata, msg):
         
     except:
         payload_str = msg.payload.decode("utf-8")
-        if(payload_str == "calculate_efficiency"):
-            # Offload efficiency calculations to a separate thread
+        
+        # Handle subscription confirmation from scheduler
+        if payload_str == "SUBSCRIPTION_CONFIRMED":
+            subscription_confirmed = True
+            print("Scheduler confirmed subscription, sending startup signals...")
+            # Now it's safe to send startup signals
+            mclient.publish(topic=user_id, payload="STARTUP", qos=2)
+            print("STARTUP signal sent to scheduler")
+            mclient.publish(topic=user_id, payload="READY", qos=2)
+            print("READY signal sent to scheduler")
+            
+        elif(payload_str == "calculate_efficiency"):
             Thread(target=calc_benchmark_stats).start()
         elif(payload_str.startswith("EfficiencyScoreSet:")):
             scoreset = json.loads(payload_str[19:])
@@ -150,7 +166,7 @@ def on_subscribe(mqtt_client, userdata, mid, qos, properties=None):
     pass
 
 # tell scheduler that this provider has started. waits for the request to get then proceeds.
-requests.get("http://localhost:8000/providers/startup/"+user_id)
+# requests.get("http://"+controller_ip+":"+controller_port+"/providers/startup/"+user_id)
 
 
 mclient = mqtt.Client(callback_api_version= mqtt.CallbackAPIVersion.VERSION2)
@@ -170,10 +186,24 @@ mclient.loop_start() #different thread
 mclient.publish(topic="EVERYONE", payload="start_connect"+user_id, qos=2)
 mclient.publish(topic="EVERYONE", payload="get_efficiency_score"+user_id, qos=2)
 
+# Wait for subscription confirmation before sending user-specific messages
+print("Waiting for scheduler subscription confirmation...")
+timeout_counter = 0
+while not subscription_confirmed and timeout_counter < 30:  # 30 second timeout
+    time.sleep(1)
+    timeout_counter += 1
+
+if not subscription_confirmed:
+    print("Warning: No subscription confirmation received, sending signals anyway...")
+    mclient.publish(topic=user_id, payload="STARTUP", qos=2)
+    mclient.publish(topic=user_id, payload="READY", qos=2)
+
 def procedural_shutdown(sig, frame):
     print("Commencing procedural shutdown...")
     procedural_shutdown_event.set()
-    requests.get(url=NOT_READY_URL + user_id) #This should set provider to not ready on scheduler
+    # Replace HTTP NOT_READY signal with MQTT
+    global mclient
+    mclient.publish(topic=user_id, payload="NOT_READY", qos=2)
 
 #This will call the shutdown_handler function when the SIGINT or SIGTERM signal is received from system
 signal.signal(signal.SIGINT, procedural_shutdown)   # Ctrl+C induced signal
@@ -352,6 +382,40 @@ def monitor_container(cont, start_run_time, timeout):
         count+=1
     return stack
 
+def get_docker_host_ip():
+    """Get the IP address to reach the host from inside a container"""
+    try:
+        # First try to get the default gateway (works when provider runs in container)
+        result = subprocess.run(['ip', 'route', 'show', 'default'], 
+                              capture_output=True, text=True)
+        if result.returncode == 0:
+            gateway_ip = result.stdout.split()[2]
+            return gateway_ip
+    except:
+        pass
+    
+    try:
+        # Fallback: try to get Docker bridge IP
+        result = subprocess.run(['docker', 'network', 'inspect', 'bridge'], 
+                              capture_output=True, text=True)
+        if result.returncode == 0:
+            import json
+            bridge_info = json.loads(result.stdout)
+            gateway = bridge_info[0]['IPAM']['Config'][0]['Gateway']
+            return gateway
+    except:
+        pass
+    
+    # Last resort fallbacks
+    try:
+        # Try host.docker.internal (works on Docker Desktop)
+        socket.gethostbyname('host.docker.internal')
+        return 'host.docker.internal'
+    except:
+        pass
+    
+    # If all else fails, return localhost (might work in some setups)
+    return '10.1.19.76'
 
 def run_and_invoke_docker(body, container_name) -> dict:
 
@@ -421,7 +485,12 @@ def run_and_invoke_docker(body, container_name) -> dict:
             # Submit the monitoring task to the executor
             future = executor_for_cont_monitoring.submit(monitor_container, cont, start_run_time, timeout)
             print("container monitored")
-            response = requests.post(f'http://localhost:{host_port}', 
+            
+            # Get the appropriate host IP for container communication
+            host_ip = get_docker_host_ip()
+            print(f"Using host IP: {host_ip}")
+            
+            response = requests.post(f'http://{host_ip}:{host_port}', 
                                 json=payload,
                                 headers={'Content-Type': 'application/json'},
                                 timeout=30)  # Increased timeout to 5 minutes (300 seconds)
@@ -504,8 +573,12 @@ def HF_invoke_balance_transfer(receiver, sender):
     return response
 
 def on_request(json_data) :
-    #requests.get(url=ACK_URL + str(json_data['job_id'])) #uncomment this
-    #requests.get(url=NOT_READY_URL + user_id)
+    # Replace HTTP ACK signal with MQTT
+    global mclient
+    mclient.publish(topic=user_id, payload="ACK:"+str(json_data['job_id']), qos=2)
+    # Replace HTTP NOT_READY signal with MQTT (set provider as busy during job execution)
+    mclient.publish(topic=user_id, payload="NOT_READY", qos=2)
+    
     if json_data['inputData'] == "None":
         json_data['inputData'] = None
 
@@ -531,13 +604,18 @@ def on_request(json_data) :
 
     delete_container_and_image(json_data['task_link'], container_name)
     response = {'stage':"dockerrun", 'Result': r, 'pull_time': pull_time, 'run_time': run_time, 'total_time': total_time, 'job_id': json_data['job_id']}
-    global mclient
     mclient.publish(user_id, json.dumps(response).encode("utf-8"),qos=2)
+    # Set provider as ready again after job completion
+    mclient.publish(topic=user_id, payload="READY", qos=2)
     print("published response to scheduler")
 
 def on_chained_request(json_data) :
-    #requests.get(url=ACK_URL + str(json_data['job_id']))
-   #requests.get(url=NOT_READY_URL + user_id)
+    # Replace HTTP ACK signal with MQTT
+    global mclient
+    mclient.publish(topic=user_id, payload="ACK:"+str(json_data['job_id']), qos=2)
+    # Replace HTTP NOT_READY signal with MQTT (set provider as busy during job execution)
+    mclient.publish(topic=user_id, payload="NOT_READY", qos=2)
+    
     responses = []
     pull_times = []
     run_times = []
@@ -569,6 +647,9 @@ def on_chained_request(json_data) :
     # HF_set_time(str(json_data['job_id']), total_time)
     # HF_invoke_balance_transfer(str(json_data['provider_id']), str(json_data['task_developer']))
     # delete_container_and_image(json_data['task_link'])
+    
+    # Set provider as ready again after chained job completion
+    mclient.publish(topic=user_id, payload="READY", qos=2)
     return {'Result': responses, 'pull_time': pull_times, 'run_time': run_times, 'total_time': total_times}
 
 # data = {
