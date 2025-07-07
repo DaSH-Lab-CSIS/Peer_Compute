@@ -63,32 +63,23 @@ class ExperimentLogger:
             if self.log_file is not None:
                 return  # Already logging
                 
-            try:
-                # Store original streams
-                self.original_stdout = sys.stdout
-                self.original_stderr = sys.stderr
-                
-                # Open log file
-                self.log_file = open(self.log_file_path, 'a', encoding='utf-8')
-                
-                # Write session start marker
-                start_msg = self._format_log_line(f"=== EXPERIMENT SESSION START ===", "system")
-                self.log_file.write(start_msg + '\n')
-                self.log_file.flush()
-                
-                # Replace stdout/stderr with custom writers
-                sys.stdout = self._LogWriter(self, "stdout")
-                sys.stderr = self._LogWriter(self, "stderr")
-                
-                print(f"Experiment logging started for {self.node_type}:{self.node_id}")
-            except Exception as e:
-                # If logging setup fails, restore original streams and raise
-                if self.log_file:
-                    self.log_file.close()
-                    self.log_file = None
-                sys.stdout = self.original_stdout
-                sys.stderr = self.original_stderr
-                raise Exception(f"Failed to start experiment logging: {e}")
+            # Store original streams
+            self.original_stdout = sys.stdout
+            self.original_stderr = sys.stderr
+            
+            # Open log file
+            self.log_file = open(self.log_file_path, 'a', encoding='utf-8')
+            
+            # Write session start marker
+            start_msg = self._format_log_line(f"=== EXPERIMENT SESSION START ===", "system")
+            self.log_file.write(start_msg + '\n')
+            self.log_file.flush()
+            
+            # Replace stdout/stderr with custom writers
+            sys.stdout = self._LogWriter(self, "stdout")
+            sys.stderr = self._LogWriter(self, "stderr")
+            
+            print(f"Experiment logging started for {self.node_type}:{self.node_id}")
     
     def stop_logging(self):
         """Stop capturing stdout/stderr and restore original streams"""
@@ -117,6 +108,12 @@ class ExperimentLogger:
             formatted_msg = self._format_log_line(message, stream_type)
             self.log_file.write(formatted_msg + '\n')
             self.log_file.flush()
+            
+            # Also write to original stream
+            original_stream = self.original_stdout if stream_type == "stdout" else self.original_stderr
+            if original_stream:
+                original_stream.write(message)
+                original_stream.flush()
     
     class _LogWriter:
         """Custom writer that logs to file and original stream"""
@@ -126,33 +123,12 @@ class ExperimentLogger:
             self.stream_type = stream_type
         
         def write(self, message):
-            try:
-                # Always write to original stream first
-                original_stream = self.logger.original_stdout if self.stream_type == "stdout" else self.logger.original_stderr
-                if original_stream:
-                    original_stream.write(message)
-                    original_stream.flush()
-                
-                # Then log to file if message is not empty
-                if message.strip():
-                    self.logger.write_message(message.rstrip('\n'), self.stream_type)
-            except Exception as e:
-                # If logging fails, at least ensure original stream works
-                original_stream = self.logger.original_stdout if self.stream_type == "stdout" else self.logger.original_stderr
-                if original_stream:
-                    original_stream.write(message)
-                    original_stream.flush()
+            if message.strip():  # Only log non-empty messages
+                self.logger.write_message(message.rstrip('\n'), self.stream_type)
         
         def flush(self):
-            try:
-                # Flush both original stream and log file
-                original_stream = self.logger.original_stdout if self.stream_type == "stdout" else self.logger.original_stderr
-                if original_stream:
-                    original_stream.flush()
-                if self.logger.log_file:
-                    self.logger.log_file.flush()
-            except Exception:
-                pass
+            if self.logger.log_file:
+                self.logger.log_file.flush()
 
 
 class SchedulerLogger(ExperimentLogger):
@@ -168,7 +144,7 @@ class ProviderLogger(ExperimentLogger):
     
     def __init__(self, provider_id: str):
         # Get current log directory (may be algorithm-specific)
-        current_log_dir = settings.EXPERIMENT_LOGS_DIR
+        current_log_dir = settings.get_experiment_logs_dir()
         os.makedirs(current_log_dir, exist_ok=True)
         
         # Create provider-specific log file
@@ -181,7 +157,7 @@ class LoadBalancerLogger(ExperimentLogger):
     
     def __init__(self, node_id: str = None):
         # Get current log directory (may be algorithm-specific)
-        current_log_dir = settings.EXPERIMENT_LOGS_DIR
+        current_log_dir = settings.get_experiment_logs_dir()
         os.makedirs(current_log_dir, exist_ok=True)
         
         log_file = os.path.join(current_log_dir, "loadbalancer_stdout.log")
@@ -209,7 +185,7 @@ def setup_scheduler_logging():
         return None
     
     # Get current log directory (may be algorithm-specific)
-    current_log_dir = settings.EXPERIMENT_LOGS_DIR
+    current_log_dir = settings.get_experiment_logs_dir()
     os.makedirs(current_log_dir, exist_ok=True)
     
     # Create new logger if needed or if directory changed

@@ -172,16 +172,15 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 SCHEDULING_ALGORITHM = 'ILP'  # Options: 'ILP', 'MRU', 'BELADY', 'ROUND_ROBIN'
 
 #NOTE - Config for Experiment 5.
-PROJECT_ROOT = BASE_DIR.parent
 
 # Experiment Configuration
 EXPERIMENT_MODE = True  # Set to True to enable experiment data collection
-EXPERIMENT_LOG_FILE = PROJECT_ROOT / 'experiment_results.csv'
-ALGORITHM_METRICS_FILE = PROJECT_ROOT / 'algorithm_metrics.csv'
+EXPERIMENT_LOG_FILE = '/home/user/Documents/Serverless_Scheduler_sn34kyp3t3/experiment_results.csv'
+ALGORITHM_METRICS_FILE = '/home/user/Documents/Serverless_Scheduler_sn34kyp3t3/algorithm_metrics.csv'
 
 # Stdout logging configuration for experiment mode
-EXPERIMENT_STDOUT_LOGGING = True  # Temporarily disable to test
-EXPERIMENT_LOGS_BASE_DIR = PROJECT_ROOT / 'experiment_logs'
+EXPERIMENT_STDOUT_LOGGING = True  # Enable stdout logging when EXPERIMENT_MODE is True
+EXPERIMENT_LOGS_BASE_DIR = '/home/user/Documents/Serverless_Scheduler_sn34kyp3t3/experiment_logs'
 
 # Dynamic log directory - can be overridden by environment variables
 def get_experiment_logs_dir():
@@ -207,6 +206,6 @@ LOADBALANCER_LOG_FILE = os.path.join(EXPERIMENT_LOGS_DIR, 'loadbalancer_stdout.l
 PROVIDER_LOG_FILE = os.path.join(EXPERIMENT_LOGS_DIR, 'provider_stdout.log')
 
 # Algorithm-specific settings
-ROUND_ROBIN_STATE_FILE = PROJECT_ROOT / 'round_robin_state.json'
+ROUND_ROBIN_STATE_FILE = '/home/user/Documents/Serverless_Scheduler_sn34kyp3t3/round_robin_state.json'
 MRU_HISTORY_SIZE = 100  # Number of recent assignments to keep in memory
 BELADY_PREDICTION_WINDOW = 50  # Number of future requests to consider (for simulation)
