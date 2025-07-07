@@ -4,6 +4,8 @@ import os
 import sys
 import atexit
 import signal
+import socket
+
 
 def cleanup_pid_file(pid_file):
     """Remove the PID file if it exists."""
@@ -35,12 +37,38 @@ def main():
         ) from exc
     
     # Setup experiment logging for runserver command
-    if len(sys.argv) > 1 and sys.argv[1] == 'runserver':
-        from django.conf import settings
-        if settings.EXPERIMENT_MODE and settings.EXPERIMENT_STDOUT_LOGGING:
-            from providers.experiment_logging import setup_scheduler_logging
-            setup_scheduler_logging()
-    
+    if len(sys.argv) > 1 and sys.argv[1] == 'runserver' and os.environ.get('RUN_MAIN') != 'true':
+        try:
+            hostname = socket.gethostname()
+            ip_address = socket.gethostbyname(hostname)
+            print(f"IP Address: {ip_address}")
+
+            # New logging integration
+            from django.conf import settings
+            if settings.EXPERIMENT_MODE and settings.EXPERIMENT_STDOUT_LOGGING:
+                # Add project root to sys.path to allow absolute imports
+                project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                if project_root not in sys.path:
+                    sys.path.insert(0, project_root)
+                
+                from loadbalancer.loadbalancer_with_logging import get_experiment_log_dir, ExperimentLogger
+                
+                # Scheduler acts as a follower
+                logs_dir = get_experiment_log_dir(is_leader=False)
+                log_filename = f"sch_{ip_address}_stdout.log"
+                
+                # Start the logger
+                logger = ExperimentLogger(logs_dir, log_filename)
+                logger.start_logging()
+                
+                # Ensure logger is stopped on exit
+                atexit.register(logger.stop_logging)
+
+        except (ImportError, FileNotFoundError) as e:
+            print(f"Warning: Could not import or use experiment logging utility: {e}")
+        except socket.gaierror:
+            print("Could not determine IP address for logging.")
+
     # Get the current process ID
     pid = os.getpid()
     #Adding this code to write pid to a file

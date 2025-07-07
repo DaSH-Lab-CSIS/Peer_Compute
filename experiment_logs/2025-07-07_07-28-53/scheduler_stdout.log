@@ -1,0 +1,3 @@
+[2025-07-07 07:28:54.256] [scheduler:archlinux] [SYSTEM] === EXPERIMENT SESSION START ===
+[2025-07-07 07:28:54.256] [scheduler:archlinux] [STDOUT] Experiment logging started for scheduler:archlinux
+[2025-07-07 07:29:05.403] [scheduler:archlinux] [STDOUT] Deleted PID file: djpid.txt

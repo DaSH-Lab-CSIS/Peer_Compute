@@ -1,0 +1,37 @@
+[2025-07-07 03:44:34.593] [loadbalancer] [SYSTEM] === EXPERIMENT SESSION START ===
+[2025-07-07 03:44:34.594] [loadbalancer] [STDOUT] Experiment logging started for loadbalancer
+[2025-07-07 03:44:34.594] [loadbalancer] [STDOUT] Starting loadbalancer with experiment logging: True
+[2025-07-07 03:44:34.944] [loadbalancer] [STDOUT] SCHEDULER_URLS: ['http://10.8.1.18:8000/developers/run_service_async_batch/', 'http://10.1.19.76:8000/developers/run_service_async_batch/']
+[2025-07-07 03:44:34.956] [loadbalancer] [STDOUT] Error in loadbalancer: Unable to configure formatter 'default'
+[2025-07-07 03:44:34.958] [loadbalancer] [STDERR] Traceback (most recent call last):
+[2025-07-07 03:44:34.958] [loadbalancer] [STDERR]   File "/home/sn34kyp3t3/.pyenv/versions/3.12.11/lib/python3.12/logging/config.py", line 587, in configure
+    formatters[name] = self.configure_formatter(
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^
+[2025-07-07 03:44:34.958] [loadbalancer] [STDERR]   File "/home/sn34kyp3t3/.pyenv/versions/3.12.11/lib/python3.12/logging/config.py", line 699, in configure_formatter
+    result = self.configure_custom(config)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[2025-07-07 03:44:34.958] [loadbalancer] [STDERR]   File "/home/sn34kyp3t3/.pyenv/versions/3.12.11/lib/python3.12/logging/config.py", line 490, in configure_custom
+    result = c(**kwargs)
+             ^^^^^^^^^^^
+[2025-07-07 03:44:34.958] [loadbalancer] [STDERR]   File "/home/sn34kyp3t3/.pyenv/versions/3.12.11/envs/peercompute/lib/python3.12/site-packages/uvicorn/logging.py", line 42, in __init__
+    self.use_colors = sys.stdout.isatty()
+                      ^^^^^^^^^^^^^^^^^
+[2025-07-07 03:44:34.958] [loadbalancer] [STDERR] AttributeError: '_LogWriter' object has no attribute 'isatty'
+[2025-07-07 03:44:34.958] [loadbalancer] [STDERR] 
+The above exception was the direct cause of the following exception:
+[2025-07-07 03:44:34.958] [loadbalancer] [STDERR] Traceback (most recent call last):
+[2025-07-07 03:44:34.958] [loadbalancer] [STDERR]   File "/home/sn34kyp3t3/Serverless_Scheduler/loadbalancer/loadbalancer_with_logging.py", line 143, in main
+    uvicorn.run(
+[2025-07-07 03:44:34.958] [loadbalancer] [STDERR]   File "/home/sn34kyp3t3/.pyenv/versions/3.12.11/envs/peercompute/lib/python3.12/site-packages/uvicorn/main.py", line 517, in run
+    config = Config(
+             ^^^^^^^
+[2025-07-07 03:44:34.958] [loadbalancer] [STDERR]   File "/home/sn34kyp3t3/.pyenv/versions/3.12.11/envs/peercompute/lib/python3.12/site-packages/uvicorn/config.py", line 275, in __init__
+    self.configure_logging()
+[2025-07-07 03:44:34.958] [loadbalancer] [STDERR]   File "/home/sn34kyp3t3/.pyenv/versions/3.12.11/envs/peercompute/lib/python3.12/site-packages/uvicorn/config.py", line 367, in configure_logging
+    logging.config.dictConfig(self.log_config)
+[2025-07-07 03:44:34.958] [loadbalancer] [STDERR]   File "/home/sn34kyp3t3/.pyenv/versions/3.12.11/lib/python3.12/logging/config.py", line 942, in dictConfig
+    dictConfigClass(config).configure()
+[2025-07-07 03:44:34.958] [loadbalancer] [STDERR]   File "/home/sn34kyp3t3/.pyenv/versions/3.12.11/lib/python3.12/logging/config.py", line 590, in configure
+    raise ValueError('Unable to configure '
+[2025-07-07 03:44:34.958] [loadbalancer] [STDERR] ValueError: Unable to configure formatter 'default'
+[2025-07-07 03:44:34.958] [loadbalancer] [SYSTEM] === EXPERIMENT SESSION END ===

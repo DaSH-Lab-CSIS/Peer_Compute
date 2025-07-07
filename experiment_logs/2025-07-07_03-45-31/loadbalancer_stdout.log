@@ -1,0 +1,19 @@
+[2025-07-07 03:45:31.032] [loadbalancer] [SYSTEM] === EXPERIMENT SESSION START ===
+[2025-07-07 03:45:31.032] [loadbalancer] [STDOUT] Experiment logging started for loadbalancer
+[2025-07-07 03:45:31.032] [loadbalancer] [STDOUT] Starting loadbalancer with experiment logging: True
+[2025-07-07 03:45:31.334] [loadbalancer] [STDOUT] SCHEDULER_URLS: ['http://10.8.1.18:8000/developers/run_service_async_batch/', 'http://10.1.19.76:8000/developers/run_service_async_batch/']
+[2025-07-07 03:45:31.355] [loadbalancer] [STDERR] INFO:     Started server process [82387]
+[2025-07-07 03:45:31.355] [loadbalancer] [STDERR] INFO:     Waiting for application startup.
+[2025-07-07 03:45:31.355] [loadbalancer] [SYSTEM] === EXPERIMENT SESSION START ===
+[2025-07-07 03:45:31.355] [loadbalancer] [STDOUT] Experiment logging started for loadbalancer
+[2025-07-07 03:45:31.355] [loadbalancer] [STDOUT] Experiment logging started for loadbalancer
+[2025-07-07 03:45:31.594] [loadbalancer] [STDOUT] MQTT client started successfully
+[2025-07-07 03:45:31.594] [loadbalancer] [STDOUT] MQTT client started successfully
+[2025-07-07 03:45:31.594] [loadbalancer] [STDERR] INFO:     Application startup complete.
+[2025-07-07 03:45:31.595] [loadbalancer] [STDERR] INFO:     Uvicorn running on http://0.0.0.0:9001 (Press CTRL+C to quit)
+[2025-07-07 03:45:31.799] [loadbalancer] [STDOUT] Connected successfully to MQTT broker
+[2025-07-07 03:45:31.799] [loadbalancer] [STDOUT] Connected successfully to MQTT broker
+[2025-07-07 03:45:32.003] [loadbalancer] [STDOUT] Subscribed with QOS: [ReasonCode(Suback, 'Granted QoS 0')]
+[2025-07-07 03:45:32.003] [loadbalancer] [STDOUT] Subscribed with QOS: [ReasonCode(Suback, 'Granted QoS 0')]
+[2025-07-07 03:45:32.207] [loadbalancer] [STDOUT] Subscribed with QOS: [ReasonCode(Suback, 'Granted QoS 0')]
+[2025-07-07 03:45:32.207] [loadbalancer] [STDOUT] Subscribed with QOS: [ReasonCode(Suback, 'Granted QoS 0')]

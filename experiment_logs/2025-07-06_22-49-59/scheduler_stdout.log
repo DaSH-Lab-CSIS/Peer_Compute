@@ -1,0 +1,8 @@
+[2025-07-06 22:49:59.008] [scheduler:archlinux] [SYSTEM] === EXPERIMENT SESSION START ===
+[2025-07-06 22:49:59.008] [scheduler:archlinux] [STDOUT] Experiment logging started for scheduler:archlinux
+[2025-07-06 22:49:59.008] [scheduler:archlinux] [STDOUT] PID: 85044
+[2025-07-06 22:49:59.144] [scheduler:archlinux] [STDERR] Watching for file changes with StatReloader
+[2025-07-06 22:49:59.144] [scheduler:archlinux] [STDOUT] Performing system checks...
+[2025-07-06 22:49:59.378] [scheduler:archlinux] [STDOUT] System check identified no issues (0 silenced).
+[2025-07-06 22:49:59.522] [scheduler:archlinux] [STDOUT] Connected to mqtt from views.py/providers
+[2025-07-06 22:49:59.659] [scheduler:archlinux] [STDERR] Error: That port is already in use.

@@ -1,0 +1,8 @@
+[2025-07-07 02:50:55.386] [loadbalancer] [SYSTEM] === EXPERIMENT SESSION START ===
+[2025-07-07 02:50:55.386] [loadbalancer] [STDOUT] Experiment logging started for loadbalancer
+[2025-07-07 02:50:55.628] [loadbalancer] [STDOUT] MQTT client started successfully
+[2025-07-07 02:50:55.831] [loadbalancer] [STDOUT] Connected successfully to MQTT broker
+[2025-07-07 02:50:56.036] [loadbalancer] [STDOUT] Subscribed with QOS: [ReasonCode(Suback, 'Granted QoS 0')]
+[2025-07-07 02:50:56.242] [loadbalancer] [STDOUT] Subscribed with QOS: [ReasonCode(Suback, 'Granted QoS 0')]
+[2025-07-07 02:52:34.340] [loadbalancer] [STDOUT] MQTT client stopped
+[2025-07-07 02:52:34.340] [loadbalancer] [SYSTEM] === EXPERIMENT SESSION END ===
