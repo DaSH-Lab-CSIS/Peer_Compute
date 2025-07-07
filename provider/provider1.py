@@ -32,7 +32,29 @@ import subprocess
 
 user_id = sys.argv[1]
 # Add the project root directory to Python's path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(project_root)
+
+# --- Experiment Logging Setup ---
+try:
+    from loadbalancer.loadbalancer_with_logging import get_experiment_log_dir, ExperimentLogger
+    
+    # Provider acts as a follower
+    logs_dir = get_experiment_log_dir(is_leader=False)
+    log_filename = f"prov_{user_id}_stdout.log"
+    
+    # Start the logger
+    logger = ExperimentLogger(logs_dir, log_filename)
+    logger.start_logging()
+    
+    # Ensure logger is stopped on exit
+    import atexit
+    atexit.register(logger.stop_logging)
+
+except (ImportError, FileNotFoundError) as e:
+    print(f"Warning: Could not set up experiment logging: {e}")
+# --- End Logging Setup ---
+
 # Change from relative to absolute import
 from invocations.invoker import get_payload
 

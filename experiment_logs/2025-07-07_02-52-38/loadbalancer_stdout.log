@@ -1,5 +1,0 @@
-[2025-07-07 02:52:38.830] [loadbalancer] [SYSTEM] === EXPERIMENT SESSION START ===
-[2025-07-07 02:52:38.830] [loadbalancer] [STDOUT] Experiment logging started for loadbalancer
-[2025-07-07 02:52:38.830] [loadbalancer] [STDOUT] Starting loadbalancer with experiment logging: True
-[2025-07-07 02:52:39.134] [loadbalancer] [STDOUT] SCHEDULER_URLS: ['http://10.8.1.18:8000/developers/run_service_async_batch/', 'http://10.1.19.76:8000/developers/run_service_async_batch/']
-[2025-07-07 02:52:39.135] [loadbalancer] [SYSTEM] === EXPERIMENT SESSION END ===

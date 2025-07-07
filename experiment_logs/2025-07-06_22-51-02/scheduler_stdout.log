@@ -1,4 +1,0 @@
-[2025-07-06 22:51:02.967] [scheduler:archlinux] [SYSTEM] === EXPERIMENT SESSION START ===
-[2025-07-06 22:51:02.967] [scheduler:archlinux] [STDOUT] Experiment logging started for scheduler:archlinux
-[2025-07-06 22:51:02.988] [scheduler:archlinux] [STDOUT] on_subscribe userdata is <paho.mqtt.client.Client object at 0x7f750968cbc0>
-[2025-07-06 22:51:50.864] [scheduler:archlinux] [STDOUT] Deleted PID file: djpid.txt

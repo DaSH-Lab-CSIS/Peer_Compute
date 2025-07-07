@@ -1,5 +1,0 @@
-[2025-07-07 07:28:52.873] [SYSTEM] === LOGGING SESSION START ===
-[2025-07-07 07:28:52.873] [STDOUT] Experiment logging started. Outputting to: /home/sn34kyp3t3/Serverless_Scheduler/experiment_logs/2025-07-07_07-28-52_no_leader/sch_192.168.0.113_stdout.log
-[2025-07-07 07:28:52.873] [STDOUT] PID: 118771
-[2025-07-07 07:29:05.516] [STDOUT] Experiment logging stopped.
-[2025-07-07 07:29:05.516] [SYSTEM] === LOGGING SESSION END ===
