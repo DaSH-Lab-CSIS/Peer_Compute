@@ -184,9 +184,21 @@ def setup_scheduler_logging():
     if not settings.EXPERIMENT_MODE or not settings.EXPERIMENT_STDOUT_LOGGING:
         return None
     
+    try:
     # Get current log directory (may be algorithm-specific)
-    current_log_dir = settings.get_experiment_logs_dir()
+        current_log_dir = settings.get_experiment_logs_dir()
+        
+        # Ensure log directory exists with proper permissions
+        try:
     os.makedirs(current_log_dir, exist_ok=True)
+            # Set permissions to allow read/write
+            os.chmod(current_log_dir, 0o755)
+        except PermissionError:
+            print(f"WARNING: Unable to create log directory {current_log_dir}. Check permissions.")
+            return None
+        except Exception as e:
+            print(f"ERROR creating log directory: {e}")
+            return None
     
     # Create new logger if needed or if directory changed
     if _scheduler_logger is None or _scheduler_logger.log_file_path != os.path.join(current_log_dir, 'scheduler_stdout.log'):
@@ -197,9 +209,16 @@ def setup_scheduler_logging():
         # Create new logger with current directory
         _scheduler_logger = SchedulerLogger()
         _scheduler_logger.log_file_path = os.path.join(current_log_dir, 'scheduler_stdout.log')
-        _scheduler_logger.start_logging()
     
     return _scheduler_logger
+        
+    except AttributeError as e:
+        print(f"ERROR: Unable to access experiment logging settings. Details: {e}")
+        print("Ensure that get_experiment_logs_dir() is correctly defined in settings.py")
+        return None
+    except Exception as e:
+        print(f"Unexpected error in setup_scheduler_logging: {e}")
+        return None
 
 def cleanup_scheduler_logging():
     """Cleanup scheduler logging"""

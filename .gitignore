@@ -31,3 +31,7 @@ scheduler/developers/__pycache__/
 **/**/**/**/**/**/**/**/*.pyc
 **/**/**/**/**/**/**/**/**/*.pyc
 **/**/**/**/**/**/**/**/**/**/*.pyc
+experiment_logs/
+testbed*.json
+*.ps1
+djpid.txt

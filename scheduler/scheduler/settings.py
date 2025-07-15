@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/4.2/ref/settings/
 from pathlib import Path
 import os
 from datetime import datetime
+import sys
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -43,6 +44,7 @@ INSTALLED_APPS = [
     'providers',
     'developers',
     'fabric',
+    'experiments',
     'corsheaders',
 ]
 
@@ -199,6 +201,10 @@ def get_experiment_logs_dir():
         # Default behavior
         timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
         return os.path.join(EXPERIMENT_LOGS_BASE_DIR, timestamp)
+
+# Add the method to the settings module
+this_module = sys.modules[__name__]
+setattr(this_module, 'get_experiment_logs_dir', get_experiment_logs_dir)
 
 EXPERIMENT_LOGS_DIR = get_experiment_logs_dir()
 SCHEDULER_LOG_FILE = os.path.join(EXPERIMENT_LOGS_DIR, 'scheduler_stdout.log')
