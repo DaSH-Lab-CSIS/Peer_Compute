@@ -190,7 +190,7 @@ def setup_scheduler_logging():
         
         # Ensure log directory exists with proper permissions
         try:
-    os.makedirs(current_log_dir, exist_ok=True)
+            os.makedirs(current_log_dir, exist_ok=True)
             # Set permissions to allow read/write
             os.chmod(current_log_dir, 0o755)
         except PermissionError:
@@ -200,17 +200,17 @@ def setup_scheduler_logging():
             print(f"ERROR creating log directory: {e}")
             return None
     
-    # Create new logger if needed or if directory changed
-    if _scheduler_logger is None or _scheduler_logger.log_file_path != os.path.join(current_log_dir, 'scheduler_stdout.log'):
-        # Stop existing logger if any
-        if _scheduler_logger:
-            _scheduler_logger.stop_logging()
+        # Create new logger if needed or if directory changed
+        if _scheduler_logger is None or _scheduler_logger.log_file_path != os.path.join(current_log_dir, 'scheduler_stdout.log'):
+            # Stop existing logger if any
+            if _scheduler_logger:
+                _scheduler_logger.stop_logging()
+            
+            # Create new logger with current directory
+            _scheduler_logger = SchedulerLogger()
+            _scheduler_logger.log_file_path = os.path.join(current_log_dir, 'scheduler_stdout.log')
         
-        # Create new logger with current directory
-        _scheduler_logger = SchedulerLogger()
-        _scheduler_logger.log_file_path = os.path.join(current_log_dir, 'scheduler_stdout.log')
-    
-    return _scheduler_logger
+        return _scheduler_logger
         
     except AttributeError as e:
         print(f"ERROR: Unable to access experiment logging settings. Details: {e}")

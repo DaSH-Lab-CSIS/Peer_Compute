@@ -112,17 +112,32 @@ WSGI_APPLICATION = 'scheduler.wsgi.application'
 # }
 
 
-# SUPABASE
+# # SUPABASE
+# DATABASES = {
+#     "default": {
+#         "ENGINE": "django.db.backends.postgresql",
+#         "NAME": "postgres",
+#         "USER": "postgres.uufnsxmqnwegackubear",
+#         "PASSWORD": "16G6MNonNa7ny9pG",
+#         "HOST": "aws-0-ap-south-1.pooler.supabase.com",
+#         "PORT": "5432",
+#         "OPTIONS": {
+#             "options": "-c pool_mode=session"
+#         },
+#     }
+# }
+
+# COCKROACHDB
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
-        "NAME": "postgres",
-        "USER": "postgres.uufnsxmqnwegackubear",
-        "PASSWORD": "16G6MNonNa7ny9pG",
-        "HOST": "aws-0-ap-south-1.pooler.supabase.com",
-        "PORT": "5432",
+        "NAME": "defaultdb",
+        "USER": "root",
+        "PASSWORD": "",  # No password for insecure mode
+        "HOST": "localhost",
+        "PORT": "26257",
         "OPTIONS": {
-            "options": "-c pool_mode=session"
+            "sslmode": "disable",  # Required for insecure mode
         },
     }
 }
