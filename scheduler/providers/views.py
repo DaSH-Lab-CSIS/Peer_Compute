@@ -259,6 +259,13 @@ def publish_to_topic_mqtt(runMultipleInvocations, numberOfInvocations, isChained
     #makes a new client everytime it pubtotopic is called.
     mclient = get_mclient()
     mclient.subscribe(topic=router_name)
+    
+    print(f'=== PUBLISHING MQTT MESSAGE ===')
+    print(f'Topic: {router_name}')
+    print(f'Payload: {json.dumps(userdata, indent=2)}')
+    print(f'Timestamp: {time.strftime("%Y-%m-%d %H:%M:%S")}')
+    print(f'================================')
+    
     mclient.publish(topic=router_name, payload=json.dumps(userdata).encode("utf-8"), qos=2)
     print("in pub to topic mqtt")
     # mclient.loop_forever() #get rid of this
@@ -795,7 +802,8 @@ def print_cost_matrix(cost_matrix):
             extracted_services.append(service_item)
     
     # Calculate column widths - handle both direct service objects and tuples
-    provider_width = max(len(str(provider.user_id)) for provider in cost_matrix.keys())
+    # Include provider name/id info in width calculation
+    provider_width = max(len(f"{provider.user_id} ({provider.location or 'No Location'})") for provider in cost_matrix.keys())
     service_widths = []
     for service_item in extracted_services:
         try:
@@ -807,7 +815,7 @@ def print_cost_matrix(cost_matrix):
         service_widths.append(width)
     
     # Print header
-    header = f"{'Provider':>{provider_width}} |"
+    header = f"{'Provider (ID + Location)':>{provider_width}} |"
     header += "".join(f" {'Service '+str(getattr(service, 'id', i)):^{width}}" 
                      for i, (service, width) in enumerate(zip(extracted_services, service_widths)))
     print("\n" + "="*(len(header)))
@@ -816,8 +824,9 @@ def print_cost_matrix(cost_matrix):
     
     # Print each row
     for provider, costs in cost_matrix.items():
-        # Convert UUID to string for formatting
-        row = f"{str(provider.user_id):>{provider_width}} |"
+        # Include provider ID and location for better identification
+        provider_info = f"{provider.user_id} ({provider.location or 'No Location'})"
+        row = f"{provider_info:>{provider_width}} |"
         row += "".join(f" {costs[service]:^{width}.2f}" for service, width in zip(services, service_widths))
         print(row)
     

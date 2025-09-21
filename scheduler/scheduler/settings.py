@@ -112,35 +112,35 @@ WSGI_APPLICATION = 'scheduler.wsgi.application'
 # }
 
 
-# # SUPABASE
-# DATABASES = {
-#     "default": {
-#         "ENGINE": "django.db.backends.postgresql",
-#         "NAME": "postgres",
-#         "USER": "postgres.uufnsxmqnwegackubear",
-#         "PASSWORD": "16G6MNonNa7ny9pG",
-#         "HOST": "aws-0-ap-south-1.pooler.supabase.com",
-#         "PORT": "5432",
-#         "OPTIONS": {
-#             "options": "-c pool_mode=session"
-#         },
-#     }
-# }
-
-# COCKROACHDB
+# SUPABASE
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
-        "NAME": "defaultdb",
-        "USER": "root",
-        "PASSWORD": "",  # No password for insecure mode
-        "HOST": "localhost",
-        "PORT": "26257",
+        "NAME": "postgres",
+        "USER": "postgres.uufnsxmqnwegackubear",
+        "PASSWORD": "16G6MNonNa7ny9pG",
+        "HOST": "aws-0-ap-south-1.pooler.supabase.com",
+        "PORT": "5432",
         "OPTIONS": {
-            "sslmode": "disable",  # Required for insecure mode
+            "options": "-c pool_mode=session"
         },
     }
 }
+
+# # COCKROACHDB
+# DATABASES = {
+#     "default": {
+#         "ENGINE": "django.db.backends.postgresql",
+#         "NAME": "defaultdb",
+#         "USER": "root",
+#         "PASSWORD": "",  # No password for insecure mode
+#         "HOST": "localhost",
+#         "PORT": "26257",
+#         "OPTIONS": {
+#             "sslmode": "disable",  # Required for insecure mode
+#         },
+#     }
+# }
 
 
 # Password validation
@@ -221,12 +221,58 @@ def get_experiment_logs_dir():
 this_module = sys.modules[__name__]
 setattr(this_module, 'get_experiment_logs_dir', get_experiment_logs_dir)
 
-EXPERIMENT_LOGS_DIR = get_experiment_logs_dir()
-SCHEDULER_LOG_FILE = os.path.join(EXPERIMENT_LOGS_DIR, 'scheduler_stdout.log')
-LOADBALANCER_LOG_FILE = os.path.join(EXPERIMENT_LOGS_DIR, 'loadbalancer_stdout.log')
-PROVIDER_LOG_FILE = os.path.join(EXPERIMENT_LOGS_DIR, 'provider_stdout.log')
+# Initialize log directory and files - but only if experiment mode is enabled
+try:
+    if EXPERIMENT_MODE and EXPERIMENT_STDOUT_LOGGING:
+        EXPERIMENT_LOGS_DIR = get_experiment_logs_dir()
+        SCHEDULER_LOG_FILE = os.path.join(EXPERIMENT_LOGS_DIR, 'scheduler_stdout.log')
+        LOADBALANCER_LOG_FILE = os.path.join(EXPERIMENT_LOGS_DIR, 'loadbalancer_stdout.log')
+        PROVIDER_LOG_FILE = os.path.join(EXPERIMENT_LOGS_DIR, 'provider_stdout.log')
+    else:
+        # Set default values when experiment mode is disabled
+        EXPERIMENT_LOGS_DIR = None
+        SCHEDULER_LOG_FILE = None
+        LOADBALANCER_LOG_FILE = None
+        PROVIDER_LOG_FILE = None
+except Exception as e:
+    print(f"Warning: Could not initialize experiment logging: {e}")
+    EXPERIMENT_LOGS_DIR = None
+    SCHEDULER_LOG_FILE = None
+    LOADBALANCER_LOG_FILE = None
+    PROVIDER_LOG_FILE = None
 
 # Algorithm-specific settings
 ROUND_ROBIN_STATE_FILE = '/home/user/Documents/Serverless_Scheduler_sn34kyp3t3/round_robin_state.json'
 MRU_HISTORY_SIZE = 100  # Number of recent assignments to keep in memory
 BELADY_PREDICTION_WINDOW = 50  # Number of future requests to consider (for simulation)
+
+# For current machine
+HOST = os.environ.get('HOST')
+ENDPOINT = os.environ.get('ENDPOINT')
+
+# Scheduler URLs Configuration
+def get_scheduler_endpoints():
+    """
+    Get the list of scheduler URLs for load balancing.
+    
+    Returns:
+        List[str]: List of scheduler endpoint URLs
+    """
+    # Default scheduler URLs - can be overridden by environment variables
+    default_urls = [
+        "http://localhost:8000",
+        "http://localhost:8001",
+        "http://localhost:8002"
+    ]
+    
+    # Check if custom URLs are provided via environment variable
+    custom_urls = os.environ.get('SCHEDULER_URLS')
+    if custom_urls:
+        try:
+            import json
+            return json.loads(custom_urls)
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"Warning: Invalid SCHEDULER_URLS environment variable: {e}")
+            print("Using default scheduler URLs")
+    
+    return default_urls

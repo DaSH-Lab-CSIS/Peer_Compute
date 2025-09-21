@@ -22,7 +22,14 @@ from pydantic import BaseModel
 import paho.mqtt.client as mqtt
 from contextlib import asynccontextmanager
 from datetime import datetime
-from scheduler.scheduler.settings import get_scheduler_urls
+import sys
+import os
+# Add the project root to the Python path
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+from scheduler.scheduler.settings import get_scheduler_endpoints
 
 def check_experiment_mode():
     """Check if experiment mode is enabled"""
@@ -146,7 +153,8 @@ class Config:
     def __init__(self):
         self.BATCH_SIZE = 10
         self.BATCH_TIMEOUT_SECONDS = 5.0
-        self.SCHEDULER_URLS = get_scheduler_urls()
+        self.SCHEDULER_ENDPOINTS = get_scheduler_endpoints()
+        self.SCHEDULER_URLS = [endpoint+str('/developers/run_service_async_batch/') for endpoint in self.SCHEDULER_ENDPOINTS]
 
         # Load from config file if it exists
         self.load_from_file("LB.conf")

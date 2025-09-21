@@ -99,12 +99,12 @@ Response:
 
 ```bash
 # Submit a service request using the sample format
-curl -X POST "http://localhost:9002/loadbalancer/run_service/" \
+curl -X POST "http://localhost:9001/loadbalancer/run_service/" \
   -H "Accept: */*" \
   -H "User-Agent: Thunder Client (https://www.thunderclient.com)" \
   -H "Content-Type: application/json" \
   -d '{
-    "serviceID": 12,
+    "serviceID": 10,
     "numberOfInvocations": 1,
     "chained": false,
     "input": "None",

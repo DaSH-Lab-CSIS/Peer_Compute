@@ -40,13 +40,14 @@ class TestBatch:
     batch_id: int
     jobs: List[TestJob]
     send_time_offset: float  # Seconds from experiment start
+    from scheduler.scheduler.settings import HOST
     
     def to_batch_payload(self) -> Dict[str, Any]:
         """Convert to load balancer batch payload"""
         requests = []
         for job in self.jobs:
             request = {
-                "url": f"http://localhost:8000/developers/run_service_async/{job.function_id}",
+                "url": f"http://{HOST}/developers/run_service_async/{job.function_id}",
                 "method": "POST",
                 "headers": {"Content-Type": "application/json"},
                 "body": job.to_request_payload(),

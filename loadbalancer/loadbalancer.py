@@ -11,7 +11,7 @@ import paho.mqtt.client as mqtt
 from contextlib import asynccontextmanager
 import sys
 from datetime import datetime
-
+from scheduler.scheduler.settings import get_scheduler_endpoints
 # Import logging functionality from loadbalancer_with_logging
 from loadbalancer_with_logging import check_experiment_mode, LoadBalancerLogger, setup_logging_paths
 
@@ -29,9 +29,8 @@ class Config:
         self.BATCH_SIZE = 10
         self.BATCH_TIMEOUT_SECONDS = 5.0
         #NOTE Not for permanent use.
-        self.SCHEDULER_URLS = [
-            "http://10.8.1.18:8000/developers/run_service_async_batch/", #default for empty config file
-        ]
+        self.SCHEDULER_ENDPOINTS = get_scheduler_endpoints()
+        self.SCHEDULER_URLS = [endpoint+str('/developers/run_service_async_batch/') for endpoint in self.SCHEDULER_ENDPOINTS]
         
         # Load from config file if it exists
         self.load_from_file("LB.conf")

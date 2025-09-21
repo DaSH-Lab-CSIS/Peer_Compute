@@ -91,6 +91,9 @@ class User(models.Model):
         self.reputation_score -= amount
 
     def reset_delay(self):
+        # Ensure delay is always a dictionary
+        if not isinstance(self.delay, dict):
+            self.delay = {}
         self.delay["time_of_last_startjob"] = 0
         self.delay["inflight_jobs"] = []
         self.save()
@@ -102,6 +105,15 @@ class User(models.Model):
         print(f"Type of new delay: {type(new_delay)}")
         
         try:
+            # Ensure delay is always a dictionary
+            if not isinstance(self.delay, dict):
+                print("Converting delay from non-dict to dict")
+                self.delay = {}
+            
+            # Ensure inflight_jobs key exists
+            if "inflight_jobs" not in self.delay:
+                self.delay["inflight_jobs"] = []
+            
             if isinstance(new_delay, dict):
                 print("Converting dict to JSON string")
                 new_delay = json.dumps(new_delay, cls=DjangoJSONEncoder)
@@ -133,7 +145,14 @@ class User(models.Model):
         """
         This calculation is only done when needed (i.e. just before job creation)
         """
-        if not self.delay["inflight_jobs"]:
+        # Ensure delay is always a dictionary
+        if not isinstance(self.delay, dict):
+            print(f"Delay is not a dict for {self.user_id}, resetting to empty dict")
+            self.delay = {}
+            self.save()
+            return 0
+            
+        if not self.delay.get("inflight_jobs", []):
             print(f"No inflight jobs for {self.user_id}")
             return 0
 
@@ -153,7 +172,13 @@ class User(models.Model):
          -> Remove the oldest predicted runtime
          -> adjust time_of_last_startjob
         """
-        if not self.delay["inflight_jobs"]:
+        # Ensure delay is always a dictionary
+        if not isinstance(self.delay, dict):
+            self.delay = {}
+            self.save()
+            return
+            
+        if not self.delay.get("inflight_jobs", []):
             return
 
         # current_time = datetime.now().timestamp()

@@ -144,7 +144,10 @@ class ProviderLogger(ExperimentLogger):
     
     def __init__(self, provider_id: str):
         # Get current log directory (may be algorithm-specific)
-        current_log_dir = settings.get_experiment_logs_dir()
+        if hasattr(settings, 'get_experiment_logs_dir'):
+            current_log_dir = settings.get_experiment_logs_dir()
+        else:
+            current_log_dir = '/tmp/experiment_logs'  # Fallback directory
         os.makedirs(current_log_dir, exist_ok=True)
         
         # Create provider-specific log file
@@ -157,7 +160,10 @@ class LoadBalancerLogger(ExperimentLogger):
     
     def __init__(self, node_id: str = None):
         # Get current log directory (may be algorithm-specific)
-        current_log_dir = settings.get_experiment_logs_dir()
+        if hasattr(settings, 'get_experiment_logs_dir'):
+            current_log_dir = settings.get_experiment_logs_dir()
+        else:
+            current_log_dir = '/tmp/experiment_logs'  # Fallback directory
         os.makedirs(current_log_dir, exist_ok=True)
         
         log_file = os.path.join(current_log_dir, "loadbalancer_stdout.log")
@@ -185,8 +191,12 @@ def setup_scheduler_logging():
         return None
     
     try:
-    # Get current log directory (may be algorithm-specific)
-        current_log_dir = settings.get_experiment_logs_dir()
+        # Get current log directory (may be algorithm-specific)
+        if hasattr(settings, 'get_experiment_logs_dir'):
+            current_log_dir = settings.get_experiment_logs_dir()
+        else:
+            print("ERROR: get_experiment_logs_dir function not available in settings")
+            return None
         
         # Ensure log directory exists with proper permissions
         try:

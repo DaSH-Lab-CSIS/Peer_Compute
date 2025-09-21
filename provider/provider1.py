@@ -58,7 +58,8 @@ except (ImportError, FileNotFoundError) as e:
 # Change from relative to absolute import
 from invocations.invoker import get_payload
 
-controller_ip = "10.8.1.18" #change to whichever is running django
+from scheduler.scheduler.settings import HOST
+controller_ip = HOST
 controller_port = "8000"
 # BROKER_ID = "10.8.1.18"
 BROKER_ID="broker.hivemq.com"
@@ -143,13 +144,20 @@ def process_dockernotrun_request(data):
             print(f"Pending jobs decremented: {pending_jobs}")
 
 def on_message(mqtt_client, userdata, msg):
-    print(f'Received message on topic: {msg.topic} with payload: {msg.payload}')
+    print(f'=== MQTT MESSAGE RECEIVED ===')
+    print(f'Topic: {msg.topic}')
+    print(f'Payload: {msg.payload}')
+    print(f'Timestamp: {time.strftime("%Y-%m-%d %H:%M:%S")}')
+    print(f'================================')
+    
     global last_message_time, subscription_confirmed
     last_message_time = time.time()
 
     try: 
         data = json.loads(msg.payload.decode("utf-8"))
+        print(f'Parsed JSON data: {data}')
         if(data["stage"] == "dockernotrun"):
+            print(f'Processing dockernotrun request for job_id: {data.get("job_id", "unknown")}')
             data["stage"] = "dockerrunning"
             # Offload heavy processing to a separate thread
             Thread(target=process_dockernotrun_request, args=(data,)).start()
