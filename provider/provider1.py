@@ -28,14 +28,38 @@ import signal
 import sys
 import tempfile
 import socket
+import subprocess
 
 user_id = sys.argv[1]
 # Add the project root directory to Python's path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(project_root)
+
+# --- Experiment Logging Setup ---
+try:
+    from loadbalancer.loadbalancer_with_logging import get_experiment_log_dir, ExperimentLogger
+    
+    # Provider acts as a follower
+    logs_dir = get_experiment_log_dir(is_leader=False)
+    log_filename = f"prov_{user_id}_stdout.log"
+    
+    # Start the logger
+    logger = ExperimentLogger(logs_dir, log_filename)
+    logger.start_logging()
+    
+    # Ensure logger is stopped on exit
+    import atexit
+    atexit.register(logger.stop_logging)
+
+except (ImportError, FileNotFoundError) as e:
+    print(f"Warning: Could not set up experiment logging: {e}")
+# --- End Logging Setup ---
+
 # Change from relative to absolute import
 from invocations.invoker import get_payload
 
-controller_ip = "0.0.0.0" #change to whichever is running django
+from scheduler.scheduler.settings import HOST
+controller_ip = HOST
 controller_port = "8000"
 # BROKER_ID = "10.8.1.18"
 BROKER_ID="broker.hivemq.com"
@@ -59,11 +83,13 @@ last_message_time = time.time()
 
 
 # REGISTER_URL = 'https://' + controller_ip + ":" + controller_port + "/profiles/register_user/"
-ACK_URL = "http://" + controller_ip + ":" + controller_port + "/providers/job_ack/"
-NOT_READY_URL = "http://" + controller_ip + ":" + controller_port + "/providers/not_ready/"
-READY_URL = "http://" + controller_ip + ":" + controller_port + "/providers/ready/"
+# Removed HTTP URL definitions - switching to MQTT-based signaling
+# ACK_URL = "http://" + controller_ip + ":" + controller_port + "/providers/job_ack/"
+# NOT_READY_URL = "http://" + controller_ip + ":" + controller_port + "/providers/not_ready/"
+# READY_URL = "http://" + controller_ip + ":" + controller_port + "/providers/ready/"
 
-requests.get(url=READY_URL+user_id)
+# Remove early READY signal - will be sent after MQTT connection
+# requests.get(url=READY_URL+user_id)
 # TODO make a request to ready url as soon as this script has run, ie j write a line here.
 runs_list = [] #this stores all data in all runs for a specific job.
 # def create_thread_and_subscribe(user_id):
@@ -81,6 +107,9 @@ DISK_LIMIT = 2000 * 1024 * 1024
 imagePuller = HybridImageManager(memory_limit=MEMORY_LIMIT, disk_limit=DISK_LIMIT)
 # MQTT
 
+# Add a flag to track subscription confirmation
+subscription_confirmed = False
+
 def on_connect(mqtt_client, userdata, flags, rc, callback_api_version):
     if rc == 0:
         print('Connected successfully')
@@ -91,45 +120,73 @@ def on_connect(mqtt_client, userdata, flags, rc, callback_api_version):
 
 def process_dockernotrun_request(data):
     global pending_jobs
+    print(f"[DEBUG] process_dockernotrun_request started for job_id: {data.get('job_id', 'unknown')}")
+    
     with pending_jobs_lock:
         pending_jobs += 1
         print(f"Pending jobs incremented: {pending_jobs}")
     
     try: 
+        print(f"[DEBUG] Processing job with runMultipleInvocations: {data.get('runMultipleInvocations', False)}")
         if(data['runMultipleInvocations'] == True):
             if(data['numberOfInvocations'] == 1) :
+                print(f"[DEBUG] Single invocation, calling on_request")
                 on_request(data)
             elif(data['isChained'] == False):
+                print(f"[DEBUG] Multiple invocations (not chained), calling on_request {data['numberOfInvocations']} times")
                 for i in range(data['numberOfInvocations']):
                     container_name = str(data['job_id']) + "_container_" + str(i)
                     on_request(data)
             else: 
+                print(f"[DEBUG] Chained invocations, calling on_chained_request")
                 on_chained_request(data)
         else:
+            print(f"[DEBUG] Single job, calling on_request")
             on_request(data)
+            
+        print(f"[DEBUG] Job processing completed successfully for job_id: {data.get('job_id', 'unknown')}")
     except Exception as e:
+        print(f"[DEBUG] Exception in process_dockernotrun_request: {str(e)}")
         print(str(e))
     finally: 
         with pending_jobs_lock:
             pending_jobs -= 1
             print(f"Pending jobs decremented: {pending_jobs}")
+            print(f"[DEBUG] process_dockernotrun_request finished for job_id: {data.get('job_id', 'unknown')}")
 
 def on_message(mqtt_client, userdata, msg):
-    print(f'Received message on topic: {msg.topic} with payload: {msg.payload}')
-    global last_message_time
+    print(f'=== MQTT MESSAGE RECEIVED ===')
+    print(f'Topic: {msg.topic}')
+    print(f'Payload: {msg.payload}')
+    print(f'Timestamp: {time.strftime("%Y-%m-%d %H:%M:%S")}')
+    print(f'================================')
+    
+    global last_message_time, subscription_confirmed
     last_message_time = time.time()
 
     try: 
         data = json.loads(msg.payload.decode("utf-8"))
+        print(f'Parsed JSON data: {data}')
         if(data["stage"] == "dockernotrun"):
+            print(f'Processing dockernotrun request for job_id: {data.get("job_id", "unknown")}')
             data["stage"] = "dockerrunning"
             # Offload heavy processing to a separate thread
             Thread(target=process_dockernotrun_request, args=(data,)).start()
         
     except:
         payload_str = msg.payload.decode("utf-8")
-        if(payload_str == "calculate_efficiency"):
-            # Offload efficiency calculations to a separate thread
+        
+        # Handle subscription confirmation from scheduler
+        if payload_str == "SUBSCRIPTION_CONFIRMED":
+            subscription_confirmed = True
+            print("Scheduler confirmed subscription, sending startup signals...")
+            # Now it's safe to send startup signals
+            mclient.publish(topic=user_id, payload="STARTUP", qos=2)
+            print("STARTUP signal sent to scheduler")
+            mclient.publish(topic=user_id, payload="READY", qos=2)
+            print("READY signal sent to scheduler")
+            
+        elif(payload_str == "calculate_efficiency"):
             Thread(target=calc_benchmark_stats).start()
         elif(payload_str.startswith("EfficiencyScoreSet:")):
             scoreset = json.loads(payload_str[19:])
@@ -150,7 +207,7 @@ def on_subscribe(mqtt_client, userdata, mid, qos, properties=None):
     pass
 
 # tell scheduler that this provider has started. waits for the request to get then proceeds.
-requests.get("http://localhost:8000/providers/startup/"+user_id)
+# requests.get("http://"+controller_ip+":"+controller_port+"/providers/startup/"+user_id)
 
 
 mclient = mqtt.Client(callback_api_version= mqtt.CallbackAPIVersion.VERSION2)
@@ -170,10 +227,24 @@ mclient.loop_start() #different thread
 mclient.publish(topic="EVERYONE", payload="start_connect"+user_id, qos=2)
 mclient.publish(topic="EVERYONE", payload="get_efficiency_score"+user_id, qos=2)
 
+# Wait for subscription confirmation before sending user-specific messages
+print("Waiting for scheduler subscription confirmation...")
+timeout_counter = 0
+while not subscription_confirmed and timeout_counter < 30:  # 30 second timeout
+    time.sleep(1)
+    timeout_counter += 1
+
+if not subscription_confirmed:
+    print("Warning: No subscription confirmation received, sending signals anyway...")
+    mclient.publish(topic=user_id, payload="STARTUP", qos=2)
+    mclient.publish(topic=user_id, payload="READY", qos=2)
+
 def procedural_shutdown(sig, frame):
     print("Commencing procedural shutdown...")
     procedural_shutdown_event.set()
-    requests.get(url=NOT_READY_URL + user_id) #This should set provider to not ready on scheduler
+    # Replace HTTP NOT_READY signal with MQTT
+    global mclient
+    mclient.publish(topic=user_id, payload="NOT_READY", qos=2)
 
 #This will call the shutdown_handler function when the SIGINT or SIGTERM signal is received from system
 signal.signal(signal.SIGINT, procedural_shutdown)   # Ctrl+C induced signal
@@ -191,7 +262,19 @@ def append_data_to_file(data, filename):
 def load_data_from_file(filename):
     with open(filename, 'r') as file:
         data = [json.loads(line.strip()) for line in file]
-    return data #returns a list
+    
+    # Clean the data by removing entries with 'DID NOT RECIEVE' values
+    cleaned_data = []
+    for item in data:
+        # Check if any value contains 'DID NOT RECIEVE'
+        has_invalid_data = any('DID NOT RECIEVE' in str(value) for value in item.values())
+        if not has_invalid_data:
+            cleaned_data.append(item)
+        else:
+            print(f"[DEBUG] Skipping corrupted training data entry: {item}")
+    
+    print(f"[DEBUG] Loaded {len(data)} entries, cleaned to {len(cleaned_data)} valid entries")
+    return cleaned_data #returns a list
 
 # Function to save the trained model to disk
 def save_model(model, filename):
@@ -206,30 +289,87 @@ def load_model(filename):
 
 
 def train_regression_model(training_data):
+    print(f"[DEBUG] Training data length: {len(training_data)}")
+    if len(training_data) > 0:
+        print(f"[DEBUG] First training data sample: {training_data[0]}")
+        print(f"[DEBUG] Data types in first sample:")
+        for key, value in training_data[0].items():
+            print(f"  {key}: {type(value)} = {value}")
+    
     X = []
     y = []
-    for data in training_data:
-        X.append([data["cpu_usage"] * data["cpu_efficiency_score"], 
-                  data["memory_usage"] * data["memory_efficiency_score"]])
-        y.append(data["actual_runtime"])
-
+    for i, data in enumerate(training_data):
+        try:
+            # Convert to float to ensure numeric values
+            cpu_usage = float(data["cpu_usage"])
+            memory_usage = float(data["memory_usage"])
+            cpu_eff = float(data["cpu_efficiency_score"])
+            memory_eff = float(data["memory_efficiency_score"])
+            runtime = float(data["actual_runtime"])
+            
+            X.append([cpu_usage * cpu_eff, memory_usage * memory_eff])
+            y.append(runtime)
+            print(f"[DEBUG] Sample {i}: cpu={cpu_usage}, mem={memory_usage}, runtime={runtime}")
+        except (ValueError, TypeError, KeyError) as e:
+            print(f"[DEBUG] Error processing training sample {i}: {e}")
+            print(f"[DEBUG] Problematic data: {data}")
+            # Skip samples with 'DID NOT RECIEVE' or other invalid data
+            if 'DID NOT RECIEVE' in str(data.values()):
+                print(f"[DEBUG] Skipping sample with 'DID NOT RECIEVE' data")
+            continue
+    
+    if len(X) == 0:
+        print("[DEBUG] No valid training data found, returning dummy model")
+        # Return a dummy model that predicts 1000ms for any input
+        class DummyModel:
+            def predict(self, X):
+                return np.array([1000.0] * len(X))
+        return DummyModel()
+    
+    print(f"[DEBUG] Training model with {len(X)} samples")
     model = LinearRegression()
     model.fit(X, y)
     return model
 
 def predict_runtime(service, provider, model):
+    print(f"[DEBUG] predict_runtime called with service: {service}")
+    
+    try:
+        ref_service_list = load_data_from_file("TrainingData/Reference_Provider_Data.txt")
+        print(f"[DEBUG] Reference service list length: {len(ref_service_list)}")
+        
+        reference_cpu_usage = None
+        reference_memory_usage = None
+        
+        for item in ref_service_list:
+            if(item['service']==service):
+                reference_cpu_usage = float(item['cpu_usage'])
+                reference_memory_usage = float(item['memory_usage'])
+                print(f"[DEBUG] Found reference data: cpu={reference_cpu_usage}, mem={reference_memory_usage}")
+                break
+        
+        if reference_cpu_usage is None:
+            print(f"[DEBUG] No reference data found for service {service}, using defaults")
+            reference_cpu_usage = 1000.0  # Default CPU usage
+            reference_memory_usage = 1000.0  # Default memory usage
+            
+        global cpu_efficiency_score, memory_efficiency_score
+        print(f"[DEBUG] Efficiency scores: cpu={cpu_efficiency_score}, mem={memory_efficiency_score}")
 
-    ref_service_list = load_data_from_file("TrainingData/Reference_Provider_Data.txt")
-    for item in ref_service_list:
-        if(item['service']==service):
-            reference_cpu_usage=item['cpu_usage']
-            reference_memory_usage=item['memory_usage']
-            break
-    global cpu_efficiency_score, memory_efficiency_score
-
-    # For training in scheduler, instead of globals use provider.cpu_efficiency_score and provider.memory_efficiency_score
-    X = np.array([[reference_cpu_usage * cpu_efficiency_score, reference_memory_usage * memory_efficiency_score]])
-    return model.predict(X)
+        # For training in scheduler, instead of globals use provider.cpu_efficiency_score and provider.memory_efficiency_score
+        X = np.array([[reference_cpu_usage * float(cpu_efficiency_score), reference_memory_usage * float(memory_efficiency_score)]])
+        print(f"[DEBUG] Input features X: {X}")
+        
+        prediction = model.predict(X)
+        print(f"[DEBUG] Model prediction: {prediction}")
+        return prediction
+        
+    except Exception as e:
+        print(f"[DEBUG] Error in predict_runtime: {e}")
+        import traceback
+        traceback.print_exc()
+        # Return a default prediction
+        return np.array([1000.0])
 
 
 def trainAndPredict(run_vars):
@@ -237,12 +377,26 @@ def trainAndPredict(run_vars):
     #It also has service (task link) (to get corresponding reference stats), eff_scores for training+prediction the ones which we use in this function
     #TRAINING
     print("running predictions inside trainAndPredict")
-    training_data=load_data_from_file("TrainingData/eff_score_data.txt")
-    model = train_regression_model(training_data)
-    #PREDICTION
-    provider_id = 0 # this provider would be used if this training and prediction were to run in the scheduler. Here it is useless as we use globals.
-    predicted_runtime = predict_runtime(run_vars['service'], provider_id, model)
-    return predicted_runtime[0]
+    print(f"[DEBUG] run_vars: {run_vars}")
+    
+    try:
+        training_data=load_data_from_file("TrainingData/eff_score_data.txt")
+        print(f"[DEBUG] Loaded training data from file")
+        model = train_regression_model(training_data)
+        print(f"[DEBUG] Model trained successfully")
+        
+        #PREDICTION
+        provider_id = 0 # this provider would be used if this training and prediction were to run in the scheduler. Here it is useless as we use globals.
+        predicted_runtime = predict_runtime(run_vars['service'], provider_id, model)
+        print(f"[DEBUG] Prediction completed: {predicted_runtime}")
+        return predicted_runtime[0]
+        
+    except Exception as e:
+        print(f"[DEBUG] Error in trainAndPredict: {e}")
+        import traceback
+        traceback.print_exc()
+        # Return a default prediction
+        return 1000.0
 
 
 def run_docker(body, container_name, inputData=None):
@@ -338,152 +492,397 @@ def run_docker(body, container_name, inputData=None):
 def monitor_container(cont, start_run_time, timeout):
     stack = []
     count = 0
+    print(f"[DEBUG] monitor_container started for container: {cont.name if cont else 'None'}")
+    
     while(str(cont.status)=='created'):
         cont.reload()
+        print(f"[DEBUG] Container status: {cont.status}")
+        time.sleep(0.5)  # Wait for container to start
+    
     while ((cont != None) and ((str(cont.status) == 'running') )):
         if(time.time()-start_run_time > timeout):
             print("timeout exceeded (cont not killed)")
+            # Force kill the container if it's been running too long
+            try:
+                cont.kill()
+                print(f"[DEBUG] Container killed due to timeout")
+            except Exception as e:
+                print(f"[DEBUG] Error killing container: {e}")
             break
         s = cont.stats(decode=False, stream=False)
+        print(f"[DEBUG] Container stats - memory_stats empty: {s['memory_stats'] == {}}")
         if(s['memory_stats'] != {}):
             stack.clear()
             stack.append(s)
-        else: break
+            print(f"[DEBUG] Added stats to stack, stack length: {len(stack)}")
+        else: 
+            print(f"[DEBUG] Memory stats empty, but continuing monitoring (container may still be starting)")
+            # Don't break immediately - container might still be starting up
+            # Only break if we've been monitoring for a while and still no stats
+            if count > 5:  # After 10+ seconds of no stats, then break
+                print(f"[DEBUG] No memory stats after {count} checks, breaking monitoring loop")
+                break
+        
+        # Always try to get stats, even if memory_stats is empty
+        # This ensures we capture stats when the container exits
+        if not stack:  # Only add if stack is empty
+            stack.append(s)
+            print(f"[DEBUG] Added stats to stack (even with empty memory_stats), stack length: {len(stack)}")
         count+=1
+        
+        # Add a delay to prevent excessive CPU usage and allow container to finish
+        time.sleep(2)  # Check every 2 seconds instead of continuously
+        
+        # Reload container status to check if it's still running
+        try:
+            cont.reload()
+            print(f"[DEBUG] Container status check: {cont.status}")
+        except Exception as e:
+            print(f"[DEBUG] Error reloading container: {e}")
+            break
+    
+    print(f"[DEBUG] monitor_container finished, returning stack with length: {len(stack)}")
     return stack
 
+def get_docker_host_ip():
+    """Get the IP address to reach the host from inside a container"""
+    try:
+        # First try to get the default gateway (works when provider runs in container)
+        result = subprocess.run(['ip', 'route', 'show', 'default'], 
+                              capture_output=True, text=True)
+        if result.returncode == 0:
+            gateway_ip = result.stdout.split()[2]
+            return gateway_ip
+    except:
+        pass
+    
+    try:
+        # Fallback: try to get Docker bridge IP
+        result = subprocess.run(['docker', 'network', 'inspect', 'bridge'], 
+                              capture_output=True, text=True)
+        if result.returncode == 0:
+            import json
+            bridge_info = json.loads(result.stdout)
+            gateway = bridge_info[0]['IPAM']['Config'][0]['Gateway']
+            return gateway
+    except:
+        pass
+    
+    # Last resort fallbacks
+    try:
+        # Try host.docker.internal (works on Docker Desktop)
+        socket.gethostbyname('host.docker.internal')
+        return 'host.docker.internal'
+    except:
+        pass
+    
+    # If all else fails, return localhost (might work in some setups)
+    return '10.1.19.76'
 
 def run_and_invoke_docker(body, container_name) -> dict:
-
-    print("[run_and_invoke_docker]")
-    #open a file and write the payload to it
-    #with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
-    #    json.dump(payload, f)
-    #    f.flush()
-    #    input_file = f.name
-
-    # Create output file
-    #output_file = tempfile.NamedTemporaryFile(delete=False).name
-            
-    # Mount configurations for both input and output files
-    #mounts = {
-    #    input_file: {'bind': '/tmp/input.json', 'mode': 'ro'},
-    #    output_file: {'bind': '/tmp/output.json', 'mode': 'rw'}
-    #}
-
-    start_pull_time = time.time()
-    #image = client.images.pull(body)
-    print("inside run_and_invoke_docker with body : " + body)
-    image = imagePuller.request_image(body)
-    print("Out of Hybrid Caching manager and inside run_and_invoke_docker again")
-    print(image)
-    pull_time = int((time.time() - start_pull_time) *1000)
-    
-    start_run_time = time.time()
-    cont = None
-    benchmark_no=body.split("/")[1].split(".")[1] # get number from peercompute/benchmark.010....
-    payload=get_payload(benchmark_no, "large")
-    # Temporarily override payload with a fixed value
-    
-    print(payload)
-    response = None
-    future=None
     try:
-        print("container started running")
-        cont = client.containers.run(image,
-                                     name=container_name,
-                                     detach=True,
-                                     ports={'8080/tcp': None}, #None dynamically allocates a port
-                                     environment={
-                                         'AWS_ACCESS_KEY_ID': 'AKIA3KAG6W36BSXOEHWD',
-                                         'AWS_SECRET_ACCESS_KEY': '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', 
-                                         'AWS_REGION': 'ap-south-1'
-                                     }
-                                     )
+        print(f"[DEBUG] run_and_invoke_docker started with body: {body}, container_name: {container_name}")
+        #open a file and write the payload to it
+        #with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
+        #    json.dump(payload, f)
+        #    f.flush()
+        #    input_file = f.name
+
+        # Create output file
+        #output_file = tempfile.NamedTemporaryFile(delete=False).name
+                
+        # Mount configurations for both input and output files
+        #mounts = {
+        #    input_file: {'bind': '/tmp/input.json', 'mode': 'ro'},
+        #    output_file: {'bind': '/tmp/output.json', 'mode': 'rw'}
+        #}
+
+        start_pull_time = time.time()
+        #image = client.images.pull(body)
+        print("inside run_and_invoke_docker with body : " + body)
+        print(f"[DEBUG] Requesting image: {body}")
+        image = imagePuller.request_image(body)
+        print("Out of Hybrid Caching manager and inside run_and_invoke_docker again")
+        print(f"[DEBUG] Image obtained: {image}")
+        pull_time = int((time.time() - start_pull_time) *1000)
+        print(f"[DEBUG] Image pull time: {pull_time}ms")
         
-        # Wait a bit for container to start
-        time.sleep(1)
-        cont.reload()  # Refresh container data
-        port_info = cont.ports.get('8080/tcp')
-        host_port = port_info[0]['HostPort'] #get the port
-        print("container name ID: ", cont.id)
-        print("container name: ", cont.name)
-        # Make POST request to container # blocking
+        start_run_time = time.time()
+        cont = None
+        # Safely parse benchmark number from task_link
+        try:
+            benchmark_no=body.split("/")[1].split(".")[1] # get number from peercompute/benchmark.010....
+            payload=get_payload(benchmark_no, "large")
+        except (IndexError, AttributeError):
+            # Fallback for simple task names like "hello-world"
+            print(f"[DEBUG] Could not parse benchmark number from '{body}', using simple payload")
+            payload = {"message": "Hello from simple task", "input": "test"}  # Simple payload for basic containers
+        # Temporarily override payload with a fixed value
         
+        print(payload)
+        response = None
+        future=None
+        try:
+            print("container started running")
+            print(f"[DEBUG] Creating container with name: {container_name}")
+            cont = client.containers.run(image,
+                                         name=container_name,
+                                         detach=True,
+                                         ports={'8080/tcp': None}, #None dynamically allocates a port
+                                         environment={
+                                             'AWS_ACCESS_KEY_ID': 'AKIA3KAG6W36BSXOEHWD',
+                                             'AWS_SECRET_ACCESS_KEY': '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', 
+                                             'AWS_REGION': 'ap-south-1'
+                                         }
+                                         )
+            print(f"[DEBUG] Container created successfully: {cont.id}")
+            
+            # Wait a bit for container to start
+            time.sleep(2)  # Increased wait time
+            cont.reload()  # Refresh container data
+            print(f"[DEBUG] Container reloaded, status: {cont.status}")
+            
+            # Check if container is actually running
+            if cont.status != 'running':
+                print(f"[DEBUG] ERROR: Container is not running! Status: {cont.status}")
+                # Try to get container logs to see what happened
+                try:
+                    logs = cont.logs().decode('utf-8')
+                    print(f"[DEBUG] Container logs: {logs}")
+                except Exception as e:
+                    print(f"[DEBUG] Could not get container logs: {e}")
+                raise Exception(f"Container failed to start properly. Status: {cont.status}")
+            
+            port_info = cont.ports.get('8080/tcp')
+            print(f"[DEBUG] Port info: {port_info}")
+            if port_info and len(port_info) > 0:
+                host_port = port_info[0]['HostPort'] #get the port
+                print(f"[DEBUG] Host port: {host_port}")
+            else:
+                print(f"[DEBUG] No port 8080 exposed, using default port 8080")
+                host_port = "8080"  # Default port for containers without exposed ports
+            
+            # Additional container health check
+            print(f"[DEBUG] Container ID: {cont.id}")
+            print(f"[DEBUG] Container name: {cont.name}")
+            print(f"[DEBUG] Container image: {cont.image}")
+            print(f"[DEBUG] Container created: {cont.attrs.get('Created', 'Unknown')}")
+            print(f"[DEBUG] Container state: {cont.attrs.get('State', 'Unknown')}")
+            print("container name ID: ", cont.id)
+            print("container name: ", cont.name)
+            # Make POST request to container # blocking
+            
+        except Exception as e:
+            print(e)
+
+        finally:
+            print(body)
+            timeout = 3000
+            print("monitoring container")
+            print(f"[DEBUG] Starting container monitoring with timeout: {timeout}s")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor_for_cont_monitoring:
+                # Submit the monitoring task to the executor
+                future = executor_for_cont_monitoring.submit(monitor_container, cont, start_run_time, timeout)
+                print("container monitored")
+                
+                # Get the appropriate host IP for container communication
+                host_ip = get_docker_host_ip()
+                print(f"Using host IP: {host_ip}")
+                
+                # Try localhost as fallback if the detected IP doesn't work
+                import socket
+                test_ips = [host_ip, "127.0.0.1", "localhost"]
+                working_ip = None
+                
+                for test_ip in test_ips:
+                    try:
+                        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        sock.settimeout(2)
+                        result = sock.connect_ex((test_ip, int(host_port)))
+                        sock.close()
+                        if result == 0:
+                            working_ip = test_ip
+                            print(f"[DEBUG] Found working IP: {test_ip}")
+                            break
+                        else:
+                            print(f"[DEBUG] IP {test_ip} not accessible")
+                    except Exception as e:
+                        print(f"[DEBUG] IP {test_ip} test failed: {e}")
+                
+                if working_ip:
+                    host_ip = working_ip
+                    print(f"[DEBUG] Using working IP: {host_ip}")
+                else:
+                    print(f"[DEBUG] No working IP found, using original: {host_ip}")
+                
+                # Check container logs before making request
+                try:
+                    logs = cont.logs(tail=10).decode('utf-8')
+                    print(f"[DEBUG] Container logs (last 10 lines): {logs}")
+                except Exception as e:
+                    print(f"[DEBUG] Could not get container logs: {e}")
+                
+                # Test if port is accessible (using the working IP we found)
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(5)
+                    result = sock.connect_ex((host_ip, int(host_port)))
+                    sock.close()
+                    if result == 0:
+                        print(f"[DEBUG] Port {host_port} is accessible on {host_ip}")
+                    else:
+                        print(f"[DEBUG] Port {host_port} is NOT accessible on {host_ip} (connection failed)")
+                except Exception as e:
+                    print(f"[DEBUG] Port accessibility test failed: {e}")
+                
+                print(f"[DEBUG] Making POST request to http://{host_ip}:{host_port}")
+                print(f"[DEBUG] Request payload: {payload}")
+                try:
+                    response = requests.post(f'http://{host_ip}:{host_port}', 
+                                        json=payload,
+                                        headers={'Content-Type': 'application/json'},
+                                        timeout=30)  # Increased timeout to 5 minutes (300 seconds)
+                    print(f"[DEBUG] POST request completed with status: {response.status_code}")
+                    print("post request sent")
+                except requests.exceptions.RequestException as e:
+                    print(f"[DEBUG] POST request failed: {e}")
+                    # Try GET request as fallback
+                    try:
+                        print(f"[DEBUG] Trying GET request as fallback...")
+                        response = requests.get(f'http://{host_ip}:{host_port}', timeout=10)
+                        print(f"[DEBUG] GET request completed with status: {response.status_code}")
+                    except requests.exceptions.RequestException as e2:
+                        print(f"[DEBUG] GET request also failed: {e2}")
+                        response = None
+
+            #result = "this is result" #remove this line uncomment below line
+            #result = result.decode("utf-8") #this gives the Hello from Docker msg.
+
+            print(f"[DEBUG] Getting monitoring results from future")
+            try:
+                stack=future.result()
+                print(f"[DEBUG] Monitoring results - stack length: {len(stack) if stack else 'None'}")
+                print(f"[DEBUG] Stack content: {stack}")
+            except Exception as e:
+                print(f"[DEBUG] Exception getting monitoring results: {e}")
+                stack = []
+            
+            run_vars={}
+            # Read result from output file
+            #with open(output_file, 'r') as f:
+            #    result = f.read()
+            #print("Result from container:", result)
+            #print(response.json())
+            try:
+                if response is not None:
+                    result = response.json()
+                    print(f"[DEBUG] Response result: {result}")
+                else:
+                    result = {"error": "No response received from container"}
+                    print(f"[DEBUG] No response received, using default result: {result}")
+            except Exception as e:
+                print(f"[DEBUG] Exception parsing response JSON: {e}")
+                result = {"error": f"Failed to parse response: {str(e)}"}
+            
+            print(stack) #uncomment this to get full stats
+            run_time = int((time.time() - start_run_time)*1000) # get in ms
+            print(f"[DEBUG] Run time: {run_time}ms")
+            #print(count)
+            # run_vars['time_indexed_stats'] = time_indexed_stats
+    
+            print(f"[DEBUG] About to access stack[0] - stack length: {len(stack) if stack else 'None'}")
+            if stack and len(stack) > 0:
+                print(f"[DEBUG] Accessing stack[0] - memory_stats: {stack[0].get('memory_stats', 'NOT_FOUND')}")
+                print(f"[DEBUG] Accessing stack[0] - cpu_stats: {stack[0].get('cpu_stats', 'NOT_FOUND')}")
+                
+                # Safely extract memory usage
+                memory_stats = stack[0].get('memory_stats', {})
+                if 'usage' in memory_stats:
+                    run_vars['memory_usage'] = memory_stats['usage']
+                    print(f"[DEBUG] Successfully extracted memory_usage: {run_vars['memory_usage']}")
+                else:
+                    run_vars['memory_usage'] = 100000000  # 100MB default
+                    print(f"[DEBUG] No memory usage in stats, using default: {run_vars['memory_usage']}")
+                
+                # Safely extract CPU usage
+                cpu_stats = stack[0].get('cpu_stats', {})
+                cpu_usage = cpu_stats.get('cpu_usage', {})
+                if 'total_usage' in cpu_usage:
+                    run_vars['cpu_usage'] = cpu_usage['total_usage']
+                    print(f"[DEBUG] Successfully extracted cpu_usage: {run_vars['cpu_usage']}")
+                else:
+                    run_vars['cpu_usage'] = 1000000000  # 1 second of CPU time default
+                    print(f"[DEBUG] No CPU usage in stats, using default: {run_vars['cpu_usage']}")
+            else:
+                print(f"[DEBUG] ERROR: Stack is empty or None! Cannot access stack[0]")
+                print(f"[DEBUG] Setting default values for memory_usage and cpu_usage")
+                # Use more realistic default values instead of 0
+                run_vars['memory_usage'] = 100000000  # 100MB default
+                run_vars['cpu_usage'] = 1000000000    # 1 second of CPU time default
+            #adding new lines for io_usage
+            # blkio_read=0
+            # blkio_write=0
+            # for entry in stack[0]['blkio_stats']['io_service_bytes_recursive']:
+            #     if entry['op'] == 'Read':
+            #         blkio_read += entry['value']
+            #     elif entry['op'] == 'Write':
+            #         blkio_write += entry['value']
+            # run_vars['io_read_stats'] = blkio_read
+            # run_vars['io_write_stats'] = blkio_write
+            #updated code till here
+            run_vars['actual_runtime'] = run_time
+            global cpu_efficiency_score
+            run_vars['cpu_efficiency_score'] = cpu_efficiency_score
+            global memory_efficiency_score
+            run_vars['memory_efficiency_score'] = memory_efficiency_score
+            # the below is service specific and has to be made for each service.
+            print(f"[DEBUG] Appending runtime data to file")
+            append_data_to_file(run_vars, 'TrainingData/eff_score_data.txt')
+            run_vars['service']=body # this is the task link
+            print("runtime data: ")
+            print(run_vars)
+            print("Predicted Runtime:")
+            print(trainAndPredict(run_vars))
+            #print(predict_runtime(model, run_vars['time_indexed_stats'])) #a list of stats with timestamps
+            print("Actual Runtime " + str(run_time))
+            # Plot real-time predictions
+            #plot_predictions(predictions)
+
+            # Cleanup temporary files
+            #os.unlink(input_file)
+            #os.unlink(output_file)
+            print(f"[DEBUG] Stopping and removing container: {container_name}")
+            try:
+                cont.stop()  #remove this line to keep container running
+                cont.remove()
+                print(f"[DEBUG] Container stopped and removed successfully")
+            except Exception as e:
+                print(f"[DEBUG] Exception stopping/removing container: {e}")
+            
+            print(f"[DEBUG] run_and_invoke_docker completed successfully for container: {container_name}")
+            return result, pull_time, run_time, container_name
     except Exception as e:
-        print(e)
-
-    finally:
-        print(body)
-        timeout = 3000
-        print("monitoring container")
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor_for_cont_monitoring:
-            # Submit the monitoring task to the executor
-            future = executor_for_cont_monitoring.submit(monitor_container, cont, start_run_time, timeout)
-            print("container monitored")
-            response = requests.post(f'http://localhost:{host_port}', 
-                                json=payload,
-                                headers={'Content-Type': 'application/json'},
-                                timeout=30)  # Increased timeout to 5 minutes (300 seconds)
-            print("post request sent")
-
-    #result = "this is result" #remove this line uncomment below line
-    #result = result.decode("utf-8") #this gives the Hello from Docker msg.
-
-    stack=future.result()
-    run_vars={}
-    # Read result from output file
-    #with open(output_file, 'r') as f:
-    #    result = f.read()
-    #print("Result from container:", result)
-    #print(response.json())
-    result = response.json()
-    print(result)
-    print(stack) #uncomment this to get full stats
-    run_time = int((time.time() - start_run_time)*1000) # get in ms
-    #print(count)
-    # run_vars['time_indexed_stats'] = time_indexed_stats
-    run_vars['memory_usage'] = stack[0]['memory_stats']['usage']
-    run_vars['cpu_usage'] = stack[0]['cpu_stats']['cpu_usage']['total_usage']
-    #adding new lines for io_usage
-    # blkio_read=0
-    # blkio_write=0
-    # for entry in stack[0]['blkio_stats']['io_service_bytes_recursive']:
-    #     if entry['op'] == 'Read':
-    #         blkio_read += entry['value']
-    #     elif entry['op'] == 'Write':
-    #         blkio_write += entry['value']
-    # run_vars['io_read_stats'] = blkio_read
-    # run_vars['io_write_stats'] = blkio_write
-    #updated code till here
-    run_vars['actual_runtime'] = run_time
-    global cpu_efficiency_score
-    run_vars['cpu_efficiency_score'] = cpu_efficiency_score
-    global memory_efficiency_score
-    run_vars['memory_efficiency_score'] = memory_efficiency_score
-    # the below is service specific and has to be made for each service.
-    append_data_to_file(run_vars, 'TrainingData/eff_score_data.txt')
-    run_vars['service']=body # this is the task link
-    print("runtime data: ")
-    print(run_vars)
-    print("Predicted Runtime:")
-    print(trainAndPredict(run_vars))
-    #print(predict_runtime(model, run_vars['time_indexed_stats'])) #a list of stats with timestamps
-    print("Actual Runtime " + str(run_time))
-    # Plot real-time predictions
-    #plot_predictions(predictions)
-
-    # Cleanup temporary files
-    #os.unlink(input_file)
-    #os.unlink(output_file)
-    cont.stop()  #remove this line to keep container running
-    cont.remove()
-    return result, pull_time, run_time, container_name
+        print(f"[DEBUG] Exception in run_and_invoke_docker: {e}")
+        import traceback
+        traceback.print_exc()
+        # Return default values to prevent the function from crashing
+        return {"error": str(e)}, 0, 0, container_name
 
 def delete_container_and_image(body, container_name):
-    filters = {'name': container_name}
-    container_id = client.containers.list(all=True, filters=filters)[0]
-    container_id.remove()
+    print(f"[DEBUG] delete_container_and_image called with body: {body}, container_name: {container_name}")
+    try:
+        filters = {'name': container_name}
+        containers = client.containers.list(all=True, filters=filters)
+        print(f"[DEBUG] Found {len(containers)} containers with name {container_name}")
+        if containers:
+            container_id = containers[0]
+            container_id.remove()
+            print(f"[DEBUG] Container {container_name} removed successfully")
+        else:
+            print(f"[DEBUG] Container {container_name} not found, already removed")
+    except Exception as e:
+        print(f"[DEBUG] Exception in delete_container_and_image: {e}")
+        # Don't let this prevent MQTT sending
 
     # client.images.remove(body)
 
@@ -504,15 +903,35 @@ def HF_invoke_balance_transfer(receiver, sender):
     return response
 
 def on_request(json_data) :
-    #requests.get(url=ACK_URL + str(json_data['job_id'])) #uncomment this
-    #requests.get(url=NOT_READY_URL + user_id)
+    # Replace HTTP ACK signal with MQTT
+    global mclient
+    print(f"[DEBUG] Starting job processing for job_id: {json_data['job_id']}")
+    
+    print(f"[DEBUG] About to send ACK signal for job_id: {json_data['job_id']}")
+    mclient.publish(topic=user_id, payload="ACK:"+str(json_data['job_id']), qos=2)
+    print(f"[DEBUG] ACK signal sent successfully for job_id: {json_data['job_id']}")
+    
+    # Replace HTTP NOT_READY signal with MQTT (set provider as busy during job execution)
+    print(f"[DEBUG] About to send NOT_READY signal for provider: {user_id}")
+    mclient.publish(topic=user_id, payload="NOT_READY", qos=2)
+    print(f"[DEBUG] NOT_READY signal sent successfully for provider: {user_id}")
+    
     if json_data['inputData'] == "None":
         json_data['inputData'] = None
 
     print("[on_request] in provider1.py")
-    r, pull_time, run_time, container_name = run_and_invoke_docker(json_data['task_link'], str(str(json_data['job_id'])+"_container_")) #TODO
-    total_time = math.ceil(((pull_time + run_time)/100.0))*100 
-    print(pull_time, run_time, total_time)
+    try:
+        r, pull_time, run_time, container_name = run_and_invoke_docker(json_data['task_link'], str(str(json_data['job_id'])+"_container_")) #TODO
+        total_time = math.ceil(((pull_time + run_time)/100.0))*100 
+        print(f"[DEBUG] pull_time: {pull_time}, run_time: {run_time}, total_time: {total_time}")
+    except Exception as e:
+        print(f"[DEBUG] Exception in run_and_invoke_docker: {e}")
+        # Set default values to ensure MQTT sending still happens
+        r = {"error": f"Container execution failed: {str(e)}"}
+        pull_time = 0
+        run_time = 0
+        container_name = f"{json_data['job_id']}_container_"
+        total_time = 0
     # HF_set_time(str(json_data['job_id']), total_time)
     # HF_invoke_balance_transfer(str(json_data['provider_id']), str(json_data['task_developer']))
 
@@ -529,15 +948,31 @@ def on_request(json_data) :
         writer.writerow(data)
 
 
+    print(f"[DEBUG] About to call delete_container_and_image for container: {container_name}")
     delete_container_and_image(json_data['task_link'], container_name)
+    print(f"[DEBUG] delete_container_and_image completed for container: {container_name}")
+    
+    print(f"[DEBUG] Creating response object for job_id: {json_data['job_id']}")
     response = {'stage':"dockerrun", 'Result': r, 'pull_time': pull_time, 'run_time': run_time, 'total_time': total_time, 'job_id': json_data['job_id']}
-    global mclient
+    print(f"[DEBUG] Response object created: {response}")
+    
+    print(f"[DEBUG] About to send job result for job_id: {json_data['job_id']}")
     mclient.publish(user_id, json.dumps(response).encode("utf-8"),qos=2)
+    print(f"[DEBUG] Job result sent successfully for job_id: {json_data['job_id']}")
+    
+    # Set provider as ready again after job completion
+    print(f"[DEBUG] About to send READY signal for provider: {user_id}")
+    mclient.publish(topic=user_id, payload="READY", qos=2)
+    print(f"[DEBUG] READY signal sent successfully for provider: {user_id}")
     print("published response to scheduler")
 
 def on_chained_request(json_data) :
-    #requests.get(url=ACK_URL + str(json_data['job_id']))
-   #requests.get(url=NOT_READY_URL + user_id)
+    # Replace HTTP ACK signal with MQTT
+    global mclient
+    mclient.publish(topic=user_id, payload="ACK:"+str(json_data['job_id']), qos=2)
+    # Replace HTTP NOT_READY signal with MQTT (set provider as busy during job execution)
+    mclient.publish(topic=user_id, payload="NOT_READY", qos=2)
+    
     responses = []
     pull_times = []
     run_times = []
@@ -569,6 +1004,9 @@ def on_chained_request(json_data) :
     # HF_set_time(str(json_data['job_id']), total_time)
     # HF_invoke_balance_transfer(str(json_data['provider_id']), str(json_data['task_developer']))
     # delete_container_and_image(json_data['task_link'])
+    
+    # Set provider as ready again after chained job completion
+    mclient.publish(topic=user_id, payload="READY", qos=2)
     return {'Result': responses, 'pull_time': pull_times, 'run_time': run_times, 'total_time': total_times}
 
 # data = {
