@@ -7,31 +7,52 @@ provider/cache_dir/*
 provider/cached_images/satyam098_slash_testimage_largeruntime.tar
 provider/cached_images/*.tar
 S3Emul/*
+# Python
 *.pyc
-.env
-**__pycache__/**
-*/**__pycache__/**
 *.pyo
 *.pyd
 *.pyw
 *.pyz
 *.pywz
 *.pyzw
-invocations/__pycache__/
-scheduler/developers/__pycache__/
-*/__MACOSX/
+__pycache__/
+*/__pycache__/
+**/__pycache__/
+*.so
+
+# Environment
+.env
+.venv/
+chainenv/
+
+# System files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
 */.DS_Store
-**/*.pyc
-**/**/*.pyc
-**/**/**/*.pyc
-**/**/**/**/*.pyc
-**/**/**/**/**/*.pyc
-**/**/**/**/**/**/*.pyc
-**/**/**/**/**/**/**/*.pyc
-**/**/**/**/**/**/**/**/*.pyc
-**/**/**/**/**/**/**/**/**/*.pyc
-**/**/**/**/**/**/**/**/**/**/*.pyc
+**/.DS_Store
+
+# Logs
+*.log
+usage.log
+provider/*.log
+scheduler/providers/*.log
 experiment_logs/
+
+# Cache and temporary files
+cache_dir/
+cached_images/
+provider/cached_images/
+provider/cache_dir/*
+provider/cached_images/satyam098_slash_testimage_largeruntime.tar
+provider/cached_images/*.tar
+S3Emul/
+
+# Test and development
 testbed*.json
 *.ps1
 djpid.txt
