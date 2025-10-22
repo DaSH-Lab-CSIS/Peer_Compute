@@ -15,6 +15,8 @@ import time
 import json
 import os
 import sys
+import uuid
+import socket
 from typing import List, Dict, Any, Optional
 import httpx
 from fastapi import FastAPI, Request, BackgroundTasks
@@ -30,6 +32,80 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from scheduler.scheduler.settings import get_scheduler_endpoints
+
+# Global to store pending responses for correlation
+pending_responses = {}
+
+# Global to track scheduler last seen timestamps
+scheduler_last_seen = {}
+
+# Global to store discovered schedulers with stable ordering
+discovered_schedulers = {}  # {uuid: {topic, last_seen, status, order_index, failure_count}}
+scheduler_order = []  # List of UUIDs in stable order
+next_scheduler_index = 0  # Current position in round-robin
+MAX_CONSECUTIVE_FAILURES = 3  # Mark scheduler as offline after 3 consecutive failures
+
+def get_loadbalancer_id():
+    """Get load balancer identifier"""
+    lb_id = os.environ.get('LOADBALANCER_ID')
+    if not lb_id:
+        hostname = socket.gethostname()
+        lb_id = f"LOADBALANCER_{hostname.split('.')[0]}"
+    return lb_id
+
+def handle_scheduler_failure(scheduler_uuid: str, reason: str):
+    """Handle scheduler failure with failure counting"""
+    if scheduler_uuid not in discovered_schedulers:
+        return
+        
+    scheduler_info = discovered_schedulers[scheduler_uuid]
+    
+    # Increment failure count
+    failure_count = scheduler_info.get('failure_count', 0) + 1
+    scheduler_info['failure_count'] = failure_count
+    
+    logger.warning(f"Scheduler {scheduler_uuid} failure #{failure_count}: {reason}")
+    
+    # Only mark as offline after multiple consecutive failures
+    if failure_count >= MAX_CONSECUTIVE_FAILURES:
+        scheduler_info['status'] = 'offline'
+        logger.error(f"Scheduler {scheduler_uuid} marked as offline after {failure_count} consecutive failures")
+    else:
+        logger.info(f"Scheduler {scheduler_uuid} still considered online (failure count: {failure_count}/{MAX_CONSECUTIVE_FAILURES})")
+
+def handle_scheduler_success(scheduler_uuid: str):
+    """Handle successful scheduler response - reset failure count"""
+    if scheduler_uuid not in discovered_schedulers:
+        return
+        
+    scheduler_info = discovered_schedulers[scheduler_uuid]
+    
+    # Reset failure count on success
+    if scheduler_info.get('failure_count', 0) > 0:
+        logger.info(f"Scheduler {scheduler_uuid} recovered - resetting failure count")
+        scheduler_info['failure_count'] = 0
+    
+    # Ensure status is online
+    if scheduler_info['status'] != 'online':
+        scheduler_info['status'] = 'online'
+        logger.info(f"Scheduler {scheduler_uuid} marked as online")
+
+def get_scheduler_mqtt_topics():
+    """Get list of scheduler MQTT topics from scheduler endpoints"""
+    scheduler_endpoints = get_scheduler_endpoints()
+    topics = []
+    
+    for endpoint in scheduler_endpoints:
+        # Extract identifier from endpoint URL
+        # e.g., http://10.8.1.18:8000 -> SCHEDULER_10_8_1_18
+        # or http://hostname:8000 -> SCHEDULER_hostname
+        if '://' in endpoint:
+            host = endpoint.split('://')[1].split(':')[0]
+            # Replace dots with underscores for valid MQTT topic
+            scheduler_id = host.replace('.', '_')
+            topics.append(f"SCHEDULER_{scheduler_id}")
+        
+    return topics
 
 def check_experiment_mode():
     """Check if experiment mode is enabled"""
@@ -153,9 +229,12 @@ class Config:
     def __init__(self):
         self.BATCH_SIZE = 10
         self.BATCH_TIMEOUT_SECONDS = 5.0
-        self.SCHEDULER_ENDPOINTS = get_scheduler_endpoints()
-        self.SCHEDULER_URLS = [endpoint+str('/developers/run_service_async_batch/') for endpoint in self.SCHEDULER_ENDPOINTS]
-
+        
+        # Schedulers are discovered dynamically via MQTT
+        # No need for static SCHEDULER_MQTT_TOPICS
+        
+        logger.info("Scheduler discovery enabled - will discover schedulers via MQTT announcements")
+        
         # Load from config file if it exists
         self.load_from_file("LB.conf")
     
@@ -198,8 +277,8 @@ class BatchState:
     def __init__(self):
         self.current_batch: List[Dict[str, Any]] = []
         self.last_batch_time = time.time()
-        self.current_scheduler_index = 0
-        self.scheduler_health: Dict[str, bool] = {url: True for url in settings.SCHEDULER_URLS}  # All schedulers start as healthy
+        # Remove current_scheduler_index since we use global next_scheduler_index
+        # Remove scheduler_health since we track health in discovered_schedulers
         self.lock = asyncio.Lock()
 
 batch_state = BatchState()
@@ -212,9 +291,15 @@ BROKER_ID = "broker.hivemq.com"
 def on_connect(mqtt_client, userdata, flags, rc, callback_api_version):
     if rc == 0:
         logger.info('Connected successfully to MQTT broker')
-        mqtt_client.subscribe("EVERYONE")  # Add your topics here
-        mqtt_client.subscribe("ROTATION")  # Subscribe to ROTATION topic
-        logger.info('Subscribed to EVERYONE and ROTATION topics')
+        
+        # Subscribe to load balancer's own topic for responses
+        lb_id = get_loadbalancer_id()
+        mqtt_client.subscribe(lb_id)
+        mqtt_client.subscribe("ROTATION")
+        mqtt_client.subscribe("EVERYONE")  # For scheduler heartbeats
+        mqtt_client.subscribe("SCHEDULER_ANNOUNCEMENTS")  # For scheduler discovery
+        
+        logger.info(f'Subscribed to {lb_id}, ROTATION, EVERYONE, and SCHEDULER_ANNOUNCEMENTS topics')
     else:
         logger.error(f'Bad connection to MQTT broker. Code: {rc}')
 
@@ -222,37 +307,79 @@ def on_message(mqtt_client, userdata, msg):
     logger.info(f'Received message on topic: {msg.topic} with payload: {msg.payload}')
     global ilp_state
     
-    # Check for ILP_DONE message
     payload_str = msg.payload.decode("utf-8")
     logger.debug(f"Decoded payload string: '{payload_str}'")
-    logger.debug(f"Payload length: {len(payload_str)}")
-    logger.debug(f"Payload type: {type(payload_str)}")
     
+    # Handle scheduler announcements
+    if msg.topic == "SCHEDULER_ANNOUNCEMENTS":
+        try:
+            announcement = json.loads(payload_str)
+            scheduler_uuid = announcement.get('scheduler_uuid')
+            scheduler_topic = announcement.get('scheduler_topic')
+            status = announcement.get('status')
+            
+            if status == 'online':
+                # Check if this is a new scheduler
+                if scheduler_uuid not in discovered_schedulers:
+                    # New scheduler - add to end of order
+                    discovered_schedulers[scheduler_uuid] = {
+                        'topic': scheduler_topic,
+                        'last_seen': time.time(),
+                        'status': 'online',
+                        'order_index': len(scheduler_order),
+                        'failure_count': 0
+                    }
+                    scheduler_order.append(scheduler_uuid)
+                    logger.info(f"New scheduler discovered: {scheduler_uuid} (order index: {len(scheduler_order)-1})")
+                else:
+                    # Existing scheduler coming back online
+                    discovered_schedulers[scheduler_uuid]['status'] = 'online'
+                    discovered_schedulers[scheduler_uuid]['last_seen'] = time.time()
+                    logger.info(f"Scheduler {scheduler_uuid} came back online")
+                    
+            elif status == 'offline':
+                if scheduler_uuid in discovered_schedulers:
+                    discovered_schedulers[scheduler_uuid]['status'] = 'offline'
+                    logger.info(f"Scheduler {scheduler_uuid} went offline")
+                    
+        except Exception as e:
+            logger.error(f"Error processing scheduler announcement: {e}")
+        return
+    
+    # Handle batch responses
+    if payload_str.startswith("BATCH_RESPONSE:"):
+        response_json = payload_str[15:]  # Remove prefix
+        try:
+            response_data = json.loads(response_json)
+            correlation_id = response_data.get('correlation_id')
+            
+            if correlation_id and correlation_id in pending_responses:
+                pending_responses[correlation_id] = response_data
+                logger.info(f"Received BATCH_RESPONSE for correlation_id: {correlation_id}")
+        except Exception as e:
+            logger.error(f"Error processing BATCH_RESPONSE: {e}")
+        return
+    
+    # Handle scheduler heartbeat/pong messages
+    if payload_str.startswith("SCHEDULER_PONG:"):
+        try:
+            pong_data = json.loads(payload_str[15:])  # Remove "SCHEDULER_PONG:" prefix
+            scheduler_uuid = pong_data.get('scheduler_uuid')
+            if scheduler_uuid and scheduler_uuid in discovered_schedulers:
+                discovered_schedulers[scheduler_uuid]['last_seen'] = time.time()
+                logger.debug(f"Received heartbeat from scheduler {scheduler_uuid}")
+        except Exception as e:
+            logger.error(f"Error processing SCHEDULER_PONG: {e}")
+        return
+    
+    # Handle ILP_DONE signal
     if payload_str == "ILP_DONE":
         logger.info("Received ILP_DONE signal, setting ilp_state to 'done'")
         ilp_state = "done"
         return
     
-    # Check if payload looks like JSON before trying to parse
-    if payload_str.startswith('{') and payload_str.endswith('}'):
-        logger.debug("Payload looks like JSON, attempting to parse")
-        try:
-            data = json.loads(payload_str)
-            logger.debug(f"Successfully parsed JSON: {data}")
-            # Add your message handling logic here
-        except Exception as e:
-            logger.error(f"Error processing MQTT message as JSON: {e}")
-    else:
-        logger.debug("Payload does not look like JSON, skipping JSON parsing")
-        logger.debug(f"Payload starts with: '{payload_str[:20]}...' (first 20 chars)")
-        
-        # Check for known message patterns
-        if payload_str.startswith('start_connect'):
-            logger.debug("Detected 'start_connect' message")
-        elif payload_str.startswith('get_efficiency_score'):
-            logger.debug("Detected 'get_efficiency_score' message")
-        else:
-            logger.debug(f"Unknown message pattern: '{payload_str}'")
+    # Keep other existing message handlers if needed
+    logger.debug(f"Unhandled message type: {payload_str[:50]}...")
 
 def on_subscribe(mqtt_client, userdata, mid, qos, properties=None):
     logger.info(f"Subscribed with QOS: {qos}")
@@ -265,58 +392,87 @@ mclient.on_subscribe = on_subscribe
 
 app = FastAPI(title="Load Balancer with Batching")
 
-async def check_scheduler_availability(url: str) -> bool:
-    """Check if a scheduler is available by establishing a connection"""
-    try:
-        # Extract base URL and host/port
-        base_url = url.rsplit('/', 1)[0] if '/' in url else url
-        logger.debug(f"Checking scheduler availability for {url} (base: {base_url})")
-        async with httpx.AsyncClient(timeout=2.0) as client:
-            # Just try to connect to the server
-            response = await client.head(base_url)
-            logger.debug(f"Scheduler {url} responded with status {response.status_code}")
-            return True
-    except Exception as e:
-        logger.debug(f"Connection check failed for {url}: {e}")
+async def check_scheduler_availability(topic: str) -> bool:
+    """
+    Check if a scheduler is available based on recent heartbeat
+    """
+    # Extract UUID from topic (SCHEDULER_{uuid})
+    scheduler_uuid = topic.replace("SCHEDULER_", "")
+    
+    if scheduler_uuid not in discovered_schedulers:
+        logger.debug(f"Scheduler {scheduler_uuid} not in discovered list")
         return False
+        
+    scheduler_info = discovered_schedulers[scheduler_uuid]
+    last_seen = scheduler_info.get('last_seen', 0)
+    current_time = time.time()
+    
+    # Consider available if seen within last 60 seconds (more lenient)
+    is_available = (current_time - last_seen) < 60.0
+    
+    if is_available:
+        logger.debug(f"Scheduler {scheduler_uuid} is available (last seen {current_time - last_seen:.1f}s ago)")
+    else:
+        logger.debug(f"Scheduler {scheduler_uuid} is unavailable (last seen {current_time - last_seen:.1f}s ago)")
+    
+    return is_available
 
 async def get_next_active_scheduler() -> Optional[str]:
-    """Get the next active scheduler URL in round-robin fashion"""
+    """Get the next active scheduler MQTT topic in round-robin fashion"""
+    global next_scheduler_index
     async with batch_state.lock:
-        # Get the number of schedulers
-        num_schedulers = len(settings.SCHEDULER_URLS)
-        logger.debug(f"Looking for active scheduler among {num_schedulers} schedulers")
-        logger.debug(f"Current scheduler index: {batch_state.current_scheduler_index}")
+        current_time = time.time()
         
-        # Try each scheduler starting from the current index
-        for i in range(num_schedulers):
-            idx = (batch_state.current_scheduler_index + i) % num_schedulers
-            scheduler_url = settings.SCHEDULER_URLS[idx]
-            logger.debug(f"Trying scheduler {idx}: {scheduler_url}")
+        # Get list of online schedulers in stable order
+        online_schedulers = []
+        for scheduler_uuid in scheduler_order:
+            if scheduler_uuid in discovered_schedulers:
+                scheduler_info = discovered_schedulers[scheduler_uuid]
+                # Consider online if status is online and seen within last 120 seconds (more lenient)
+                # This prevents schedulers from being marked offline too quickly
+                if (scheduler_info['status'] == 'online' and 
+                    (current_time - scheduler_info['last_seen']) < 120.0):
+                    online_schedulers.append(scheduler_uuid)
+        
+        num_online = len(online_schedulers)
+        if num_online == 0:
+            logger.error("No online schedulers found!")
+            return None
             
-            # Quick check if scheduler is available
-            is_available = await check_scheduler_availability(scheduler_url)
-            batch_state.scheduler_health[scheduler_url] = is_available
+        logger.debug(f"Found {num_online} online schedulers out of {len(scheduler_order)} total")
+        logger.debug(f"Current round-robin index: {next_scheduler_index}")
+        
+        # Try schedulers starting from current index
+        for i in range(num_online):
+            # Calculate index in the online schedulers list
+            idx = (next_scheduler_index + i) % num_online
+            scheduler_uuid = online_schedulers[idx]
+            scheduler_topic = discovered_schedulers[scheduler_uuid]['topic']
+            
+            logger.debug(f"Trying scheduler {idx}: {scheduler_uuid} -> {scheduler_topic}")
+            
+            # Check if scheduler is available (based on heartbeat)
+            is_available = await check_scheduler_availability(scheduler_topic)
             
             if is_available:
-                # Update the current index for next time
-                batch_state.current_scheduler_index = (idx + 1) % num_schedulers
-                logger.info(f"Selected active scheduler: {scheduler_url}")
-                return scheduler_url
+                # Update the round-robin index for next time
+                # We increment by 1, not by the number of schedulers we checked
+                next_scheduler_index = (next_scheduler_index + 1) % len(scheduler_order)
+                logger.info(f"Selected scheduler: {scheduler_uuid} (round-robin index: {next_scheduler_index})")
+                return scheduler_topic
             else:
-                logger.warning(f"Scheduler {scheduler_url} is DOWN or not responding. Skipping to next scheduler.")
-                
-        # If we get here, no active schedulers were found
-        logger.error("No active schedulers found!")
+                logger.warning(f"Scheduler {scheduler_uuid} is DOWN. Skipping to next scheduler.")
+        
+        # If we get here, no available schedulers were found
+        logger.error("No available schedulers found!")
         return None
 
 async def process_batch():
-    """Process the current batch and send to the next active scheduler if ILP is done"""
+    """Process the current batch and send to scheduler via MQTT"""
     global ilp_state
     
     logger.debug(f"process_batch called, current ILP state: {ilp_state}")
     
-    # Check if ILP is in progress - if so, we need to wait
     if ilp_state == "progress":
         logger.debug("ILP is in progress. Waiting to process batch...")
         return
@@ -326,20 +482,17 @@ async def process_batch():
             logger.debug("No batch to process (batch is empty)")
             return
             
-        # Create a copy of the current batch
         batch_to_send = batch_state.current_batch.copy()
         logger.info(f"Processing batch with {len(batch_to_send)} requests")
         
-        # Clear the current batch
         batch_state.current_batch = []
         batch_state.last_batch_time = time.time()
     
     # Find an active scheduler
-    scheduler_url = await get_next_active_scheduler()
+    scheduler_topic = await get_next_active_scheduler()
     
-    if scheduler_url is None:
+    if scheduler_topic is None:
         logger.error("No active schedulers available! Keeping batch in memory.")
-        # Put the batch back
         async with batch_state.lock:
             batch_state.current_batch = batch_to_send
         return
@@ -348,31 +501,76 @@ async def process_batch():
     ilp_state = "progress"
     logger.info("Setting ILP state to 'progress' before sending batch")
     
-    # Send the batch to the scheduler
+    # Generate correlation ID
+    correlation_id = str(uuid.uuid4())
+    lb_id = get_loadbalancer_id()
+    
+    # Prepare MQTT message with prefix pattern
+    mqtt_payload = {
+        'correlation_id': correlation_id,
+        'loadbalancer_id': lb_id,
+        'batch_data': {"requests": batch_to_send}
+    }
+    
+    # Store pending response
+    pending_responses[correlation_id] = None
+    
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                scheduler_url,
-                json={"requests": batch_to_send},
-                timeout=10.0,  # 10 second timeout for batch processing
-                headers={
-                    "Accept": "*/*",
-                    "User-Agent": "Thunder Client (https://www.thunderclient.com)",
-                    "Content-Type": "application/json"
-                }
-            )
-            logger.info(f"Sent batch of {len(batch_to_send)} requests to {scheduler_url}, status: {response.status_code}")
-    except Exception as e:
-        logger.error(f"Error sending batch to {scheduler_url}: {e}")
-        logger.warning(f"Scheduler {scheduler_url} is DOWN")
+        # Publish to scheduler-specific topic with BATCH_REQUEST prefix
+        message = "BATCH_REQUEST:" + json.dumps(mqtt_payload)
+        mclient.publish(
+            topic=scheduler_topic,
+            payload=message,
+            qos=2
+        )
+        logger.info(f"Sent batch of {len(batch_to_send)} requests to {scheduler_topic} via MQTT")
         
-        # Mark this scheduler as unhealthy
-        async with batch_state.lock:
-            batch_state.scheduler_health[scheduler_url] = False
+        # Wait for response (with timeout)
+        timeout = 10.0
+        start_time = time.time()
+        while pending_responses[correlation_id] is None:
+            if time.time() - start_time > timeout:
+                logger.error(f"Timeout waiting for scheduler response from {scheduler_topic}")
+                
+                # Handle scheduler failure with failure counting
+                scheduler_uuid = scheduler_topic.replace("SCHEDULER_", "")
+                handle_scheduler_failure(scheduler_uuid, "timeout")
+                
+                # Reset ILP state and retry
+                ilp_state = "done"
+                del pending_responses[correlation_id]
+                
+                # Put batch back and try again
+                async with batch_state.lock:
+                    batch_state.current_batch = batch_to_send + batch_state.current_batch
+                await process_batch()
+                return
             
-        # Reset ILP state back to "done" since our attempt failed
+            await asyncio.sleep(0.1)
+        
+        # Got response
+        response = pending_responses[correlation_id]
+        del pending_responses[correlation_id]
+        logger.info(f"Received response from {scheduler_topic}: {response}")
+        
+        # Handle successful response
+        scheduler_uuid = scheduler_topic.replace("SCHEDULER_", "")
+        handle_scheduler_success(scheduler_uuid)
+        
+    except Exception as e:
+        logger.error(f"Error sending batch to {scheduler_topic} via MQTT: {e}")
+        logger.warning(f"Scheduler {scheduler_topic} encountered error")
+        
+        # Handle scheduler failure with failure counting
+        scheduler_uuid = scheduler_topic.replace("SCHEDULER_", "")
+        handle_scheduler_failure(scheduler_uuid, f"exception: {str(e)}")
+            
+        # Reset ILP state
         ilp_state = "done"
-        logger.info("Reset ILP state to 'done' due to failed batch send")
+        
+        # Clean up pending response if exists
+        if correlation_id in pending_responses:
+            del pending_responses[correlation_id]
         
         # Try again with a different scheduler
         async with batch_state.lock:
@@ -484,17 +682,35 @@ async def run_service(request: Request, background_tasks: BackgroundTasks):
 @app.get("/status")
 async def get_status():
     """Get current status of the load balancer"""
+    current_time = time.time()
+    
+    # Get online schedulers
+    online_schedulers = []
+    for scheduler_uuid in scheduler_order:
+        if scheduler_uuid in discovered_schedulers:
+            scheduler_info = discovered_schedulers[scheduler_uuid]
+            if (scheduler_info['status'] == 'online' and 
+                (current_time - scheduler_info['last_seen']) < 60.0):
+                online_schedulers.append({
+                    'uuid': scheduler_uuid,
+                    'topic': scheduler_info['topic'],
+                    'last_seen': scheduler_info['last_seen'],
+                    'order_index': scheduler_info['order_index']
+                })
+    
     async with batch_state.lock:
         return {
             "current_batch_size": len(batch_state.current_batch),
             "batch_age_seconds": time.time() - batch_state.last_batch_time,
-            "scheduler_health": batch_state.scheduler_health,
-            "current_scheduler_index": batch_state.current_scheduler_index,
+            "discovered_schedulers": len(discovered_schedulers),
+            "online_schedulers": len(online_schedulers),
+            "next_scheduler_index": next_scheduler_index,
+            "scheduler_order": scheduler_order,
+            "online_scheduler_details": online_schedulers,
             "ilp_state": ilp_state,
             "config": {
                 "batch_size": settings.BATCH_SIZE,
-                "batch_timeout": settings.BATCH_TIMEOUT_SECONDS,
-                "scheduler_count": len(settings.SCHEDULER_URLS)
+                "batch_timeout": settings.BATCH_TIMEOUT_SECONDS
             }
         }
 

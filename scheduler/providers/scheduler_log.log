@@ -1,0 +1,245 @@
+^CDeleted PID file: djpid.txt
+(.venv) peercompute@colva2:~/Serverless_Scheduler_sn34kyp3t3$ python scheduler/manage.py runserver 0.0.0.0:8000 --verbosity=2
+PID: 1397516
+PID: 1397519
+Watching for file changes with StatReloader
+Performing system checks...
+
+System check identified no issues (0 silenced).
+October 22, 2025 - 10:00:26
+Django version 5.0.3, using settings 'scheduler.settings'
+Starting development server at http://0.0.0.0:8000/
+Quit the server with CONTROL-C.
+
+=== SCHEDULER MQTT CONNECTION ESTABLISHED ===
+Subscribed to core topics: EVERYONE, ROTATION
+scheduler_name:  colva2
+Subscribed to scheduler-specific topic: SCHEDULER_ff898965-5c47-41af-b447-5b538a0c7847
+Subscribed to SCHEDULER_ANNOUNCEMENTS topic
+=== SCHEDULER SUBSCRIPTION SUMMARY ===
+Scheduler UUID: ff898965-5c47-41af-b447-5b538a0c7847
+Scheduler Topic: SCHEDULER_ff898965-5c47-41af-b447-5b538a0c7847
+Subscribed Topics:
+  - EVERYONE (provider signals, heartbeats)
+  - ROTATION (ILP coordination)
+  - SCHEDULER_ff898965-5c47-41af-b447-5b538a0c7847 (load balancer requests)
+  - SCHEDULER_ANNOUNCEMENTS (scheduler discovery)
+  - Individual provider topics (dynamically added)
+=============================================
+Announced scheduler identity: ff898965-5c47-41af-b447-5b538a0c7847
+Started heartbeat thread
+on_subscribe userdata is <paho.mqtt.client.Client object at 0x7fa672b34a30>
+on_subscribe userdata is <paho.mqtt.client.Client object at 0x7fa672b34a30>
+on_subscribe userdata is <paho.mqtt.client.Client object at 0x7fa672b34a30>
+on_subscribe userdata is <paho.mqtt.client.Client object at 0x7fa672b34a30>
+on_subscribe userdata is <paho.mqtt.client.Client object at 0x7fa672b34a30>
+from views.py/providers 
+Received message on topic: SCHEDULER_ANNOUNCEMENTS with payload: b'{"scheduler_uuid": "ff898965-5c47-41af-b447-5b538a0c7847", "scheduler_topic": "SCHEDULER_ff898965-5c47-41af-b447-5b538a0c7847", "status": "online", "timestamp": 1761127230.3587885}'
+SCHEDULER_ANNOUNCEMENTS {"scheduler_uuid": "ff898965-5c47-41af-b447-5b538a0c7847", "scheduler_topic": "SCHEDULER_ff898965-5c47-41af-b447-5b538a0c7847", "status": "online", "timestamp": 1761127230.3587885}
+from views.py/providers 
+Received message on topic: EVERYONE with payload: b'SCHEDULER_PONG:{"scheduler_uuid": "ff898965-5c47-41af-b447-5b538a0c7847", "timestamp": 1761127230.359414, "status": "active"}'
+EVERYONE SCHEDULER_PONG:{"scheduler_uuid": "ff898965-5c47-41af-b447-5b538a0c7847", "timestamp": 1761127230.359414, "status": "active"}
+from views.py/providers 
+Received message on topic: SCHEDULER_ff898965-5c47-41af-b447-5b538a0c7847 with payload: b'BATCH_REQUEST:{"correlation_id": "17ab4a60-cb8d-426a-b053-bf9da5c5830f", "loadbalancer_id": "LOADBALANCER_colva2", "batch_data": {"requests": [{"serviceID": 17, "numberOfInvocations": 1, "chained": false, "input": "None", "runMultipleInvocations": false}]}}'
+SCHEDULER_ff898965-5c47-41af-b447-5b538a0c7847 BATCH_REQUEST:{"correlation_id": "17ab4a60-cb8d-426a-b053-bf9da5c5830f", "loadbalancer_id": "LOADBALANCER_colva2", "batch_data": {"requests": [{"serviceID": 17, "numberOfInvocations": 1, "chained": false, "input": "None", "runMultipleInvocations": false}]}}
+Received BATCH_REQUEST with correlation_id: 17ab4a60-cb8d-426a-b053-bf9da5c5830f
+Starting ILP processing for 1 services...
+Entering request_handler
+Debug: Entering find_providers
+User : ff898965-5c47-41af-b447-5b538a0c7847
+        provider : True         developer : False
+Entering build_cost_matrix
+Entering get_predicted_runtimes
+Predicted runtimes: {17: 0}
+Exiting get_predicted_runtimes
+Entering print_cost_matrix
+
+==========================================================
+                     Provider (ID + Location) | Service 17
+==========================================================
+ff898965-5c47-41af-b447-5b538a0c7847 (colva2) |   0.00  
+==========================================================
+
+Exiting print_cost_matrix
+Exiting build_cost_matrix
+Entering build_delay_dict
+Time of last start job for ff898965-5c47-41af-b447-5b538a0c7847: 2025-10-22 09:52:12.574892+00:00
+Error calculating delay: unsupported operand type(s) for -: 'datetime.datetime' and 'str'
+Delay dictionary: {<User: User : ff898965-5c47-41af-b447-5b538a0c7847
+        provider : True         developer : False>: 0}
+Exiting build_delay_dict
+Using scheduling algorithm: ILP
+Welcome to the CBC MILP Solver 
+Version: 2.10.3 
+Build Date: Dec 15 2019 
+
+command line - /home/peercompute/.local/lib/python3.10/site-packages/pulp/solverdir/cbc/linux/64/cbc /tmp/c2e4d053f22640b69959b8eaf20075d2-pulp.mps -timeMode elapsed -branch -printingOptions all -solution /tmp/c2e4d053f22640b69959b8eaf20075d2-pulp.sol (default strategy 1)
+At line 2 NAME          MODEL
+At line 3 ROWS
+At line 6 COLUMNS
+At line 11 RHS
+At line 13 BOUNDS
+At line 16 ENDATA
+Problem MODEL has 1 rows, 2 columns and 1 elements
+Coin0008I MODEL read with 0 errors
+Option for timeMode changed from cpu to elapsed
+Continuous objective value is 0 - 0.00 seconds
+Cgl0004I processed model has 0 rows, 0 columns (0 integer (0 of which binary)) and 0 elements
+Cbc3007W No integer variables - nothing to do
+Cuts at root node changed objective from 0 to -1.79769e+308
+Probing was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+Gomory was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+Knapsack was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+Clique was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+MixedIntegerRounding2 was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+FlowCover was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+TwoMirCuts was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+ZeroHalf was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
+
+Result - Optimal solution found
+
+Objective value:                0.00000000
+Enumerated nodes:               0
+Total iterations:               0
+Time (CPU seconds):             0.00
+Time (Wallclock seconds):       0.00
+
+Option for printingOptions changed from normal to all
+Total time (CPU seconds):       0.00   (Wallclock seconds):       0.00
+
+Time taken for Min Cost Algo: 0.008140087127685547
+Time taken in wallclock sec by lp algo:  0.00929403305053711
+
+Entering process_assignments
+
+Processing assignment - Service: 17, Provider: ff898965-5c47-41af-b447-5b538a0c7847
+Using provider: ff898965-5c47-41af-b447-5b538a0c7847 (already locked)
+Created job with ID: 2943
+Predicted runtime: 0
+Current provider delay state: {'inflight_jobs': [1000, 0, 0, 0, 1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 'time_of_last_startjob': '2025-09-21T19:33:09.282071'}
+
+Entering add_delay
+Current delay state: {'inflight_jobs': [1000, 0, 0, 0, 1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 'time_of_last_startjob': '2025-09-21T19:33:09.282071'}
+New delay value: 0
+Type of new delay: <class 'int'>
+Appending to inflight_jobs: 0
+Final delay state: {'inflight_jobs': [1000, 0, 0, 0, 1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 'time_of_last_startjob': '2025-09-21T19:33:09.282071'}
+Successfully saved in add_delay
+Exiting add_delay
+
+Successfully added delay
+Updated provider delay state: {'inflight_jobs': [1000, 0, 0, 0, 1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 'time_of_last_startjob': '2025-09-21T19:33:09.282071'}
+Successfully saved provider
+Sending job 2943 to provider ff898965-5c47-41af-b447-5b538a0c7847
+=== PUBLISHING MQTT MESSAGE ===
+Topic: ff898965-5c47-41af-b447-5b538a0c7847
+Payload: {
+  "provider_id": "ff898965-5c47-41af-b447-5b538a0c7847",
+  "task_link": "peercompute/benchmark.110.dynamic-html.python-3.9",
+  "task_developer": "0316778b-d20b-4415-a993-d95172340c2d",
+  "job_id": 2943,
+  "numberOfInvocations": 1,
+  "isChained": false,
+  "inputData": "None",
+  "runMultipleInvocations": false,
+  "stage": "dockernotrun"
+}
+Timestamp: 2025-10-22 10:00:40
+================================
+in pub to topic mqtt
+Job 2943 successfully sent to provider ff898965-5c47-41af-b447-5b538a0c7847
+Exiting process_assignments
+
+Published ILP_DONE to ROTATION topic
+DEBUG: Main processing succeeded, flag set to: True
+Job 2943 already sent to provider ff898965-5c47-41af-b447-5b538a0c7847 by process_assignments
+ILP processing completed. Results: []
+Published BATCH_RESPONSE to LOADBALANCER_colva2
+on_subscribe userdata is <paho.mqtt.client.Client object at 0x7fa672b34a30>
+from views.py/providers 
+Received message on topic: ff898965-5c47-41af-b447-5b538a0c7847 with payload: b'{"provider_id": "ff898965-5c47-41af-b447-5b538a0c7847", "task_link": "peercompute/benchmark.110.dynamic-html.python-3.9", "task_developer": "0316778b-d20b-4415-a993-d95172340c2d", "job_id": 2943, "numberOfInvocations": 1, "isChained": false, "inputData": "None", "runMultipleInvocations": false, "stage": "dockernotrun"}'
+pulled but docker not run
+from views.py/providers 
+Received message on topic: ROTATION with payload: b'ILP_DONE'
+ROTATION ILP_DONE
+from views.py/providers 
+Received message on topic: ff898965-5c47-41af-b447-5b538a0c7847 with payload: b'ACK:2943'
+ff898965-5c47-41af-b447-5b538a0c7847 ACK:2943
+Provider ff898965-5c47-41af-b447-5b538a0c7847 sent ACK signal for job 2943 via MQTT
+from views.py/providers 
+Received message on topic: ff898965-5c47-41af-b447-5b538a0c7847 with payload: b'NOT_READY'
+ff898965-5c47-41af-b447-5b538a0c7847 NOT_READY
+Provider ff898965-5c47-41af-b447-5b538a0c7847 sent NOT_READY signal via MQTT
+from views.py/providers 
+Received message on topic: ff898965-5c47-41af-b447-5b538a0c7847 with payload: b'{"stage": "dockerrun", "Result": {"error": "No response received from container"}, "pull_time": 149, "run_time": 5337, "total_time": 5500, "job_id": 2943}'
+data[stage]==dockerrun works
+{'stage': 'dockerrun', 'Result': {'error': 'No response received from container'}, 'pull_time': 149, 'run_time': 5337, 'total_time': 5500, 'job_id': 2943}
+=== JOB COMPLETION PROCESSING ===
+Inside finish_job with data: {'stage': 'dockerrun', 'Result': {'error': 'No response received from container'}, 'pull_time': 149, 'run_time': 5337, 'total_time': 5500, 'job_id': 2943}
+Processing job completion for job_id: 2943
+Found job 2943 in database
+Job details - Provider: ff898965-5c47-41af-b447-5b538a0c7847, Service: 17, Status: False
+Job completion data: {'stage': 'dockerrun', 'Result': {'error': 'No response received from container'}, 'pull_time': 149, 'run_time': 5337, 'total_time': 5500, 'job_id': 2943}
+Job state before update - pull_time: 0, run_time: 0, total_time: 0, finished: False
+Job state after update - pull_time: 149, run_time: 5337, total_time: 5500, finished: True
+Job 2943 successfully updated and saved to database
+Error updating cache state: User.update_cache_state() missing 1 required positional argument: 'image_size'
+from views.py/providers 
+Received message on topic: ff898965-5c47-41af-b447-5b538a0c7847 with payload: b'READY'
+ff898965-5c47-41af-b447-5b538a0c7847 READY
+=== PROVIDER READY SIGNAL RECEIVED ===
+Provider ff898965-5c47-41af-b447-5b538a0c7847 sent READY signal via MQTT
+Topic: ff898965-5c47-41af-b447-5b538a0c7847
+Payload: READY
+Timestamp: 2025-10-22 10:00:47
+=========================================
+=== PROCESSING READY SIGNAL ===
+Provider ID: ff898965-5c47-41af-b447-5b538a0c7847
+Found provider in database: ff898965-5c47-41af-b447-5b538a0c7847
+Provider state before update - ready: False, last_ready_signal: 2025-10-22 10:00:00.462293+00:00
+Provider state after update - ready: True, last_ready_signal: 2025-10-22 10:00:47.095962+00:00
+Provider ff898965-5c47-41af-b447-5b538a0c7847 marked as READY and saved to database
+=====================================
+Successfully processed READY signal from provider ff898965-5c47-41af-b447-5b538a0c7847
+from views.py/providers 
+Received message on topic: ff898965-5c47-41af-b447-5b538a0c7847 with payload: b'offline_non-procedurally'
+ff898965-5c47-41af-b447-5b538a0c7847 offline_non-procedurally
+Penalised provider  ff898965-5c47-41af-b447-5b538a0c7847  for quitting non-procedurally
+ff898965-5c47-41af-b447-5b538a0c7847was disconnected non-procedurally
+from views.py/providers 
+Received message on topic: ff898965-5c47-41af-b447-5b538a0c7847 with payload: b'{"stage": "dockerrun", "Result": {"error": "No response received from container"}, "pull_time": 149, "run_time": 5337, "total_time": 5500, "job_id": 2943}'
+data[stage]==dockerrun works
+{'stage': 'dockerrun', 'Result': {'error': 'No response received from container'}, 'pull_time': 149, 'run_time': 5337, 'total_time': 5500, 'job_id': 2943}
+=== JOB COMPLETION PROCESSING ===
+Inside finish_job with data: {'stage': 'dockerrun', 'Result': {'error': 'No response received from container'}, 'pull_time': 149, 'run_time': 5337, 'total_time': 5500, 'job_id': 2943}
+Processing job completion for job_id: 2943
+Found job 2943 in database
+Job details - Provider: ff898965-5c47-41af-b447-5b538a0c7847, Service: 17, Status: True
+Job completion data: {'stage': 'dockerrun', 'Result': {'error': 'No response received from container'}, 'pull_time': 149, 'run_time': 5337, 'total_time': 5500, 'job_id': 2943}
+Job state before update - pull_time: 149, run_time: 5337, total_time: 5500, finished: True
+Job state after update - pull_time: 149, run_time: 5337, total_time: 5500, finished: True
+Job 2943 successfully updated and saved to database
+Error updating cache state: User.update_cache_state() missing 1 required positional argument: 'image_size'
+from views.py/providers 
+Received message on topic: ff898965-5c47-41af-b447-5b538a0c7847 with payload: b'READY'
+ff898965-5c47-41af-b447-5b538a0c7847 READY
+=== PROVIDER READY SIGNAL RECEIVED ===
+Provider ff898965-5c47-41af-b447-5b538a0c7847 sent READY signal via MQTT
+Topic: ff898965-5c47-41af-b447-5b538a0c7847
+Payload: READY
+Timestamp: 2025-10-22 10:00:48
+=========================================
+=== PROCESSING READY SIGNAL ===
+Provider ID: ff898965-5c47-41af-b447-5b538a0c7847
+Found provider in database: ff898965-5c47-41af-b447-5b538a0c7847
+Provider state before update - ready: True, last_ready_signal: 2025-10-22 10:00:47.095962+00:00
+Provider state after update - ready: True, last_ready_signal: 2025-10-22 10:00:48.826355+00:00
+Provider ff898965-5c47-41af-b447-5b538a0c7847 marked as READY and saved to database
+=====================================
+Successfully processed READY signal from provider ff898965-5c47-41af-b447-5b538a0c7847
+from views.py/providers 
+Received message on topic: EVERYONE with payload: b'SCHEDULER_PONG:{"scheduler_uuid": "ff898965-5c47-41af-b447-5b538a0c7847", "timestamp": 1761127260.3891287, "status": "active"}'
+EVERYONE SCHEDULER_PONG:{"scheduler_uuid": "ff898965-5c47-41af-b447-5b538a0c7847", "timestamp": 1761127260.3891287, "status": "active"}
+from views.py/providers 
+Received message on topic: EVERYONE with payload: b'SCHEDULER_PONG:{"scheduler_uuid": "ff898965-5c47-41af-b447-5b538a0c7847", "timestamp": 1761127290.4186075, "status": "active"}'
+EVERYONE SCHEDULER_PONG:{"scheduler_uuid": "ff898965-5c47-41af-b447-5b538a0c7847", "timestamp": 1761127290.4186075, "status": "active"}

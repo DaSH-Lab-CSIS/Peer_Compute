@@ -36,10 +36,14 @@ def main():
     
     # Setup experiment logging for runserver command
     if len(sys.argv) > 1 and sys.argv[1] == 'runserver':
-        from django.conf import settings
-        if settings.EXPERIMENT_MODE and settings.EXPERIMENT_STDOUT_LOGGING:
-            from providers.experiment_logging import setup_scheduler_logging
-            setup_scheduler_logging()
+        try:
+            from django.conf import settings
+            if settings.EXPERIMENT_MODE and settings.EXPERIMENT_STDOUT_LOGGING:
+                from providers.experiment_logging import setup_scheduler_logging
+                setup_scheduler_logging()
+        except Exception as e:
+            # Silently ignore setup errors during startup
+            pass
     
     # Get the current process ID
     pid = os.getpid()

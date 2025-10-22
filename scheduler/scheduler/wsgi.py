@@ -15,8 +15,4 @@ os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'scheduler.settings')
 
 application = get_wsgi_application()
 
-# Setup experiment logging if enabled
-from django.conf import settings
-if settings.EXPERIMENT_MODE and settings.EXPERIMENT_STDOUT_LOGGING:
-    from providers.experiment_logging import setup_scheduler_logging
-    setup_scheduler_logging()
+# Experiment logging is now handled in providers/apps.py ready() method
