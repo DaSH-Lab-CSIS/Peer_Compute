@@ -1,0 +1,3 @@
+[2025-10-20 05:02:00.863] [loadbalancer] [SYSTEM] === EXPERIMENT SESSION START ===
+[2025-10-20 05:02:00.863] [loadbalancer] [STDOUT] Experiment logging started for loadbalancer
+[2025-10-20 05:06:28.036] [loadbalancer] [SYSTEM] === EXPERIMENT SESSION END ===

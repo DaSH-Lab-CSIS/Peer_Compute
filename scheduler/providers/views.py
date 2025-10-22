@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, tzinfo
 import uuid
 from providers.models import Job
 from django.http import JsonResponse
+from django.core.exceptions import ObjectDoesNotExist
 from scheduler.settings import TIME_ZONE
 from pytz import timezone
 from django.contrib import messages
@@ -38,9 +39,34 @@ global non_procedural_shutdown_multiplier
 non_procedural_shutdown_multiplier = 0.67
 global prediction_deviation_points
 global prediction_deviation_points_multiplier
+import scheduler.settings as settings
+import os
 # Create your views here.
 data_dict = None
 BROKER_ID = "broker.hivemq.com"
+
+def get_scheduler_id():
+    """Get scheduler identifier from database User record"""
+    try:
+        # Try to find existing scheduler user record
+        scheduler_name = os.environ.get('SCHEDULER_NAME', socket.gethostname())
+        print("scheduler_name: ", scheduler_name)
+        
+        # Look for a User record that represents this scheduler
+        # Sort by -last_ready_signal and choose the latest
+        scheduler_user = User.objects.filter(
+            location=scheduler_name,  # Use location field to identify scheduler
+            active=True,
+            ready=True,
+        ).order_by('-last_ready_signal').first()
+        
+        if scheduler_user:
+            return str(scheduler_user.user_id)
+        else:
+            return None
+    except User.DoesNotExist:
+        print("No scheduler user record found")
+        return None # No scheduler user record found, return None
 # BROKER_ID = "10.8.1.18"
 reference_provider_id = '34933555-5cca-41fb-aded-4ab7900c48d5'
 file_path = "/home/user/Documents/Serverless_Scheduler/SchedInfo.csv"
@@ -91,9 +117,81 @@ def penalise(user_id, penalty_type):
     provider.save()
 
 # mqtt client callbacks:
+def send_heartbeat(mqtt_client, scheduler_uuid):
+    """Send periodic heartbeat to load balancers"""
+    while True:
+        try:
+            heartbeat_payload = {
+                'scheduler_uuid': scheduler_uuid,
+                'timestamp': time.time(),
+                'status': 'active'
+            }
+            mqtt_client.publish(
+                topic="EVERYONE",  # All load balancers listen to this
+                payload="SCHEDULER_PONG:" + json.dumps(heartbeat_payload),
+                qos=1
+            )
+            time.sleep(30)  # Send heartbeat every 10 seconds
+        except Exception as e:
+            print(f"Error sending heartbeat: {e}")
+            time.sleep(5)
+
 def on_connect(mqtt_client, userdata, flags, rc, callback_api_version):
-    mqtt_client.subscribe(topic="EVERYONE")
-    print("Connected to mqtt from views.py/providers")
+    if rc == 0:
+        print("=== SCHEDULER MQTT CONNECTION ESTABLISHED ===")
+        
+        # Subscribe to core topics
+        mqtt_client.subscribe(topic="EVERYONE")
+        mqtt_client.subscribe("ROTATION")
+        print("Subscribed to core topics: EVERYONE, ROTATION")
+        
+        # Get scheduler UUID from database
+        scheduler_uuid = get_scheduler_id()
+        if scheduler_uuid is None:
+            print("No scheduler user record found. Cannot connect to MQTT.")
+            return
+        scheduler_topic = f"SCHEDULER_{scheduler_uuid}"
+        
+        # Subscribe to scheduler-specific topic
+        mqtt_client.subscribe(scheduler_topic)
+        print(f"Subscribed to scheduler-specific topic: {scheduler_topic}")
+        
+        # Subscribe to SCHEDULER_ANNOUNCEMENTS to receive other scheduler announcements
+        mqtt_client.subscribe("SCHEDULER_ANNOUNCEMENTS")
+        print("Subscribed to SCHEDULER_ANNOUNCEMENTS topic")
+        
+        print(f"=== SCHEDULER SUBSCRIPTION SUMMARY ===")
+        print(f"Scheduler UUID: {scheduler_uuid}")
+        print(f"Scheduler Topic: {scheduler_topic}")
+        print(f"Subscribed Topics:")
+        print(f"  - EVERYONE (provider signals, heartbeats)")
+        print(f"  - ROTATION (ILP coordination)")
+        print(f"  - {scheduler_topic} (load balancer requests)")
+        print(f"  - SCHEDULER_ANNOUNCEMENTS (scheduler discovery)")
+        print(f"  - Individual provider topics (dynamically added)")
+        print("=============================================")
+        
+        # Announce scheduler identity to load balancers
+        announcement = {
+            'scheduler_uuid': scheduler_uuid,
+            'scheduler_topic': scheduler_topic,
+            'status': 'online',
+            'timestamp': time.time()
+        }
+        mqtt_client.publish(
+            topic="SCHEDULER_ANNOUNCEMENTS",
+            payload=json.dumps(announcement),
+            qos=1
+        )
+        print(f"Announced scheduler identity: {scheduler_uuid}")
+        
+        # Start heartbeat thread
+        heartbeat_thread = threading.Thread(target=send_heartbeat, args=(mqtt_client, scheduler_uuid))
+        heartbeat_thread.daemon = True
+        heartbeat_thread.start()
+        print("Started heartbeat thread")
+    else:
+        print(f"Bad connection to mqtt from views.py/providers. Code: {rc}")
 
 def on_message(mqtt_client, userdata, msg):
     print('from views.py/providers ')
@@ -110,30 +208,195 @@ def on_message(mqtt_client, userdata, msg):
             # receive_job_data(data_dic t)
     except:
         print(msg.topic,msg.payload.decode("utf-8"))
-        if(msg.payload.decode("utf-8").startswith("Benchmark:")):
+        payload_str = msg.payload.decode("utf-8")
+        
+        # Handle new MQTT-based provider signals
+        if payload_str == "STARTUP":
+            print(f"Provider {msg.topic} sent STARTUP signal via MQTT")
+            # Call the same logic as providerStartup HTTP endpoint
+            try:
+                providerStartup_mqtt(msg.topic)
+                # Provider is already connected via MQTT, just acknowledge
+            except Exception as e:
+                print(f"Error handling STARTUP signal from {msg.topic}: {str(e)}")
+                
+        elif payload_str == "READY":
+            print(f"=== PROVIDER READY SIGNAL RECEIVED ===")
+            print(f"Provider {msg.topic} sent READY signal via MQTT")
+            print(f"Topic: {msg.topic}")
+            print(f"Payload: {payload_str}")
+            print(f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+            print("=========================================")
+            # Call the same logic as ready HTTP endpoint
+            try:
+               ready_mqtt(msg.topic)
+               print(f"Successfully processed READY signal from provider {msg.topic}")
+            except User.DoesNotExist:
+                print(f"ERROR: Provider {msg.topic} not found in database")
+            except Exception as e:
+                print(f"ERROR: Error handling READY signal from {msg.topic}: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                
+        elif payload_str == "NOT_READY":
+            print(f"Provider {msg.topic} sent NOT_READY signal via MQTT")
+            # Call the same logic as not_ready HTTP endpoint
+            try:
+                not_ready_mqtt(msg.topic)
+            except User.DoesNotExist:
+                print(f"Provider {msg.topic} not found in database")
+            except Exception as e:
+                print(f"Error handling NOT_READY signal from {msg.topic}: {str(e)}")
+                
+        elif payload_str.startswith("ACK:"):
+            job_id = payload_str[4:]  # Extract job_id after "ACK:"
+            print(f"Provider {msg.topic} sent ACK signal for job {job_id} via MQTT")
+            # Call the same logic as job_ack HTTP endpoint
+            try:
+                job_ack_mqtt(job_id)
+            except Job.DoesNotExist:
+                print(f"Job {job_id} not found in database")
+            except Exception as e:
+                print(f"Error handling ACK signal for job {job_id}: {str(e)}")
+        
+        elif payload_str.startswith("BATCH_REQUEST:"):
+            try:
+                # Extract correlation ID and batch data
+                batch_json = payload_str[14:]  # Remove "BATCH_REQUEST:" prefix
+                request_data = json.loads(batch_json)
+                correlation_id = request_data.get('correlation_id')
+                batch_data = request_data.get('batch_data')
+                loadbalancer_id = request_data.get('loadbalancer_id', 'LOADBALANCER')
+                
+                print(f"Received BATCH_REQUEST with correlation_id: {correlation_id}")
+                
+                # Process batch (reuse run_service_async_batch logic)
+                services = []
+                requests_data = []
+                results = []
+                temp_time = datetime.now(tz=timezone(TIME_ZONE))
+                
+                for req_data in batch_data['requests']:
+                    try:
+                        service_id = req_data.get('serviceID')
+                        if not service_id:
+                            results.append({'error': 'Missing serviceID'})
+                            continue
+                            
+                        service = Services.objects.get(id=service_id)
+                        
+                        if not service.active:
+                            results.append({'error': f'Service {service_id} is disabled'})
+                            continue
+                        
+                        services.append(service)
+                        requests_data.append(req_data)
+                        
+                        results.append({
+                            'status': 'pending',
+                            'message': f'Service {service_id} queued for processing',
+                            'service_name': service.name
+                        })
+                        
+                    except ObjectDoesNotExist:
+                        results.append({'error': f'Service {service_id} not found'})
+                    except Exception as e:
+                        results.append({'error': f'Failed to process request: {str(e)}'})
+                
+                # Process the batch synchronously to get actual results
+                if services:
+                    print(f"Starting ILP processing for {len(services)} services...")
+                    try:
+                        # Call request_handler directly (not in a thread) to get results
+                        batch_results = request_handler(requests_data, services, temp_time, False)
+                        print(f"ILP processing completed. Results: {batch_results}")
+                        
+                        # Update results with actual processing results
+                        if batch_results and len(batch_results) > 0:
+                            results = batch_results
+                            processed_count = len([r for r in results if 'error' not in r])
+                        else:
+                            processed_count = 0
+                    except Exception as e:
+                        print(f"Error in ILP processing: {e}")
+                        results = [{'error': f'ILP processing failed: {str(e)}'} for _ in services]
+                        processed_count = 0
+                else:
+                    processed_count = 0
+                
+                # Send response back to load balancer on its specific topic
+                response_payload = {
+                    'correlation_id': correlation_id,
+                    'status': 'success',
+                    'batch_size': len(batch_data['requests']),
+                    'processed': processed_count,
+                    'results': results
+                }
+                mqtt_client.publish(
+                    topic=loadbalancer_id,
+                    payload="BATCH_RESPONSE:" + json.dumps(response_payload),
+                    qos=2
+                )
+                print(f"Published BATCH_RESPONSE to {loadbalancer_id}")
+                
+            except Exception as e:
+                print(f"Error processing BATCH_REQUEST: {e}")
+                # Try to send error response if we have correlation_id
+                try:
+                    error_response = {
+                        'correlation_id': correlation_id if 'correlation_id' in locals() else 'unknown',
+                        'status': 'error',
+                        'error': str(e)
+                    }
+                    mqtt_client.publish(
+                        topic=loadbalancer_id if 'loadbalancer_id' in locals() else 'LOADBALANCER',
+                        payload="BATCH_RESPONSE:" + json.dumps(error_response),
+                        qos=2
+                    )
+                except:
+                    pass
+        
+        # Existing message handlers
+        elif(payload_str.startswith("Benchmark:")):
             # this is in topic user_id not EVERYONE
             print("In except, will print benchmark...")
-            benchmark = json.loads(msg.payload.decode("utf-8")[10:])
+            benchmark = json.loads(payload_str[10:])
             user_id = list(benchmark.keys())[0]
             get_benchmarks_for(user_id=user_id, benchmark=benchmark) #this will also update models.
-        elif(msg.payload.decode("utf-8").startswith("Stats for Reference Provider: ")):
+        elif(payload_str.startswith("Stats for Reference Provider: ")):
             print("Stats added to TrainingData/Reference_Provider_Data.txt")
-        elif(msg.payload.decode("utf-8").startswith("offline_non-procedurally")):    
+        elif(payload_str.startswith("offline_non-procedurally")):    
             penalise(msg.topic, 1)
             print(msg.topic + "was disconnected non-procedurally")
-        elif(msg.payload.decode("utf-8").startswith("offline_procedurally")):    
+        elif(payload_str.startswith("offline_procedurally")):    
             penalise(msg.topic, 0)
             print(msg.topic + "was disconnected procedurally")  
         if(msg.topic=="EVERYONE"):
-            if(msg.payload.decode("utf-8").startswith("start_connect")):
-                print("connecting to ", msg.payload.decode("utf-8")[13:])
-                mqtt_client.subscribe(topic=msg.payload.decode("utf-8")[13:])
-            if(msg.payload.decode("utf-8").startswith("get_efficiency_score")):
+            if(payload_str.startswith("start_connect")):
+                user_id = payload_str[13:]
+                print(f"=== PROVIDER CONNECTION REQUEST ===")
+                print(f"Provider {user_id} requesting connection")
+                print(f"Topic: {msg.topic}")
+                print(f"Payload: {payload_str}")
+                print(f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}")
                 
-                user_id=msg.payload.decode("utf-8")[20:]
+                mqtt_client.subscribe(topic=user_id)
+                print(f"Subscribed to provider topic: {user_id}")
+                
+                # Send confirmation back to provider
+                mqtt_client.publish(topic=user_id, payload="SUBSCRIPTION_CONFIRMED", qos=2)
+                print(f"Sent subscription confirmation to {user_id}")
+                print("=====================================")
+            if(payload_str.startswith("get_efficiency_score")):
+
+                user_id=payload_str[20:]
                 provider = User.objects.get(user_id=user_id)
-                scoreset = {'cpu':float(provider.cpu_efficiency_score), 'memory':float(provider.memory_efficiency_score)}
+                # Fix: Handle None values with default of 1.0
+                cpu_score = 1.0 if provider.cpu_efficiency_score is None else float(provider.cpu_efficiency_score)
+                memory_score = 1.0 if provider.memory_efficiency_score is None else float(provider.memory_efficiency_score)
+                scoreset = {'cpu': cpu_score, 'memory': memory_score}
                 mqtt_client.publish(topic=user_id, payload="EfficiencyScoreSet:"+json.dumps(scoreset),qos=2)
+                
 
 
 def on_subscribe(mqtt_client, userdata, mid, qos, properties=None):
@@ -206,6 +469,13 @@ def publish_to_topic_mqtt(runMultipleInvocations, numberOfInvocations, isChained
     #makes a new client everytime it pubtotopic is called.
     mclient = get_mclient()
     mclient.subscribe(topic=router_name)
+    
+    print(f'=== PUBLISHING MQTT MESSAGE ===')
+    print(f'Topic: {router_name}')
+    print(f'Payload: {json.dumps(userdata, indent=2)}')
+    print(f'Timestamp: {time.strftime("%Y-%m-%d %H:%M:%S")}')
+    print(f'================================')
+    
     mclient.publish(topic=router_name, payload=json.dumps(userdata).encode("utf-8"), qos=2)
     print("in pub to topic mqtt")
     # mclient.loop_forever() #get rid of this
@@ -286,6 +556,34 @@ def ready(request,user_id):
         messages.error(request, "Wrong request method.")
     return JsonResponse({'message' : 'Not ready ran successfully.'})
 
+def ready_mqtt(user_id):
+    print(f"=== PROCESSING READY SIGNAL ===")
+    print(f"Provider ID: {user_id}")
+    
+    try:
+        provider = User.objects.get(user_id=user_id)
+        print(f"Found provider in database: {provider.user_id}")
+        print(f"Provider state before update - ready: {provider.ready}, last_ready_signal: {provider.last_ready_signal}")
+        
+        provider.ready = True
+        provider.last_ready_signal = datetime.now(tz=timezone(TIME_ZONE))
+        
+        print(f"Provider state after update - ready: {provider.ready}, last_ready_signal: {provider.last_ready_signal}")
+        
+        provider.save()
+        print(f"Provider {user_id} marked as READY and saved to database")
+        print("=====================================")
+        
+    except User.DoesNotExist:
+        print(f"ERROR: Provider {user_id} not found in database")
+        raise
+    except Exception as e:
+        print(f"ERROR: Failed to process READY signal for provider {user_id}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise
+    
+
 
 # @login_required
 @csrf_exempt
@@ -301,6 +599,11 @@ def not_ready(request, user_id):
         messages.error(request, "Wrong request method.")
     return JsonResponse({'message' : 'Not ready ran successfully.'})
 
+def not_ready_mqtt(user_id):
+    provider = User.objects.get(user_id=user_id)
+    provider.ready = False
+    provider.save()
+
 # # @login_required
 @csrf_exempt
 def job_ack(request, job_id):
@@ -311,6 +614,12 @@ def job_ack(request, job_id):
     else:
         messages.error(request, "Wrong request method.")
     return JsonResponse({'message' : 'Job acknowledge time updated successfully.'})
+
+
+def job_ack_mqtt(job_id):
+    job = get_object_or_404(Job, pk=job_id)
+    job.ack_time = datetime.now(tz=timezone(TIME_ZONE))
+    job.save(update_fields=['ack_time'])
 
 def calculate_efficiency(request, user_id):
     # TODO
@@ -328,6 +637,13 @@ def providerStartup(request, user_id):
     #subscribe to EVERYONE in on_connect
     client.subscribe(topic=user_id)
     return JsonResponse({'State':'scheduler connected to provider user_id'})
+
+def providerStartup_mqtt(user_id):
+    print("Provider ", user_id, " started...")
+    client = get_mclient()
+    #subscribe to EVERYONE in on_connect
+    client.subscribe(topic=user_id)
+
 
 @csrf_exempt
 def set_reference_stats(request):
@@ -477,31 +793,14 @@ def request_handler(data, service, start_time, run_async=False):
                     task_developer = svc.developer
                     input_val = req_data.get('input', 'None')
                     
-                    # Publish to MQTT - handle potential failures
+                    # Job already sent by find_providers -> process_assignments
+                    # Just refresh and save the job
                     try:
-                        mqtt_params = {
-                            'runMultipleInvocations': req_data.get('runMultipleInvocations', False),
-                            'numberOfInvocations': req_data.get('numberOfInvocations', 1),
-                            'chained': req_data.get('chained', False),
-                            'input': input_val
-                        }
-                        
-                        publish_to_topic_mqtt(
-                            mqtt_params['runMultipleInvocations'],
-                            mqtt_params['numberOfInvocations'],
-                            mqtt_params['chained'],
-                            input_val, 
-                            provider, 
-                            task_link, 
-                            task_developer, 
-                            job.id
-                        )
-                        
                         job.refresh_from_db()
                         job.save()
-                        print(f"Job {job.id} successfully sent to provider {provider.user_id}")
+                        print(f"Job {job.id} already sent to provider {provider.user_id} by process_assignments")
                     except Exception as mqtt_error:
-                        print(f"Error publishing to MQTT: {str(mqtt_error)}")
+                        print(f"Error refreshing job: {str(mqtt_error)}")
                         # This will be handled by the recovery process - job stays in CREATED status
                     
                     # Calculate providing time for response
@@ -538,21 +837,58 @@ def request_handler(data, service, start_time, run_async=False):
 
 
 def finish_job(data):
-    print("Inside finish job")
+    print("=== JOB COMPLETION PROCESSING ===")
+    print(f"Inside finish_job with data: {data}")
+    
+    # Import here to avoid circular imports
+    from providers.experiment_framework import experiment_runner
+    
     #here unpack the data load job from job id and update and save it.
     id = data['job_id']
-    job = Job.objects.get(pk=id)
-    response_decoded = json.loads(data.decode("utf-8"))
-    # response_decoded = json.loads(response)
-    print("response from provider: ", response_decoded)
-    job.refresh_from_db()
-    job.pull_time = response_decoded['pull_time']
-    job.run_time = response_decoded['run_time']
-    job.total_time = response_decoded['total_time']
-    job.cost = (response_decoded['total_time'])
-    job.response = response_decoded['Result']
-    job.finished = True
-    job.save()
+    print(f"Processing job completion for job_id: {id}")
+    
+    try:
+        job = Job.objects.get(pk=id)
+        print(f"Found job {id} in database")
+        print(f"Job details - Provider: {job.provider.user_id}, Service: {job.service.id}, Status: {job.finished}")
+        
+        # Handle both dict and string data formats
+        if isinstance(data, dict):
+            response_decoded = data
+        else:
+            response_decoded = json.loads(data.decode("utf-8"))
+        
+        print(f"Job completion data: {response_decoded}")
+        
+        # Update job with completion data
+        job.refresh_from_db()
+        print(f"Job state before update - pull_time: {job.pull_time}, run_time: {job.run_time}, total_time: {job.total_time}, finished: {job.finished}")
+        
+        job.pull_time = response_decoded['pull_time']
+        job.run_time = response_decoded['run_time']
+        job.total_time = response_decoded['total_time']
+        job.cost = (response_decoded['total_time'])
+        job.response = response_decoded['Result']
+        job.finished = True
+        
+        print(f"Job state after update - pull_time: {job.pull_time}, run_time: {job.run_time}, total_time: {job.total_time}, finished: {job.finished}")
+        
+        job.save()
+        print(f"Job {id} successfully updated and saved to database")
+        
+    except Job.DoesNotExist:
+        print(f"ERROR: Job {id} not found in database!")
+        return
+    except Exception as e:
+        print(f"ERROR: Failed to update job {id}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return
+    
+    # Record experiment metrics if experiment is active
+    if experiment_runner.experiment_active:
+        current_algorithm = settings.SCHEDULING_ALGORITHM
+        experiment_runner.metrics.record_job_completion(current_algorithm, job)
     
     # Update cache state after job completion
     try:
@@ -581,8 +917,11 @@ def queue_jobs(service):
 
 
 def get_ready_providers():
-    # Remove the transaction.atomic() as it will be handled by find_providers
-    return User.objects.select_for_update(nowait=True).filter(
+    """
+    Get ready providers with proper locking for concurrency control.
+    Uses select_for_update with timeout to handle lock contention gracefully.
+    """
+    return User.objects.select_for_update(nowait=False).filter(
         active=True,
         is_provider=True,
         ready=True,
@@ -709,7 +1048,8 @@ def print_cost_matrix(cost_matrix):
             extracted_services.append(service_item)
     
     # Calculate column widths - handle both direct service objects and tuples
-    provider_width = max(len(str(provider.user_id)) for provider in cost_matrix.keys())
+    # Include provider name/id info in width calculation
+    provider_width = max(len(f"{provider.user_id} ({provider.location or 'No Location'})") for provider in cost_matrix.keys())
     service_widths = []
     for service_item in extracted_services:
         try:
@@ -721,7 +1061,7 @@ def print_cost_matrix(cost_matrix):
         service_widths.append(width)
     
     # Print header
-    header = f"{'Provider':>{provider_width}} |"
+    header = f"{'Provider (ID + Location)':>{provider_width}} |"
     header += "".join(f" {'Service '+str(getattr(service, 'id', i)):^{width}}" 
                      for i, (service, width) in enumerate(zip(extracted_services, service_widths)))
     print("\n" + "="*(len(header)))
@@ -730,8 +1070,9 @@ def print_cost_matrix(cost_matrix):
     
     # Print each row
     for provider, costs in cost_matrix.items():
-        # Convert UUID to string for formatting
-        row = f"{str(provider.user_id):>{provider_width}} |"
+        # Include provider ID and location for better identification
+        provider_info = f"{provider.user_id} ({provider.location or 'No Location'})"
+        row = f"{provider_info:>{provider_width}} |"
         row += "".join(f" {costs[service]:^{width}.2f}" for service, width in zip(services, service_widths))
         print(row)
     
@@ -853,13 +1194,13 @@ def process_assignments(assignment, cost_matrix):
                 
             print(f"\nProcessing assignment - Service: {service.id}, Provider: {provider.user_id}")
             
-            # Lock the provider record
-            provider_locked = User.objects.select_for_update().get(pk=provider.pk)
-            print(f"Provider locked: {provider_locked.user_id}")
+            # Provider is already locked by get_ready_providers(), so we can use it directly
+            # No need to lock again - this was causing self-deadlock
+            print(f"Using provider: {provider.user_id} (already locked)")
             
             # Create a Job instance with CREATED status
             job = Job.objects.create(
-                provider=provider_locked,
+                provider=provider,
                 service=service,
                 developer=service.developer,
                 finished=False
@@ -886,37 +1227,37 @@ def process_assignments(assignment, cost_matrix):
                 predicted_runtime = 1000  # Default value
                 
             print(f"Predicted runtime: {predicted_runtime}")
-            print(f"Current provider delay state: {provider_locked.delay}")
+            print(f"Current provider delay state: {provider.delay}")
             
             try:
-                provider_locked.add_delay(predicted_runtime)
+                provider.add_delay(predicted_runtime)
                 print("Successfully added delay")
             except Exception as e:
                 print(f"Error adding delay: {str(e)}")
                 print(f"Type of predicted_runtime: {type(predicted_runtime)}")
                 print(f"Value of predicted_runtime: {predicted_runtime}")
                 # Don't raise, just continue with default delay
-                provider_locked.delay = provider_locked.delay or 0
+                provider.delay = provider.delay or 0
 
-            print(f"Updated provider delay state: {provider_locked.delay}")
+            print(f"Updated provider delay state: {provider.delay}")
             
             # Update function invocations
             service_key = str(service.id)
-            current_invocations = provider_locked.function_invocations.get(service_key, 0)
-            provider_locked.function_invocations[service_key] = current_invocations + 1
+            current_invocations = provider.function_invocations.get(service_key, 0)
+            provider.function_invocations[service_key] = current_invocations + 1
             
             try:
-                provider_locked.save()
+                provider.save()
                 print("Successfully saved provider")
             except Exception as e:
                 print(f"Error saving provider: {str(e)}")
-                print(f"Provider state at save: {provider_locked.__dict__}")
+                print(f"Provider state at save: {provider.__dict__}")
                 raise
 
             # Store job information for sending after transaction commits
             jobs_to_send.append({
                 'job': job,
-                'provider': provider_locked,
+                'provider': provider,
                 'service': service
             })
 
@@ -966,102 +1307,153 @@ def process_assignments(assignment, cost_matrix):
 def find_providers(services, jobs=None):
     print("Debug: Entering find_providers")
     
-    # Wrap the entire process in a transaction to keep providers locked
-    with transaction.atomic():
-        if not isinstance(services, list):
-            services = [services]
-
-        # 1. Get Suitable Providers (now locks are kept until this transaction ends)
-        suitable_providers = get_ready_providers()
-        for provider in suitable_providers:
-            print(provider)
-        if not suitable_providers:
-            print("No ready providers available.")
-            return None
-
-        # NOTE - cache will be incorporated in the future
-
-        # 2. Build Cost Matrix
-        cost_matrix = build_cost_matrix(suitable_providers, services)
-
-        # 3. Build Delay Dict
-        delay = build_delay_dict(suitable_providers)
-
-        # 4. Get min cost provider by calling the ILP solver
-        # Extract the list of (index, service) tuples as jobs for the minimize function
-        indexed_services = [(i, svc) for i, svc in enumerate(services)]
-        workers = list(cost_matrix.keys())
-        
+    # Import here to avoid circular imports
+    from providers.scheduling_algorithms import get_scheduler
+    from providers.experiment_framework import experiment_runner
+    
+    # Retry logic for database lock contention
+    max_retries = 3
+    retry_count = 0
+    
+    while retry_count < max_retries:
         try:
-            # Call minimize_total_cost with proper arguments
-            assignment, total_cost = minimize_total_cost(suitable_providers, indexed_services, cost_matrix, delay)
-            
-            if assignment is None:
-                print("Warning: No optimal solution found")
-                return None
-                
-            # 5. Process assignments - Invoke providers and update job status
-            process_assignments(assignment, cost_matrix)
-            
-            # If jobs were provided, map job IDs to provider assignments
-            if jobs is not None:
-                # Create mappings from index and service to job
-                job_mapping = {}
-                for i, (service, job) in enumerate(zip(services, jobs)):
-                    job_mapping[(i, service)] = job
-                
-                # Create provider assignments
-                provider_assignments = {}
-                for (i, service), provider in assignment.items():
-                    if (i, service) in job_mapping:
-                        job = job_mapping[(i, service)]
-                        provider_assignments[job.id] = (provider, delay.get(provider, 0))
-                return provider_assignments
-            
-            # Return the original assignment format if no jobs provided
-            return assignment
-            
-        except Exception as e:
-            print(f"Error in find_providers: {str(e)}")
-            # Attempt fallback solution for single service
-            if len(services) == 1:
-                service = services[0]
-                # Find a suitable provider with minimal delay
-                if suitable_providers:
-                    provider = min(suitable_providers, key=lambda p: delay.get(p, 0))
-                    print(f"Fallback provider selection: {provider}")
+            # Wrap the entire process in a transaction to keep providers locked
+            with transaction.atomic():
+                if not isinstance(services, list):
+                    services = [services]
+
+                # 1. Get Suitable Providers (now locks are kept until this transaction ends)
+                suitable_providers = get_ready_providers()
+                for provider in suitable_providers:
+                    print(provider)
+                if not suitable_providers:
+                    print("No ready providers available.")
+                    return None
+
+                # 2. Build Cost Matrix
+                cost_matrix = build_cost_matrix(suitable_providers, services)
+
+                # 3. Build Delay Dict
+                delay = build_delay_dict(suitable_providers)
+
+                # 4. Get assignment using the configured scheduling algorithm
+                try:
+                    # Get the scheduler based on current configuration
+                    scheduler = get_scheduler()
+                    print(f"Using scheduling algorithm: {scheduler.name}")
+                    main_processing_succeeded = False  # Initialize flag
                     
-                    # Create a simple assignment dictionary with the expected tuple key
-                    assignment = {(0, service): provider}
+                    # Get assignment from the selected algorithm
+                    assignment, total_cost = scheduler.assign_providers(
+                        suitable_providers, services, cost_matrix, delay
+                    )
                     
-                    # Ensure cost_matrix has the necessary entries
-                    # If the cost_matrix doesn't have this provider or service, create it
-                    if provider not in cost_matrix:
-                        cost_matrix[provider] = {}
+                    # Record metrics if experiment is active
+                    if experiment_runner.experiment_active and assignment:
+                        experiment_runner.metrics.record_assignment(
+                            scheduler.name, assignment, cost_matrix, delay, 
+                            scheduler.metrics.get('assignment_time', 0), services
+                        )
                     
-                    # Use a default runtime value if not available
-                    if (0, service) not in cost_matrix[provider]:
-                        # Try to get a default runtime from the Job model or use a fixed value
-                        try:
-                            default_runtime = Job.get_latest_run_time(provider.id, service.id) or 1000
-                        except:
-                            default_runtime = 1000
-                        cost_matrix[provider][(0, service)] = default_runtime
-                    
-                    # Process the assignment with the updated cost_matrix
-                    print(f"Using fallback cost matrix entry: {cost_matrix[provider][(0, service)]}")
+                    if assignment is None:
+                        print("Warning: No optimal solution found")
+                        return None
+                        
+                    # 5. Process assignments - Invoke providers and update job status
                     process_assignments(assignment, cost_matrix)
+                    main_processing_succeeded = True  # Flag to prevent fallback from running
+                    print(f"DEBUG: Main processing succeeded, flag set to: {main_processing_succeeded}")
                     
-                    # Handle job mapping if needed
-                    if jobs is not None and len(jobs) == 1:
-                        job = jobs[0]
-                        return {job.id: (provider, delay.get(provider, 0))}
+                    # If jobs were provided, map job IDs to provider assignments
+                    if jobs is not None:
+                        # Create mappings from index and service to job
+                        job_mapping = {}
+                        for i, (service, job) in enumerate(zip(services, jobs)):
+                            job_mapping[(i, service)] = job
+                        
+                        # Create provider assignments
+                        provider_assignments = {}
+                        for (i, service), provider in assignment.items():
+                            if (i, service) in job_mapping:
+                                job = job_mapping[(i, service)]
+                                provider_assignments[job.id] = (provider, delay.get(provider, 0))
+                        return provider_assignments
                     
+                    # Return the original assignment format if no jobs provided
                     return assignment
-            
-            # If fallback also fails or multiple services
-            print("Could not find providers after trying fallback solutions")
-            return None
+                    
+                except Exception as scheduler_error:
+                    print(f"Error in scheduling algorithm: {str(scheduler_error)}")
+                    # This will be caught by the outer exception handler
+                    raise
+                    
+        except Exception as e:
+            # Check if this is a database lock contention error
+            error_str = str(e).lower()
+            if 'could not obtain lock' in error_str or 'lock timeout' in error_str or 'deadlock' in error_str:
+                retry_count += 1
+                print(f"Database lock contention detected (attempt {retry_count}/{max_retries}): {str(e)}")
+                if retry_count < max_retries:
+                    # Exponential backoff with jitter
+                    import random
+                    sleep_time = (0.1 * (2 ** retry_count)) + random.uniform(0, 0.1)
+                    print(f"Retrying in {sleep_time:.2f} seconds...")
+                    time.sleep(sleep_time)
+                    continue
+                else:
+                    print(f"Max retries reached for lock contention, giving up")
+                    raise Exception(f"Could not obtain database locks after {max_retries} attempts: {str(e)}")
+            else:
+                # For non-lock errors, don't retry
+                print(f"Non-lock error in find_providers: {str(e)}")
+                print(f"DEBUG: main_processing_succeeded flag is: {main_processing_succeeded}")
+                # Only attempt fallback if main processing didn't succeed
+                if not main_processing_succeeded and len(services) == 1:
+                    print("DEBUG: Running fallback logic")
+                    service = services[0]
+                    # Find a suitable provider with minimal delay
+                    if suitable_providers:
+                        provider = min(suitable_providers, key=lambda p: delay.get(p, 0))
+                        print(f"Fallback provider selection: {provider}")
+                        
+                        # Create a simple assignment dictionary with the expected tuple key
+                        assignment = {(0, service): provider}
+                        
+                        # Ensure cost_matrix has the necessary entries
+                        # If the cost_matrix doesn't have this provider or service, create it
+                        if provider not in cost_matrix:
+                            cost_matrix[provider] = {}
+                        
+                        # Use a default runtime value if not available
+                        if (0, service) not in cost_matrix[provider]:
+                            # Try to get a default runtime from the Job model or use a fixed value
+                            try:
+                                default_runtime = Job.get_latest_run_time(provider.id, service.id) or 1000
+                            except:
+                                default_runtime = 1000
+                            cost_matrix[provider][(0, service)] = default_runtime
+                    
+                        # Process the assignment with the updated cost_matrix
+                        print(f"Using fallback cost matrix entry: {cost_matrix[provider][(0, service)]}")
+                        process_assignments(assignment, cost_matrix)
+                        
+                        # Handle job mapping if needed
+                        if jobs is not None and len(jobs) == 1:
+                            job = jobs[0]
+                            return {job.id: (provider, delay.get(provider, 0))}
+                        
+                        return assignment
+                    else:
+                        print("Could not find providers after trying fallback solutions")
+                        return None
+                else:
+                    print("DEBUG: Skipping fallback logic - main processing succeeded or multiple services")
+                    print("Could not find providers after trying fallback solutions")
+                    return None
+    
+    # If we get here, all retries failed
+    print(f"Failed to find providers after {max_retries} attempts")
+    return None
 
 def find_provider(service):
     # NOTE - Logic for this function can be defined later if a different provider selection algorithm is needed for one service.
@@ -1167,3 +1559,174 @@ def find_provider(service):
 # MAIN CODE:
 
 get_mclient()
+
+# Experiment and Algorithm Control Endpoints
+
+@csrf_exempt
+def start_algorithm_experiment(request):
+    """Start a scheduling algorithm comparison experiment"""
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body.decode('utf-8'))
+            algorithms = data.get('algorithms', ['ILP', 'MRU', 'BELADY', 'ROUND_ROBIN'])
+            iterations = data.get('iterations', 10)
+            services_per_iteration = data.get('services_per_iteration', 5)
+            
+            from providers.experiment_framework import start_experiment
+            result = start_experiment(algorithms, iterations, services_per_iteration)
+            
+            return JsonResponse({
+                'status': 'success',
+                'message': result,
+                'algorithms': algorithms,
+                'iterations': iterations,
+                'services_per_iteration': services_per_iteration
+            })
+        except Exception as e:
+            return JsonResponse({
+                'status': 'error',
+                'message': str(e)
+            }, status=500)
+    else:
+        return JsonResponse({'status': 'error', 'message': 'POST method required'}, status=405)
+
+@csrf_exempt
+def get_experiment_status(request):
+    """Get current experiment status"""
+    from scheduler.settings import SCHEDULING_ALGORITHM
+    if request.method == 'GET':
+        try:
+            from providers.experiment_framework import get_experiment_status
+            status = get_experiment_status()
+            return JsonResponse({
+                'status': 'success',
+                'experiment': status,
+                'current_algorithm': SCHEDULING_ALGORITHM,
+            })
+        except Exception as e:
+            return JsonResponse({
+                'status': 'error',
+                'message': str(e)
+            }, status=500)
+    else:
+        return JsonResponse({'status': 'error', 'message': 'GET method required'}, status=405)
+
+@csrf_exempt
+def switch_scheduling_algorithm(request):
+    """Switch the current scheduling algorithm"""
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body.decode('utf-8'))
+            algorithm = data.get('algorithm')
+            
+            valid_algorithms = ['ILP', 'MRU', 'BELADY', 'ROUND_ROBIN']
+            if algorithm not in valid_algorithms:
+                return JsonResponse({
+                    'status': 'error',
+                    'message': f'Invalid algorithm. Valid options: {valid_algorithms}'
+                }, status=400)
+            
+            # Update Django settings (note: this only affects current instance)
+            settings.SCHEDULING_ALGORITHM = algorithm
+            
+            return JsonResponse({
+                'status': 'success',
+                'message': f'Switched to {algorithm} algorithm',
+                'algorithm': algorithm
+            })
+        except Exception as e:
+            return JsonResponse({
+                'status': 'error',
+                'message': str(e)
+            }, status=500)
+    else:
+        return JsonResponse({'status': 'error', 'message': 'POST method required'}, status=405)
+
+@csrf_exempt
+def generate_experiment_report(request):
+    """Generate and return experiment report"""
+    if request.method == 'GET':
+        try:
+            from providers.experiment_framework import experiment_runner
+            experiment_name = request.GET.get('name', f'Manual_Report_{datetime.now().strftime("%Y%m%d_%H%M%S")}')
+            
+            report = experiment_runner.metrics.generate_report(experiment_name)
+            report_file = experiment_runner.metrics.save_report(report)
+            
+            return JsonResponse({
+                'status': 'success',
+                'report': report,
+                'report_file': report_file
+            })
+        except Exception as e:
+            return JsonResponse({
+                'status': 'error',
+                'message': str(e)
+            }, status=500)
+    else:
+        return JsonResponse({'status': 'error', 'message': 'GET method required'}, status=405)
+
+@csrf_exempt 
+def get_algorithm_metrics(request):
+    """Get current algorithm performance metrics"""
+    if request.method == 'GET':
+        try:
+            from providers.scheduling_algorithms import get_scheduler
+            scheduler = get_scheduler()
+            
+            return JsonResponse({
+                'status': 'success',
+                'algorithm': scheduler.name,
+                'metrics': scheduler.get_metrics()
+            })
+        except Exception as e:
+            return JsonResponse({
+                'status': 'error',
+                'message': str(e)
+            }, status=500)
+    else:
+        return JsonResponse({'status': 'error', 'message': 'GET method required'}, status=405)
+
+@csrf_exempt
+def reset_algorithm_metrics(request):
+    """Reset algorithm performance metrics"""
+    if request.method == 'POST':
+        try:
+            from providers.scheduling_algorithms import get_scheduler
+            scheduler = get_scheduler()
+            scheduler.reset_metrics()
+            
+            return JsonResponse({
+                'status': 'success',
+                'message': f'Metrics reset for {scheduler.name} algorithm'
+            })
+        except Exception as e:
+            return JsonResponse({
+                'status': 'error',
+                'message': str(e)
+            }, status=500)
+    else:
+        return JsonResponse({'status': 'error', 'message': 'POST method required'}, status=405)
+
+@csrf_exempt
+def toggle_experiment_mode(request):
+    """Toggle experiment mode on/off"""
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body.decode('utf-8'))
+            enable = data.get('enable', not settings.EXPERIMENT_MODE)
+            
+            settings.EXPERIMENT_MODE = enable
+            
+            return JsonResponse({
+                'status': 'success',
+                'message': f'Experiment mode {"enabled" if enable else "disabled"}',
+                'experiment_mode': enable
+            })
+        except Exception as e:
+            return JsonResponse({
+                'status': 'error',
+                'message': str(e)
+            }, status=500)
+    else:
+        return JsonResponse({'status': 'error', 'message': 'POST method required'}, status=405)
