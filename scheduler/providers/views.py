@@ -117,12 +117,12 @@ def penalise(user_id, penalty_type):
     provider.save()
 
 # mqtt client callbacks:
-def send_heartbeat(mqtt_client, scheduler_uuid):
+def send_heartbeat(mqtt_client, scheduler_name):
     """Send periodic heartbeat to load balancers"""
     while True:
         try:
             heartbeat_payload = {
-                'scheduler_uuid': scheduler_uuid,
+                'scheduler_name': scheduler_name,
                 'timestamp': time.time(),
                 'status': 'active'
             }
@@ -145,12 +145,10 @@ def on_connect(mqtt_client, userdata, flags, rc, callback_api_version):
         mqtt_client.subscribe("ROTATION")
         print("Subscribed to core topics: EVERYONE, ROTATION")
         
-        # Get scheduler UUID from database
-        scheduler_uuid = get_scheduler_id()
-        if scheduler_uuid is None:
-            print("No scheduler user record found. Cannot connect to MQTT.")
-            return
-        scheduler_topic = f"SCHEDULER_{scheduler_uuid}"
+        # Get scheduler name from environment or hostname
+        scheduler_name = os.environ.get('SCHEDULER_NAME', socket.gethostname())
+        print(f"Scheduler name: {scheduler_name}")
+        scheduler_topic = f"SCHEDULER_{scheduler_name}"
         
         # Subscribe to scheduler-specific topic
         mqtt_client.subscribe(scheduler_topic)
@@ -161,7 +159,7 @@ def on_connect(mqtt_client, userdata, flags, rc, callback_api_version):
         print("Subscribed to SCHEDULER_ANNOUNCEMENTS topic")
         
         print(f"=== SCHEDULER SUBSCRIPTION SUMMARY ===")
-        print(f"Scheduler UUID: {scheduler_uuid}")
+        print(f"Scheduler Name: {scheduler_name}")
         print(f"Scheduler Topic: {scheduler_topic}")
         print(f"Subscribed Topics:")
         print(f"  - EVERYONE (provider signals, heartbeats)")
@@ -173,7 +171,7 @@ def on_connect(mqtt_client, userdata, flags, rc, callback_api_version):
         
         # Announce scheduler identity to load balancers
         announcement = {
-            'scheduler_uuid': scheduler_uuid,
+            'scheduler_name': scheduler_name,
             'scheduler_topic': scheduler_topic,
             'status': 'online',
             'timestamp': time.time()
@@ -183,10 +181,10 @@ def on_connect(mqtt_client, userdata, flags, rc, callback_api_version):
             payload=json.dumps(announcement),
             qos=1
         )
-        print(f"Announced scheduler identity: {scheduler_uuid}")
+        print(f"Announced scheduler identity: {scheduler_name}")
         
         # Start heartbeat thread
-        heartbeat_thread = threading.Thread(target=send_heartbeat, args=(mqtt_client, scheduler_uuid))
+        heartbeat_thread = threading.Thread(target=send_heartbeat, args=(mqtt_client, scheduler_name))
         heartbeat_thread.daemon = True
         heartbeat_thread.start()
         print("Started heartbeat thread")

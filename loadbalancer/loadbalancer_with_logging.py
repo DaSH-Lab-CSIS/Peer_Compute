@@ -40,8 +40,8 @@ pending_responses = {}
 scheduler_last_seen = {}
 
 # Global to store discovered schedulers with stable ordering
-discovered_schedulers = {}  # {uuid: {topic, last_seen, status, order_index, failure_count}}
-scheduler_order = []  # List of UUIDs in stable order
+discovered_schedulers = {}  # {name: {topic, last_seen, status, order_index, failure_count}}
+scheduler_order = []  # List of scheduler names in stable order
 next_scheduler_index = 0  # Current position in round-robin
 MAX_CONSECUTIVE_FAILURES = 3  # Mark scheduler as offline after 3 consecutive failures
 
@@ -53,42 +53,42 @@ def get_loadbalancer_id():
         lb_id = f"LOADBALANCER_{hostname.split('.')[0]}"
     return lb_id
 
-def handle_scheduler_failure(scheduler_uuid: str, reason: str):
+def handle_scheduler_failure(scheduler_name: str, reason: str):
     """Handle scheduler failure with failure counting"""
-    if scheduler_uuid not in discovered_schedulers:
+    if scheduler_name not in discovered_schedulers:
         return
         
-    scheduler_info = discovered_schedulers[scheduler_uuid]
+    scheduler_info = discovered_schedulers[scheduler_name]
     
     # Increment failure count
     failure_count = scheduler_info.get('failure_count', 0) + 1
     scheduler_info['failure_count'] = failure_count
     
-    logger.warning(f"Scheduler {scheduler_uuid} failure #{failure_count}: {reason}")
+    logger.warning(f"Scheduler {scheduler_name} failure #{failure_count}: {reason}")
     
     # Only mark as offline after multiple consecutive failures
     if failure_count >= MAX_CONSECUTIVE_FAILURES:
         scheduler_info['status'] = 'offline'
-        logger.error(f"Scheduler {scheduler_uuid} marked as offline after {failure_count} consecutive failures")
+        logger.error(f"Scheduler {scheduler_name} marked as offline after {failure_count} consecutive failures")
     else:
-        logger.info(f"Scheduler {scheduler_uuid} still considered online (failure count: {failure_count}/{MAX_CONSECUTIVE_FAILURES})")
+        logger.info(f"Scheduler {scheduler_name} still considered online (failure count: {failure_count}/{MAX_CONSECUTIVE_FAILURES})")
 
-def handle_scheduler_success(scheduler_uuid: str):
+def handle_scheduler_success(scheduler_name: str):
     """Handle successful scheduler response - reset failure count"""
-    if scheduler_uuid not in discovered_schedulers:
+    if scheduler_name not in discovered_schedulers:
         return
         
-    scheduler_info = discovered_schedulers[scheduler_uuid]
+    scheduler_info = discovered_schedulers[scheduler_name]
     
     # Reset failure count on success
     if scheduler_info.get('failure_count', 0) > 0:
-        logger.info(f"Scheduler {scheduler_uuid} recovered - resetting failure count")
+        logger.info(f"Scheduler {scheduler_name} recovered - resetting failure count")
         scheduler_info['failure_count'] = 0
     
     # Ensure status is online
     if scheduler_info['status'] != 'online':
         scheduler_info['status'] = 'online'
-        logger.info(f"Scheduler {scheduler_uuid} marked as online")
+        logger.info(f"Scheduler {scheduler_name} marked as online")
 
 def get_scheduler_mqtt_topics():
     """Get list of scheduler MQTT topics from scheduler endpoints"""
@@ -314,33 +314,33 @@ def on_message(mqtt_client, userdata, msg):
     if msg.topic == "SCHEDULER_ANNOUNCEMENTS":
         try:
             announcement = json.loads(payload_str)
-            scheduler_uuid = announcement.get('scheduler_uuid')
+            scheduler_name = announcement.get('scheduler_name')
             scheduler_topic = announcement.get('scheduler_topic')
             status = announcement.get('status')
             
             if status == 'online':
                 # Check if this is a new scheduler
-                if scheduler_uuid not in discovered_schedulers:
+                if scheduler_name not in discovered_schedulers:
                     # New scheduler - add to end of order
-                    discovered_schedulers[scheduler_uuid] = {
+                    discovered_schedulers[scheduler_name] = {
                         'topic': scheduler_topic,
                         'last_seen': time.time(),
                         'status': 'online',
                         'order_index': len(scheduler_order),
                         'failure_count': 0
                     }
-                    scheduler_order.append(scheduler_uuid)
-                    logger.info(f"New scheduler discovered: {scheduler_uuid} (order index: {len(scheduler_order)-1})")
+                    scheduler_order.append(scheduler_name)
+                    logger.info(f"New scheduler discovered: {scheduler_name} (order index: {len(scheduler_order)-1})")
                 else:
                     # Existing scheduler coming back online
-                    discovered_schedulers[scheduler_uuid]['status'] = 'online'
-                    discovered_schedulers[scheduler_uuid]['last_seen'] = time.time()
-                    logger.info(f"Scheduler {scheduler_uuid} came back online")
+                    discovered_schedulers[scheduler_name]['status'] = 'online'
+                    discovered_schedulers[scheduler_name]['last_seen'] = time.time()
+                    logger.info(f"Scheduler {scheduler_name} came back online")
                     
             elif status == 'offline':
-                if scheduler_uuid in discovered_schedulers:
-                    discovered_schedulers[scheduler_uuid]['status'] = 'offline'
-                    logger.info(f"Scheduler {scheduler_uuid} went offline")
+                if scheduler_name in discovered_schedulers:
+                    discovered_schedulers[scheduler_name]['status'] = 'offline'
+                    logger.info(f"Scheduler {scheduler_name} went offline")
                     
         except Exception as e:
             logger.error(f"Error processing scheduler announcement: {e}")
@@ -364,10 +364,10 @@ def on_message(mqtt_client, userdata, msg):
     if payload_str.startswith("SCHEDULER_PONG:"):
         try:
             pong_data = json.loads(payload_str[15:])  # Remove "SCHEDULER_PONG:" prefix
-            scheduler_uuid = pong_data.get('scheduler_uuid')
-            if scheduler_uuid and scheduler_uuid in discovered_schedulers:
-                discovered_schedulers[scheduler_uuid]['last_seen'] = time.time()
-                logger.debug(f"Received heartbeat from scheduler {scheduler_uuid}")
+            scheduler_name = pong_data.get('scheduler_name')
+            if scheduler_name and scheduler_name in discovered_schedulers:
+                discovered_schedulers[scheduler_name]['last_seen'] = time.time()
+                logger.debug(f"Received heartbeat from scheduler {scheduler_name}")
         except Exception as e:
             logger.error(f"Error processing SCHEDULER_PONG: {e}")
         return
@@ -396,14 +396,14 @@ async def check_scheduler_availability(topic: str) -> bool:
     """
     Check if a scheduler is available based on recent heartbeat
     """
-    # Extract UUID from topic (SCHEDULER_{uuid})
-    scheduler_uuid = topic.replace("SCHEDULER_", "")
+    # Extract name from topic (SCHEDULER_{name})
+    scheduler_name = topic.replace("SCHEDULER_", "")
     
-    if scheduler_uuid not in discovered_schedulers:
-        logger.debug(f"Scheduler {scheduler_uuid} not in discovered list")
+    if scheduler_name not in discovered_schedulers:
+        logger.debug(f"Scheduler {scheduler_name} not in discovered list")
         return False
         
-    scheduler_info = discovered_schedulers[scheduler_uuid]
+    scheduler_info = discovered_schedulers[scheduler_name]
     last_seen = scheduler_info.get('last_seen', 0)
     current_time = time.time()
     
@@ -411,9 +411,9 @@ async def check_scheduler_availability(topic: str) -> bool:
     is_available = (current_time - last_seen) < 60.0
     
     if is_available:
-        logger.debug(f"Scheduler {scheduler_uuid} is available (last seen {current_time - last_seen:.1f}s ago)")
+        logger.debug(f"Scheduler {scheduler_name} is available (last seen {current_time - last_seen:.1f}s ago)")
     else:
-        logger.debug(f"Scheduler {scheduler_uuid} is unavailable (last seen {current_time - last_seen:.1f}s ago)")
+        logger.debug(f"Scheduler {scheduler_name} is unavailable (last seen {current_time - last_seen:.1f}s ago)")
     
     return is_available
 
@@ -425,14 +425,14 @@ async def get_next_active_scheduler() -> Optional[str]:
         
         # Get list of online schedulers in stable order
         online_schedulers = []
-        for scheduler_uuid in scheduler_order:
-            if scheduler_uuid in discovered_schedulers:
-                scheduler_info = discovered_schedulers[scheduler_uuid]
+        for scheduler_name in scheduler_order:
+            if scheduler_name in discovered_schedulers:
+                scheduler_info = discovered_schedulers[scheduler_name]
                 # Consider online if status is online and seen within last 120 seconds (more lenient)
                 # This prevents schedulers from being marked offline too quickly
                 if (scheduler_info['status'] == 'online' and 
                     (current_time - scheduler_info['last_seen']) < 120.0):
-                    online_schedulers.append(scheduler_uuid)
+                    online_schedulers.append(scheduler_name)
         
         num_online = len(online_schedulers)
         if num_online == 0:
@@ -446,10 +446,10 @@ async def get_next_active_scheduler() -> Optional[str]:
         for i in range(num_online):
             # Calculate index in the online schedulers list
             idx = (next_scheduler_index + i) % num_online
-            scheduler_uuid = online_schedulers[idx]
-            scheduler_topic = discovered_schedulers[scheduler_uuid]['topic']
+            scheduler_name = online_schedulers[idx]
+            scheduler_topic = discovered_schedulers[scheduler_name]['topic']
             
-            logger.debug(f"Trying scheduler {idx}: {scheduler_uuid} -> {scheduler_topic}")
+            logger.debug(f"Trying scheduler {idx}: {scheduler_name} -> {scheduler_topic}")
             
             # Check if scheduler is available (based on heartbeat)
             is_available = await check_scheduler_availability(scheduler_topic)
@@ -458,10 +458,10 @@ async def get_next_active_scheduler() -> Optional[str]:
                 # Update the round-robin index for next time
                 # We increment by 1, not by the number of schedulers we checked
                 next_scheduler_index = (next_scheduler_index + 1) % len(scheduler_order)
-                logger.info(f"Selected scheduler: {scheduler_uuid} (round-robin index: {next_scheduler_index})")
+                logger.info(f"Selected scheduler: {scheduler_name} (round-robin index: {next_scheduler_index})")
                 return scheduler_topic
             else:
-                logger.warning(f"Scheduler {scheduler_uuid} is DOWN. Skipping to next scheduler.")
+                logger.warning(f"Scheduler {scheduler_name} is DOWN. Skipping to next scheduler.")
         
         # If we get here, no available schedulers were found
         logger.error("No available schedulers found!")
@@ -533,8 +533,8 @@ async def process_batch():
                 logger.error(f"Timeout waiting for scheduler response from {scheduler_topic}")
                 
                 # Handle scheduler failure with failure counting
-                scheduler_uuid = scheduler_topic.replace("SCHEDULER_", "")
-                handle_scheduler_failure(scheduler_uuid, "timeout")
+                scheduler_name = scheduler_topic.replace("SCHEDULER_", "")
+                handle_scheduler_failure(scheduler_name, "timeout")
                 
                 # Reset ILP state and retry
                 ilp_state = "done"
@@ -554,16 +554,16 @@ async def process_batch():
         logger.info(f"Received response from {scheduler_topic}: {response}")
         
         # Handle successful response
-        scheduler_uuid = scheduler_topic.replace("SCHEDULER_", "")
-        handle_scheduler_success(scheduler_uuid)
+        scheduler_name = scheduler_topic.replace("SCHEDULER_", "")
+        handle_scheduler_success(scheduler_name)
         
     except Exception as e:
         logger.error(f"Error sending batch to {scheduler_topic} via MQTT: {e}")
         logger.warning(f"Scheduler {scheduler_topic} encountered error")
         
         # Handle scheduler failure with failure counting
-        scheduler_uuid = scheduler_topic.replace("SCHEDULER_", "")
-        handle_scheduler_failure(scheduler_uuid, f"exception: {str(e)}")
+        scheduler_name = scheduler_topic.replace("SCHEDULER_", "")
+        handle_scheduler_failure(scheduler_name, f"exception: {str(e)}")
             
         # Reset ILP state
         ilp_state = "done"
@@ -686,13 +686,13 @@ async def get_status():
     
     # Get online schedulers
     online_schedulers = []
-    for scheduler_uuid in scheduler_order:
-        if scheduler_uuid in discovered_schedulers:
-            scheduler_info = discovered_schedulers[scheduler_uuid]
+    for scheduler_name in scheduler_order:
+        if scheduler_name in discovered_schedulers:
+            scheduler_info = discovered_schedulers[scheduler_name]
             if (scheduler_info['status'] == 'online' and 
                 (current_time - scheduler_info['last_seen']) < 60.0):
                 online_schedulers.append({
-                    'uuid': scheduler_uuid,
+                    'name': scheduler_name,
                     'topic': scheduler_info['topic'],
                     'last_seen': scheduler_info['last_seen'],
                     'order_index': scheduler_info['order_index']
