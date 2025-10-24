@@ -45,28 +45,29 @@ import os
 data_dict = None
 BROKER_ID = "broker.hivemq.com"
 
-def get_scheduler_id():
-    """Get scheduler identifier from database User record"""
-    try:
-        # Try to find existing scheduler user record
-        scheduler_name = os.environ.get('SCHEDULER_NAME', socket.gethostname())
-        print("scheduler_name: ", scheduler_name)
+# def get_scheduler_id():
+#     """Get scheduler identifier from database User record"""
+#     try:
+#         # Try to find existing scheduler user record
+#         scheduler_name = os.environ.get('SCHEDULER_NAME', socket.gethostname())
+#         print("scheduler_name: ", scheduler_name)
         
-        # Look for a User record that represents this scheduler
-        # Sort by -last_ready_signal and choose the latest
-        scheduler_user = User.objects.filter(
-            location=scheduler_name,  # Use location field to identify scheduler
-            active=True,
-            ready=True,
-        ).order_by('-last_ready_signal').first()
+#         # Look for a User record that represents this scheduler
+#         # Sort by -last_ready_signal and choose the latest
+#         scheduler_user = User.objects.filter(
+#             location=scheduler_name,  # Use location field to identify scheduler
+#             active=True,
+#             ready=True,
+#         ).order_by('-last_ready_signal').first()
         
-        if scheduler_user:
-            return str(scheduler_user.user_id)
-        else:
-            return None
-    except User.DoesNotExist:
-        print("No scheduler user record found")
-        return None # No scheduler user record found, return None
+#         if scheduler_user:
+#             return str(scheduler_user.user_id)
+#         else:
+#             return None
+#     except User.DoesNotExist:
+#         print("No scheduler user record found")
+#         return None # No scheduler user record found, return None
+
 # BROKER_ID = "10.8.1.18"
 reference_provider_id = '34933555-5cca-41fb-aded-4ab7900c48d5'
 file_path = "/home/user/Documents/Serverless_Scheduler/SchedInfo.csv"
