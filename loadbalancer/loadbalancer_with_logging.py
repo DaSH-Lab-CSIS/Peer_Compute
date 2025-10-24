@@ -31,7 +31,7 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-# Removed get_scheduler_endpoints import - using dynamic MQTT discovery instead
+# # Removed get_scheduler_endpoints import - using dynamic MQTT discovery instead
 
 # Global to store pending responses for correlation
 pending_responses = {}
