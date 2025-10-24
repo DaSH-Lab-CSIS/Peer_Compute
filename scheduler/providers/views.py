@@ -45,29 +45,28 @@ import os
 data_dict = None
 BROKER_ID = "broker.hivemq.com"
 
-# def get_scheduler_id():
-#     """Get scheduler identifier from database User record"""
-#     try:
-#         # Try to find existing scheduler user record
-#         scheduler_name = os.environ.get('SCHEDULER_NAME', socket.gethostname())
-#         print("scheduler_name: ", scheduler_name)
+def get_scheduler_id():
+    """Get scheduler identifier from database User record"""
+    try:
+        # Try to find existing scheduler user record
+        scheduler_name = os.environ.get('SCHEDULER_NAME', socket.gethostname())
+        print("scheduler_name: ", scheduler_name)
         
-#         # Look for a User record that represents this scheduler
-#         # Sort by -last_ready_signal and choose the latest
-#         scheduler_user = User.objects.filter(
-#             location=scheduler_name,  # Use location field to identify scheduler
-#             active=True,
-#             ready=True,
-#         ).order_by('-last_ready_signal').first()
+        # Look for a User record that represents this scheduler
+        # Sort by -last_ready_signal and choose the latest
+        scheduler_user = User.objects.filter(
+            location=scheduler_name,  # Use location field to identify scheduler
+            active=True,
+            ready=True,
+        ).order_by('-last_ready_signal').first()
         
-#         if scheduler_user:
-#             return str(scheduler_user.user_id)
-#         else:
-#             return None
-#     except User.DoesNotExist:
-#         print("No scheduler user record found")
-#         return None # No scheduler user record found, return None
-
+        if scheduler_user:
+            return str(scheduler_user.user_id)
+        else:
+            return None
+    except User.DoesNotExist:
+        print("No scheduler user record found")
+        return None # No scheduler user record found, return None
 # BROKER_ID = "10.8.1.18"
 reference_provider_id = '34933555-5cca-41fb-aded-4ab7900c48d5'
 file_path = "/home/user/Documents/Serverless_Scheduler/SchedInfo.csv"
@@ -885,9 +884,9 @@ def finish_job(data):
         return
     
     # Record experiment metrics if experiment is active
-    if experiment_runner.experiment_active:
-        current_algorithm = settings.SCHEDULING_ALGORITHM
-        experiment_runner.metrics.record_job_completion(current_algorithm, job)
+    # if experiment_runner.experiment_active:
+    #     current_algorithm = settings.SCHEDULING_ALGORITHM
+    #     experiment_runner.metrics.record_job_completion(current_algorithm, job)
     
     # Update cache state after job completion
     try:
@@ -1307,8 +1306,8 @@ def find_providers(services, jobs=None):
     print("Debug: Entering find_providers")
     
     # Import here to avoid circular imports
-    from providers.scheduling_algorithms import get_scheduler
-    from providers.experiment_framework import experiment_runner
+    # from providers.scheduling_algorithms import get_scheduler
+    # from providers.experiment_framework import experiment_runner
     
     # Retry logic for database lock contention
     max_retries = 3
@@ -1335,24 +1334,15 @@ def find_providers(services, jobs=None):
                 # 3. Build Delay Dict
                 delay = build_delay_dict(suitable_providers)
 
-                # 4. Get assignment using the configured scheduling algorithm
+                # 4. Get min cost provider by calling the ILP solver
+                # Extract the list of (index, service) tuples as jobs for the minimize function
+                indexed_services = [(i, svc) for i, svc in enumerate(services)]
+                workers = list(cost_matrix.keys())
+                
                 try:
-                    # Get the scheduler based on current configuration
-                    scheduler = get_scheduler()
-                    print(f"Using scheduling algorithm: {scheduler.name}")
+                    # Call minimize_total_cost with proper arguments
+                    assignment, total_cost = minimize_total_cost(suitable_providers, indexed_services, cost_matrix, delay)
                     main_processing_succeeded = False  # Initialize flag
-                    
-                    # Get assignment from the selected algorithm
-                    assignment, total_cost = scheduler.assign_providers(
-                        suitable_providers, services, cost_matrix, delay
-                    )
-                    
-                    # Record metrics if experiment is active
-                    if experiment_runner.experiment_active and assignment:
-                        experiment_runner.metrics.record_assignment(
-                            scheduler.name, assignment, cost_matrix, delay, 
-                            scheduler.metrics.get('assignment_time', 0), services
-                        )
                     
                     if assignment is None:
                         print("Warning: No optimal solution found")
@@ -1381,8 +1371,8 @@ def find_providers(services, jobs=None):
                     # Return the original assignment format if no jobs provided
                     return assignment
                     
-                except Exception as scheduler_error:
-                    print(f"Error in scheduling algorithm: {str(scheduler_error)}")
+                except Exception as ilp_error:
+                    print(f"Error in ILP solver: {str(ilp_error)}")
                     # This will be caught by the outer exception handler
                     raise
                     
@@ -1561,171 +1551,44 @@ get_mclient()
 
 # Experiment and Algorithm Control Endpoints
 
-@csrf_exempt
-def start_algorithm_experiment(request):
-    """Start a scheduling algorithm comparison experiment"""
-    if request.method == 'POST':
-        try:
-            data = json.loads(request.body.decode('utf-8'))
-            algorithms = data.get('algorithms', ['ILP', 'MRU', 'BELADY', 'ROUND_ROBIN'])
-            iterations = data.get('iterations', 10)
-            services_per_iteration = data.get('services_per_iteration', 5)
-            
-            from providers.experiment_framework import start_experiment
-            result = start_experiment(algorithms, iterations, services_per_iteration)
-            
-            return JsonResponse({
-                'status': 'success',
-                'message': result,
-                'algorithms': algorithms,
-                'iterations': iterations,
-                'services_per_iteration': services_per_iteration
-            })
-        except Exception as e:
-            return JsonResponse({
-                'status': 'error',
-                'message': str(e)
-            }, status=500)
-    else:
-        return JsonResponse({'status': 'error', 'message': 'POST method required'}, status=405)
+# @csrf_exempt
+# def start_algorithm_experiment(request):
+#     """Start a scheduling algorithm comparison experiment"""
+#     # Commented out - experiment framework not implemented
+#     return JsonResponse({'status': 'error', 'message': 'Experiment framework not implemented'}, status=501)
 
-@csrf_exempt
-def get_experiment_status(request):
-    """Get current experiment status"""
-    from scheduler.settings import SCHEDULING_ALGORITHM
-    if request.method == 'GET':
-        try:
-            from providers.experiment_framework import get_experiment_status
-            status = get_experiment_status()
-            return JsonResponse({
-                'status': 'success',
-                'experiment': status,
-                'current_algorithm': SCHEDULING_ALGORITHM,
-            })
-        except Exception as e:
-            return JsonResponse({
-                'status': 'error',
-                'message': str(e)
-            }, status=500)
-    else:
-        return JsonResponse({'status': 'error', 'message': 'GET method required'}, status=405)
+# @csrf_exempt
+# def get_experiment_status(request):
+#     """Get current experiment status"""
+#     # Commented out - experiment framework not implemented
+#     return JsonResponse({'status': 'error', 'message': 'Experiment framework not implemented'}, status=501)
 
-@csrf_exempt
-def switch_scheduling_algorithm(request):
-    """Switch the current scheduling algorithm"""
-    if request.method == 'POST':
-        try:
-            data = json.loads(request.body.decode('utf-8'))
-            algorithm = data.get('algorithm')
-            
-            valid_algorithms = ['ILP', 'MRU', 'BELADY', 'ROUND_ROBIN']
-            if algorithm not in valid_algorithms:
-                return JsonResponse({
-                    'status': 'error',
-                    'message': f'Invalid algorithm. Valid options: {valid_algorithms}'
-                }, status=400)
-            
-            # Update Django settings (note: this only affects current instance)
-            settings.SCHEDULING_ALGORITHM = algorithm
-            
-            return JsonResponse({
-                'status': 'success',
-                'message': f'Switched to {algorithm} algorithm',
-                'algorithm': algorithm
-            })
-        except Exception as e:
-            return JsonResponse({
-                'status': 'error',
-                'message': str(e)
-            }, status=500)
-    else:
-        return JsonResponse({'status': 'error', 'message': 'POST method required'}, status=405)
+# @csrf_exempt
+# def switch_scheduling_algorithm(request):
+#     """Switch the current scheduling algorithm"""
+#     # Commented out - only ILP algorithm is currently implemented
+#     return JsonResponse({'status': 'error', 'message': 'Only ILP algorithm is currently implemented'}, status=501)
 
-@csrf_exempt
-def generate_experiment_report(request):
-    """Generate and return experiment report"""
-    if request.method == 'GET':
-        try:
-            from providers.experiment_framework import experiment_runner
-            experiment_name = request.GET.get('name', f'Manual_Report_{datetime.now().strftime("%Y%m%d_%H%M%S")}')
-            
-            report = experiment_runner.metrics.generate_report(experiment_name)
-            report_file = experiment_runner.metrics.save_report(report)
-            
-            return JsonResponse({
-                'status': 'success',
-                'report': report,
-                'report_file': report_file
-            })
-        except Exception as e:
-            return JsonResponse({
-                'status': 'error',
-                'message': str(e)
-            }, status=500)
-    else:
-        return JsonResponse({'status': 'error', 'message': 'GET method required'}, status=405)
+# @csrf_exempt
+# def generate_experiment_report(request):
+#     """Generate and return experiment report"""
+#     # Commented out - experiment framework not implemented
+#     return JsonResponse({'status': 'error', 'message': 'Experiment framework not implemented'}, status=501)
 
-@csrf_exempt 
-def get_algorithm_metrics(request):
-    """Get current algorithm performance metrics"""
-    if request.method == 'GET':
-        try:
-            from providers.scheduling_algorithms import get_scheduler
-            scheduler = get_scheduler()
-            
-            return JsonResponse({
-                'status': 'success',
-                'algorithm': scheduler.name,
-                'metrics': scheduler.get_metrics()
-            })
-        except Exception as e:
-            return JsonResponse({
-                'status': 'error',
-                'message': str(e)
-            }, status=500)
-    else:
-        return JsonResponse({'status': 'error', 'message': 'GET method required'}, status=405)
+# @csrf_exempt 
+# def get_algorithm_metrics(request):
+#     """Get current algorithm performance metrics"""
+#     # Commented out - only ILP algorithm is currently implemented
+#     return JsonResponse({'status': 'error', 'message': 'Only ILP algorithm is currently implemented'}, status=501)
 
-@csrf_exempt
-def reset_algorithm_metrics(request):
-    """Reset algorithm performance metrics"""
-    if request.method == 'POST':
-        try:
-            from providers.scheduling_algorithms import get_scheduler
-            scheduler = get_scheduler()
-            scheduler.reset_metrics()
-            
-            return JsonResponse({
-                'status': 'success',
-                'message': f'Metrics reset for {scheduler.name} algorithm'
-            })
-        except Exception as e:
-            return JsonResponse({
-                'status': 'error',
-                'message': str(e)
-            }, status=500)
-    else:
-        return JsonResponse({'status': 'error', 'message': 'POST method required'}, status=405)
+# @csrf_exempt
+# def reset_algorithm_metrics(request):
+#     """Reset algorithm performance metrics"""
+#     # Commented out - only ILP algorithm is currently implemented
+#     return JsonResponse({'status': 'error', 'message': 'Only ILP algorithm is currently implemented'}, status=501)
 
-@csrf_exempt
-def toggle_experiment_mode(request):
-    """Toggle experiment mode on/off"""
-    if request.method == 'POST':
-        try:
-            data = json.loads(request.body.decode('utf-8'))
-            enable = data.get('enable', not settings.EXPERIMENT_MODE)
-            
-            settings.EXPERIMENT_MODE = enable
-            
-            return JsonResponse({
-                'status': 'success',
-                'message': f'Experiment mode {"enabled" if enable else "disabled"}',
-                'experiment_mode': enable
-            })
-        except Exception as e:
-            return JsonResponse({
-                'status': 'error',
-                'message': str(e)
-            }, status=500)
-    else:
-        return JsonResponse({'status': 'error', 'message': 'POST method required'}, status=405)
+# @csrf_exempt
+# def toggle_experiment_mode(request):
+#     """Toggle experiment mode on/off"""
+#     # Commented out - experiment framework not implemented
+#     return JsonResponse({'status': 'error', 'message': 'Experiment framework not implemented'}, status=501)
