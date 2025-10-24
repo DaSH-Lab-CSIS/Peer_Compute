@@ -31,7 +31,7 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from scheduler.scheduler.settings import get_scheduler_endpoints
+# Removed get_scheduler_endpoints import - using dynamic MQTT discovery instead
 
 # Global to store pending responses for correlation
 pending_responses = {}
@@ -90,22 +90,22 @@ def handle_scheduler_success(scheduler_name: str):
         scheduler_info['status'] = 'online'
         logger.info(f"Scheduler {scheduler_name} marked as online")
 
-def get_scheduler_mqtt_topics():
-    """Get list of scheduler MQTT topics from scheduler endpoints"""
-    scheduler_endpoints = get_scheduler_endpoints()
-    topics = []
+# def get_scheduler_mqtt_topics():
+#     """Get list of scheduler MQTT topics from scheduler endpoints"""
+#     scheduler_endpoints = get_scheduler_endpoints()
+#     topics = []
     
-    for endpoint in scheduler_endpoints:
-        # Extract identifier from endpoint URL
-        # e.g., http://10.8.1.18:8000 -> SCHEDULER_10_8_1_18
-        # or http://hostname:8000 -> SCHEDULER_hostname
-        if '://' in endpoint:
-            host = endpoint.split('://')[1].split(':')[0]
-            # Replace dots with underscores for valid MQTT topic
-            scheduler_id = host.replace('.', '_')
-            topics.append(f"SCHEDULER_{scheduler_id}")
+#     for endpoint in scheduler_endpoints:
+#         # Extract identifier from endpoint URL
+#         # e.g., http://10.8.1.18:8000 -> SCHEDULER_10_8_1_18
+#         # or http://hostname:8000 -> SCHEDULER_hostname
+#         if '://' in endpoint:
+#             host = endpoint.split('://')[1].split(':')[0]
+#             # Replace dots with underscores for valid MQTT topic
+#             scheduler_id = host.replace('.', '_')
+#             topics.append(f"SCHEDULER_{scheduler_id}")
         
-    return topics
+#     return topics
 
 def check_experiment_mode():
     """Check if experiment mode is enabled"""
