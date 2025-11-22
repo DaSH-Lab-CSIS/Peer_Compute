@@ -31,7 +31,32 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-# # Removed get_scheduler_endpoints import - using dynamic MQTT discovery instead
+# Removed get_scheduler_endpoints import - using dynamic MQTT discovery instead
+
+# UDP Log Handler for sending logs to viewer
+LOG_INGEST_HOST = os.getenv("LOG_INGEST_HOST", "127.0.0.1")
+LOG_INGEST_PORT = int(os.getenv("LOG_INGEST_PORT", "9999"))
+
+class UdpJSONLogHandler(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.setblocking(False)
+
+    def emit(self, record):
+        try:
+            data = {
+                "ts": time.time(),
+                "level": record.levelname,
+                "logger": record.name,
+                "msg": record.getMessage(),
+                "module": record.module,
+                "func": record.funcName,
+                "line": record.lineno,
+            }
+            self.sock.sendto(json.dumps(data).encode(), (LOG_INGEST_HOST, LOG_INGEST_PORT))
+        except Exception:
+            pass  # Silently ignore UDP send failures to avoid affecting main flow
 
 # Global to store pending responses for correlation
 pending_responses = {}
@@ -224,6 +249,10 @@ logging.basicConfig(
     )
 logger = logging.getLogger(__name__)
 
+# Attach UDP handler for log viewer
+udp_handler = UdpJSONLogHandler()
+logger.addHandler(udp_handler)
+
 # Configuration
 class Config:
     def __init__(self):
@@ -234,7 +263,7 @@ class Config:
         # No need for static SCHEDULER_MQTT_TOPICS
         
         logger.info("Scheduler discovery enabled - will discover schedulers via MQTT announcements")
-        
+
         # Load from config file if it exists
         self.load_from_file("LB.conf")
     
@@ -462,7 +491,7 @@ async def get_next_active_scheduler() -> Optional[str]:
                 return scheduler_topic
             else:
                 logger.warning(f"Scheduler {scheduler_name} is DOWN. Skipping to next scheduler.")
-        
+                
         # If we get here, no available schedulers were found
         logger.error("No available schedulers found!")
         return None
