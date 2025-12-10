@@ -194,18 +194,40 @@ def on_connect(mqtt_client, userdata, flags, rc, callback_api_version):
 def on_message(mqtt_client, userdata, msg):
     print('from views.py/providers ')
     print(f'Received message on topic: {msg.topic} with payload: {msg.payload}')
+    # Try to parse as JSON first (for job completion messages)
     try:
         data = json.loads(msg.payload.decode("utf-8"))
-        if(data['stage'] == 'dockernotrun'): print("pulled but docker not run")
-        if(data['stage'] == 'dockerrun'):
-            print(f"data[stage]==dockerrun works")
-            print(data)
-            finish_job(data)
-            # mqtt_client.loop_stop()
-            # mqtt_client.disconnect()
-            # receive_job_data(data_dic t)
-    except:
-        print(msg.topic,msg.payload.decode("utf-8"))
+        
+        # Only process messages with 'stage' field (job completion messages)
+        if 'stage' in data:
+            if(data['stage'] == 'dockernotrun'): 
+                print("pulled but docker not run")
+            if(data['stage'] == 'dockerrun'):
+                print(f"data[stage]==dockerrun works")
+                print(data)
+                try:
+                    finish_job(data)
+                except Exception as finish_error:
+                    print(f"ERROR: Exception in finish_job: {str(finish_error)}")
+                    import traceback
+                    traceback.print_exc()
+            # Job completion message processed, return early
+            return
+        # If JSON message doesn't have 'stage', it's not a job completion message
+        # Continue below to handle as a string message (signals, etc.)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        # JSON parsing failed - continue to handle as string message below
+        pass
+    except Exception as e:
+        # Other errors during JSON processing
+        print(f"Error processing JSON message: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        # Continue to handle as string message
+    
+    # Handle non-JSON messages (signals, etc.) or JSON messages without 'stage'
+    try:
+        print(msg.topic, msg.payload.decode("utf-8"))
         payload_str = msg.payload.decode("utf-8")
         
         # Handle new MQTT-based provider signals
@@ -268,6 +290,10 @@ def on_message(mqtt_client, userdata, msg):
                 
                 print(f"Received BATCH_REQUEST with correlation_id: {correlation_id}")
                 
+                # Record timestamp when scheduler receives the batch
+                scheduler_received_time = datetime.now(tz=timezone(TIME_ZONE))
+                scheduler_received_time_iso = scheduler_received_time.isoformat()
+                
                 # Process batch (reuse run_service_async_batch logic)
                 services = []
                 requests_data = []
@@ -287,6 +313,10 @@ def on_message(mqtt_client, userdata, msg):
                             results.append({'error': f'Service {service_id} is disabled'})
                             continue
                         
+                        # Add scheduler received time to request data (preserve lb_received_time if present)
+                        req_data['_scheduler_received_time'] = scheduler_received_time_iso
+                        # lb_received_time should already be in req_data from load balancer
+                        
                         services.append(service)
                         requests_data.append(req_data)
                         
@@ -302,12 +332,21 @@ def on_message(mqtt_client, userdata, msg):
                         results.append({'error': f'Failed to process request: {str(e)}'})
                 
                 # Process the batch synchronously to get actual results
+                ilp_solve_time = None
                 if services:
                     print(f"Starting ILP processing for {len(services)} services...")
                     try:
+                        # Measure ILP solve time
+                        import time as time_module
+                        ilp_start_time = time_module.time()
+                        
                         # Call request_handler directly (not in a thread) to get results
                         batch_results = request_handler(requests_data, services, temp_time, False)
-                        print(f"ILP processing completed. Results: {batch_results}")
+                        
+                        ilp_end_time = time_module.time()
+                        ilp_solve_time = ilp_end_time - ilp_start_time
+                        
+                        print(f"ILP processing completed in {ilp_solve_time:.3f}s. Results: {batch_results}")
                         
                         # Update results with actual processing results
                         if batch_results and len(batch_results) > 0:
@@ -328,6 +367,7 @@ def on_message(mqtt_client, userdata, msg):
                     'status': 'success',
                     'batch_size': len(batch_data['requests']),
                     'processed': processed_count,
+                    'ilp_solve_time': ilp_solve_time,  # Include ILP solve time
                     'results': results
                 }
                 mqtt_client.publish(
@@ -395,6 +435,11 @@ def on_message(mqtt_client, userdata, msg):
                 scoreset = {'cpu': cpu_score, 'memory': memory_score}
                 mqtt_client.publish(topic=user_id, payload="EfficiencyScoreSet:"+json.dumps(scoreset),qos=2)
                 
+    except Exception as e:
+        # Handle any errors during string message processing
+        print(f"Error processing string message from {msg.topic}: {str(e)}")
+        import traceback
+        traceback.print_exc()
 
 
 def on_subscribe(mqtt_client, userdata, mid, qos, properties=None):
@@ -403,13 +448,24 @@ def on_subscribe(mqtt_client, userdata, mid, qos, properties=None):
 def get_mclient():
     global mclient
     if(mclient == None):
-        mclient = mqtt.Client(callback_api_version= mqtt.CallbackAPIVersion.VERSION2)
-        mclient.on_connect = on_connect
-        mclient.on_message = on_message
-        mclient.on_subscribe= on_subscribe
-        mclient.connect(host=BROKER_ID,port=1883)
-        mclient.subscribe("ROTATION")  # Subscribe to ROTATION topic
-        mclient.loop_start()
+        try:
+            mclient = mqtt.Client(callback_api_version= mqtt.CallbackAPIVersion.VERSION2)
+            mclient.on_connect = on_connect
+            mclient.on_message = on_message
+            mclient.on_subscribe= on_subscribe
+            mclient.connect(host=BROKER_ID,port=1883)
+            mclient.subscribe("ROTATION")  # Subscribe to ROTATION topic
+            mclient.loop_start()
+            print(f"✅ MQTT client connected to {BROKER_ID}:1883")
+        except Exception as e:
+            print(f"⚠️  Warning: Failed to connect to MQTT broker {BROKER_ID}:1883 - {e}")
+            print("   MQTT functionality will be unavailable. Server will continue running.")
+            print("   This may be due to network connectivity issues.")
+            # Set mclient to a sentinel value to prevent repeated connection attempts
+            mclient = "DISCONNECTED"
+            return None
+    if mclient == "DISCONNECTED":
+        return None
     return mclient
 
 # mqtt global communications, all providers are subbed to this topic and the schedule is too
@@ -466,6 +522,9 @@ def publish_to_topic_mqtt(runMultipleInvocations, numberOfInvocations, isChained
     }  
     #makes a new client everytime it pubtotopic is called.
     mclient = get_mclient()
+    if mclient is None:
+        print(f'⚠️  Warning: MQTT client unavailable. Cannot publish to {router_name}')
+        raise Exception("MQTT broker is unreachable. Cannot send job to provider.")
     mclient.subscribe(topic=router_name)
     
     print(f'=== PUBLISHING MQTT MESSAGE ===')
@@ -657,6 +716,46 @@ def set_reference_stats(request):
     # convert this service_id to task link before publishing. # Rn, we are actually directly passing in task link only.
     client.publish(topic=reference_provider_id, payload="ref_run_service_id/"+service_id)
     return JsonResponse({'State':'Running service on the reference provider, stats will be printed on django server and added to files also'})
+
+@csrf_exempt
+def get_user_id(request):
+    """
+    Get the latest user_id for a provider at a given location.
+    
+    Query parameters:
+        location: Location string (e.g., 'colva2', 'colva3')
+    
+    Returns:
+        JSON with user_id if found, error message otherwise
+    """
+    if request.method == 'GET':
+        location = request.GET.get('location')
+        if not location:
+            return JsonResponse({'error': 'location parameter is required'}, status=400)
+        
+        try:
+            # Get the latest active provider at this location
+            provider = User.objects.filter(
+                is_provider=True,
+                active=True,
+                location=location
+            ).order_by('-last_ready_signal', '-id').first()
+            
+            if provider:
+                return JsonResponse({
+                    'user_id': str(provider.user_id),
+                    'location': provider.location,
+                    'ready': provider.ready,
+                    'last_ready_signal': provider.last_ready_signal.isoformat() if provider.last_ready_signal else None
+                })
+            else:
+                return JsonResponse({
+                    'error': f'No active provider found for location: {location}'
+                }, status=404)
+        except Exception as e:
+            return JsonResponse({'error': str(e)}, status=500)
+    else:
+        return JsonResponse({'error': 'Only GET method is supported'}, status=405)
 # class RpcClient(object):
 #     """
 #     This is the rabbitmq RpcClient class.
@@ -733,10 +832,18 @@ def request_handler(data, service, start_time, run_async=False):
         services = service
         data_items = data
     
+    # Create request_data_map: service.id -> request data (for timestamps)
+    request_data_map = {}
+    if is_batch:
+        for svc, req_data in zip(services, data_items):
+            request_data_map[svc.id] = req_data
+    else:
+        request_data_map[services[0].id] = data_items[0]
+    
     while attempt < max_attempts:
         try:
             # Find providers for all services at once
-            assignment = find_providers(services)
+            assignment = find_providers(services, request_data_map=request_data_map)
             if not assignment:
                 print("No providers available for services")
                 attempt += 1
@@ -838,8 +945,12 @@ def finish_job(data):
     print("=== JOB COMPLETION PROCESSING ===")
     print(f"Inside finish_job with data: {data}")
     
-    # Import here to avoid circular imports
-    from providers.experiment_framework import experiment_runner
+    # Import here to avoid circular imports (optional - may not exist)
+    try:
+        from providers.experiment_framework import experiment_runner
+    except ImportError:
+        # experiment_framework is optional - continue without it
+        experiment_runner = None
     
     #here unpack the data load job from job id and update and save it.
     id = data['job_id']
@@ -848,7 +959,8 @@ def finish_job(data):
     try:
         job = Job.objects.get(pk=id)
         print(f"Found job {id} in database")
-        print(f"Job details - Provider: {job.provider.user_id}, Service: {job.service.id}, Status: {job.finished}")
+        service_info = f"Service: {job.service.id}" if job.service else "Service: None"
+        print(f"Job details - Provider: {job.provider.user_id}, {service_info}, Status: {job.finished}")
         
         # Handle both dict and string data formats
         if isinstance(data, dict):
@@ -866,7 +978,14 @@ def finish_job(data):
         job.run_time = response_decoded['run_time']
         job.total_time = response_decoded['total_time']
         job.cost = (response_decoded['total_time'])
-        job.response = response_decoded['Result']
+        
+        # Convert Result to JSON string if it's a dict/list, otherwise convert to string
+        result = response_decoded.get('Result', {})
+        if isinstance(result, (dict, list)):
+            job.response = json.dumps(result)
+        else:
+            job.response = str(result)
+        
         job.finished = True
         
         print(f"Job state after update - pull_time: {job.pull_time}, run_time: {job.run_time}, total_time: {job.total_time}, finished: {job.finished}")
@@ -874,8 +993,51 @@ def finish_job(data):
         job.save()
         print(f"Job {id} successfully updated and saved to database")
         
+        # Update cache state after job completion (inside try block to ensure job is saved first)
+        try:
+            if job.service:
+                # Assume the image is stored in memory after execution
+                # In a real implementation, this would come from the provider's report
+                provider = job.provider
+                service_id = job.service.id
+                cache_location = 'memory'  # Default assumption - provider would report actual location
+                
+                # Update the cache state in the provider's model
+                if hasattr(provider, 'update_cache_state'):
+                    provider.update_cache_state(service_id, cache_location)
+                    print(f"Updated cache state for provider {provider.user_id} and service {service_id}")
+        except Exception as e:
+            print(f"Error updating cache state: {str(e)}")
+        
+        # Calculate providing time safely (handle None ack_time)
+        try:
+            if job.ack_time is not None and job.start_time is not None:
+                providing_time = int(((job.ack_time - job.start_time)/timedelta(microseconds=1))/1000)  # Providing time in milliseconds
+                print(f"Providing time: {providing_time}ms")
+            else:
+                print(f"Warning: Cannot calculate providing time - ack_time: {job.ack_time}, start_time: {job.start_time}")
+        except Exception as e:
+            print(f"Error calculating providing time: {str(e)}")
+        
+        # Handle Fabric integration if enabled
+        if USE_FABRIC:
+            try:
+                r = fabric.invoke_received_result(str(job.id))
+                if 'jwt expired' in r.text or 'jwt malformed' in r.text or 'User was not found' in r.text:
+                    token = fabric.register_user()
+                    r = fabric.invoke_received_result(str(job.id), token=token)
+            except Exception as e:
+                print(f"Error invoking Fabric result: {str(e)}")
+        
+        # Record experiment metrics if experiment is active
+        # if experiment_runner.experiment_active:
+        #     current_algorithm = settings.SCHEDULING_ALGORITHM
+        #     experiment_runner.metrics.record_job_completion(current_algorithm, job)
+        
     except Job.DoesNotExist:
         print(f"ERROR: Job {id} not found in database!")
+        import traceback
+        traceback.print_exc()
         return
     except Exception as e:
         print(f"ERROR: Failed to update job {id}: {str(e)}")
@@ -883,31 +1045,6 @@ def finish_job(data):
         traceback.print_exc()
         return
     
-    # Record experiment metrics if experiment is active
-    # if experiment_runner.experiment_active:
-    #     current_algorithm = settings.SCHEDULING_ALGORITHM
-    #     experiment_runner.metrics.record_job_completion(current_algorithm, job)
-    
-    # Update cache state after job completion
-    try:
-        # Assume the image is stored in memory after execution
-        # In a real implementation, this would come from the provider's report
-        provider = job.provider
-        service_id = job.service.id
-        cache_location = 'memory'  # Default assumption - provider would report actual location
-        
-        # Update the cache state in the provider's model
-        provider.update_cache_state(service_id, cache_location)
-        print(f"Updated cache state for provider {provider.user_id} and service {service_id}")
-    except Exception as e:
-        print(f"Error updating cache state: {str(e)}")
-    
-    providing_time = int(((job.ack_time - job.start_time)/timedelta(microseconds=1))/1000) # Providing time in milliseconds
-    if USE_FABRIC:
-        r = fabric.invoke_received_result(str(job.id))
-        if 'jwt expired' in r.text or 'jwt malformed' in r.text or 'User was not found' in r.text:
-            token = fabric.register_user()
-            r = fabric.invoke_received_result(str(job.id), token=token)
     return
 
 def queue_jobs(service):
@@ -1175,9 +1312,18 @@ def build_delay_dict(providers):
     print("Exiting build_delay_dict")
     return delay
 
-def process_assignments(assignment, cost_matrix):
+def process_assignments(assignment, cost_matrix, request_data_map=None):
+    """
+    Process job assignments and create Job objects.
+    
+    Args:
+        assignment: Dictionary mapping (index, service) to provider
+        cost_matrix: Cost matrix for ILP
+        request_data_map: Optional dict mapping service.id to request data (for timestamps)
+    """
     print("\nEntering process_assignments")
     jobs_to_send = []  # Store jobs to send after transaction
+    assigned_time = datetime.now(tz=timezone(TIME_ZONE))  # Time when jobs are assigned to providers
     
     # Database operations inside transaction
     with transaction.atomic():
@@ -1196,14 +1342,52 @@ def process_assignments(assignment, cost_matrix):
             # No need to lock again - this was causing self-deadlock
             print(f"Using provider: {provider.user_id} (already locked)")
             
-            # Create a Job instance with CREATED status
+            # Extract timestamps from request data if available
+            lb_received_time = None
+            scheduler_received_time = None
+            
+            if request_data_map and service.id in request_data_map:
+                req_data = request_data_map[service.id]
+                # Parse timestamps from ISO format strings
+                if '_lb_received_time' in req_data:
+                    try:
+                        # Handle ISO format with timezone (replace Z with +00:00 for Python <3.11)
+                        time_str = req_data['_lb_received_time'].replace('Z', '+00:00')
+                        lb_received_time = datetime.fromisoformat(time_str)
+                        # Convert to local timezone if needed
+                        if lb_received_time.tzinfo:
+                            lb_received_time = lb_received_time.astimezone(timezone(TIME_ZONE))
+                    except Exception as e:
+                        print(f"Error parsing lb_received_time: {e}")
+                        pass
+                if '_scheduler_received_time' in req_data:
+                    try:
+                        # Handle ISO format with timezone
+                        time_str = req_data['_scheduler_received_time'].replace('Z', '+00:00')
+                        scheduler_received_time = datetime.fromisoformat(time_str)
+                        # Convert to local timezone if needed
+                        if scheduler_received_time.tzinfo:
+                            scheduler_received_time = scheduler_received_time.astimezone(timezone(TIME_ZONE))
+                    except Exception as e:
+                        print(f"Error parsing scheduler_received_time: {e}")
+                        pass
+            
+            # Create a Job instance with CREATED status and timestamps
             job = Job.objects.create(
                 provider=provider,
                 service=service,
                 developer=service.developer,
-                finished=False
+                finished=False,
+                lb_received_time=lb_received_time,
+                scheduler_received_time=scheduler_received_time,
+                assigned_to_provider_time=assigned_time
             )
             print(f"Created job with ID: {job.id}")
+            if lb_received_time:
+                print(f"  LB received: {lb_received_time}")
+            if scheduler_received_time:
+                print(f"  Scheduler received: {scheduler_received_time}")
+            print(f"  Assigned to provider: {assigned_time}")
             
             # Get predicted runtime from cost_matrix if available
             try:
@@ -1302,7 +1486,15 @@ def process_assignments(assignment, cost_matrix):
     mqtt_client.publish(topic="ROTATION", payload="ILP_DONE", qos=2)
     print("Published ILP_DONE to ROTATION topic")
 
-def find_providers(services, jobs=None):
+def find_providers(services, jobs=None, request_data_map=None):
+    """
+    Find providers for services using ILP.
+    
+    Args:
+        services: List of Service objects
+        jobs: Optional jobs parameter (legacy)
+        request_data_map: Optional dict mapping service.id to request data (for timestamps)
+    """
     print("Debug: Entering find_providers")
     
     # Import here to avoid circular imports
@@ -1349,7 +1541,7 @@ def find_providers(services, jobs=None):
                         return None
                         
                     # 5. Process assignments - Invoke providers and update job status
-                    process_assignments(assignment, cost_matrix)
+                    process_assignments(assignment, cost_matrix, request_data_map)
                     main_processing_succeeded = True  # Flag to prevent fallback from running
                     print(f"DEBUG: Main processing succeeded, flag set to: {main_processing_succeeded}")
                     
@@ -1424,7 +1616,7 @@ def find_providers(services, jobs=None):
                     
                         # Process the assignment with the updated cost_matrix
                         print(f"Using fallback cost matrix entry: {cost_matrix[provider][(0, service)]}")
-                        process_assignments(assignment, cost_matrix)
+                        process_assignments(assignment, cost_matrix, request_data_map)
                         
                         # Handle job mapping if needed
                         if jobs is not None and len(jobs) == 1:
@@ -1547,7 +1739,13 @@ def find_provider(service):
 
 # MAIN CODE:
 
-get_mclient()
+# Initialize MQTT client lazily - don't fail if broker is unreachable
+# This allows the server to start even if MQTT is unavailable
+try:
+    get_mclient()
+except Exception as e:
+    print(f"⚠️  Warning: Could not initialize MQTT client at startup: {e}")
+    print("   Server will continue, but MQTT functionality may be unavailable.")
 
 # Experiment and Algorithm Control Endpoints
 
