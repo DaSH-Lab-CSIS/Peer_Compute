@@ -26,6 +26,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 import sys
 import os
+from collections import deque
 # Add the project root to the Python path
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
@@ -306,11 +307,16 @@ class BatchState:
     def __init__(self):
         self.current_batch: List[Dict[str, Any]] = []
         self.last_batch_time = time.time()
+        self.current_batch_id: Optional[str] = None
+        self.current_batch_formation_time: Optional[float] = None
         # Remove current_scheduler_index since we use global next_scheduler_index
         # Remove scheduler_health since we track health in discovered_schedulers
         self.lock = asyncio.Lock()
 
 batch_state = BatchState()
+
+# Track processed batches for historical data (use deque for efficient FIFO)
+processed_batches = deque(maxlen=100)  # Keep last 100 batches
 
 # MQTT Configuration
 BROKER_ID = "broker.hivemq.com"
@@ -394,9 +400,23 @@ def on_message(mqtt_client, userdata, msg):
         try:
             pong_data = json.loads(payload_str[15:])  # Remove "SCHEDULER_PONG:" prefix
             scheduler_name = pong_data.get('scheduler_name')
-            if scheduler_name and scheduler_name in discovered_schedulers:
-                discovered_schedulers[scheduler_name]['last_seen'] = time.time()
-                logger.debug(f"Received heartbeat from scheduler {scheduler_name}")
+            if scheduler_name:
+                if scheduler_name in discovered_schedulers:
+                    # Update existing scheduler
+                    discovered_schedulers[scheduler_name]['last_seen'] = time.time()
+                    logger.debug(f"Received heartbeat from scheduler {scheduler_name}")
+                else:
+                    # Discover new scheduler from heartbeat (in case we missed the announcement)
+                    scheduler_topic = f"SCHEDULER_{scheduler_name}"
+                    discovered_schedulers[scheduler_name] = {
+                        'topic': scheduler_topic,
+                        'last_seen': time.time(),
+                        'status': 'online',
+                        'order_index': len(scheduler_order),
+                        'failure_count': 0
+                    }
+                    scheduler_order.append(scheduler_name)
+                    logger.info(f"New scheduler discovered from heartbeat: {scheduler_name} (order index: {len(scheduler_order)-1})")
         except Exception as e:
             logger.error(f"Error processing SCHEDULER_PONG: {e}")
         return
@@ -506,15 +526,26 @@ async def process_batch():
         logger.debug("ILP is in progress. Waiting to process batch...")
         return
     
+    batch_id = None
+    batch_formation_time = None
+    batch_size = 0
+    
     async with batch_state.lock:
         if not batch_state.current_batch:
             logger.debug("No batch to process (batch is empty)")
             return
             
         batch_to_send = batch_state.current_batch.copy()
-        logger.info(f"Processing batch with {len(batch_to_send)} requests")
+        batch_id = batch_state.current_batch_id
+        batch_formation_time = batch_state.current_batch_formation_time
+        batch_size = len(batch_to_send)
         
+        logger.info(f"Processing batch {batch_id} with {batch_size} requests")
+        
+        # Clear current batch
         batch_state.current_batch = []
+        batch_state.current_batch_id = None
+        batch_state.current_batch_formation_time = None
         batch_state.last_batch_time = time.time()
     
     # Find an active scheduler
@@ -581,6 +612,29 @@ async def process_batch():
         response = pending_responses[correlation_id]
         del pending_responses[correlation_id]
         logger.info(f"Received response from {scheduler_topic}: {response}")
+        
+        # Record batch processing completion
+        processing_end_time = time.time()
+        processing_time = processing_end_time - batch_formation_time if batch_formation_time else 0
+        
+        batch_info = {
+            'batch_id': batch_id,
+            'batch_size': batch_size,
+            'formation_time': batch_formation_time,
+            'processing_start_time': batch_formation_time,
+            'processing_end_time': processing_end_time,
+            'processing_time': processing_time,
+            'scheduler_name': scheduler_topic.replace("SCHEDULER_", ""),
+            'correlation_id': correlation_id,
+            'status': response.get('status', 'unknown'),
+            'processed_count': response.get('processed', 0),
+            'ilp_solve_time': response.get('ilp_solve_time'),  # If scheduler includes it
+            'results': response.get('results', [])
+        }
+        
+        # Add to historical batches
+        processed_batches.append(batch_info)
+        logger.info(f"Recorded batch {batch_id} processing: {processing_time:.3f}s")
         
         # Handle successful response
         scheduler_name = scheduler_topic.replace("SCHEDULER_", "")
@@ -671,6 +725,12 @@ async def submit_request(request: Request, background_tasks: BackgroundTasks):
     body = await request.json()
     logger.debug(f"Received request on /submit endpoint: {body}")
     
+    # Add timestamp when request is received at load balancer
+    from datetime import datetime
+    import pytz
+    # Use UTC for consistency across distributed system
+    body['_lb_received_time'] = datetime.now(pytz.UTC).isoformat()
+    
     async with batch_state.lock:
         # Add the request to the current batch
         batch_state.current_batch.append(body)
@@ -692,6 +752,13 @@ async def run_service(request: Request, background_tasks: BackgroundTasks):
     # Parse the request body
     body = await request.json()
     logger.debug(f"Received request on /loadbalancer/run_service/ endpoint: {body}")
+    
+    # Add timestamp when request is received at load balancer
+    from datetime import datetime
+    from pytz import timezone
+    import pytz
+    # Use UTC for consistency across distributed system
+    body['_lb_received_time'] = datetime.now(pytz.UTC).isoformat()
     
     async with batch_state.lock:
         # Add the request to the current batch
@@ -728,9 +795,17 @@ async def get_status():
                 })
     
     async with batch_state.lock:
+        current_batch_id = batch_state.current_batch_id
+        batch_formation_time = batch_state.current_batch_formation_time
+        batch_age = current_time - batch_formation_time if batch_formation_time else 0
+        
+        # Convert deque to list for JSON serialization
+        recent_batches = list(processed_batches)
+        
         return {
             "current_batch_size": len(batch_state.current_batch),
-            "batch_age_seconds": time.time() - batch_state.last_batch_time,
+            "current_batch_id": current_batch_id,
+            "batch_age_seconds": batch_age,
             "discovered_schedulers": len(discovered_schedulers),
             "online_schedulers": len(online_schedulers),
             "next_scheduler_index": next_scheduler_index,
@@ -740,7 +815,28 @@ async def get_status():
             "config": {
                 "batch_size": settings.BATCH_SIZE,
                 "batch_timeout": settings.BATCH_TIMEOUT_SECONDS
-            }
+            },
+            "recent_batches": recent_batches[-10:]  # Last 10 batches
         }
+
+@app.get("/batch/{batch_id}")
+async def get_batch_info(batch_id: str):
+    """Get information about a specific processed batch"""
+    # Search in recent batches
+    for batch in processed_batches:
+        if batch.get('batch_id') == batch_id:
+            return batch
+    
+    return {"error": "Batch not found", "batch_id": batch_id}
+
+@app.get("/batches/recent")
+async def get_recent_batches(limit: int = 20):
+    """Get recent processed batches with ILP metrics"""
+    recent = list(processed_batches)[-limit:]
+    return {
+        "total_batches": len(processed_batches),
+        "returned_batches": len(recent),
+        "batches": recent
+    }
 
 # Run with: uvicorn loadbalancer_with_logging:app --host 0.0.0.0 --port 9001 --reload 

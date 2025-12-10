@@ -1,0 +1,313 @@
+(.venv) peercompute@colva2:~/Serverless_Scheduler_sn34kyp3t3$ python provider/provider1.py ff898965-5c47-41af-b447-5b538a0c7847
+2025-11-28 18:09:01 - INFO - Scheduler discovery enabled - will discover schedulers via MQTT announcements
+Warning: Could not set up experiment logging: cannot import name 'get_experiment_log_dir' from 'loadbalancer.loadbalancer_with_logging' (/home/peercompute/Serverless_Scheduler_sn34kyp3t3/loadbalancer/loadbalancer_with_logging.py)
+PID: 3975728
+2025-11-28 18:09:01 - DEBUG - Trying paths: ['/home/peercompute/.docker/config.json', '/home/peercompute/.dockercfg']
+2025-11-28 18:09:01 - DEBUG - No config file found
+2025-11-28 18:09:01 - DEBUG - Trying paths: ['/home/peercompute/.docker/config.json', '/home/peercompute/.dockercfg']
+2025-11-28 18:09:01 - DEBUG - No config file found
+2025-11-28 18:09:01 - DEBUG - http://localhost:None "GET /version HTTP/1.1" 200 825
+2025-11-28 18:09:01 - DEBUG - Trying paths: ['/home/peercompute/.docker/config.json', '/home/peercompute/.dockercfg']
+2025-11-28 18:09:01 - DEBUG - No config file found
+2025-11-28 18:09:01 - DEBUG - Trying paths: ['/home/peercompute/.docker/config.json', '/home/peercompute/.dockercfg']
+2025-11-28 18:09:01 - DEBUG - No config file found
+2025-11-28 18:09:01 - DEBUG - http://localhost:None "GET /version HTTP/1.1" 200 825
+Waiting for scheduler subscription confirmation...
+Connected successfully
+=== MQTT MESSAGE RECEIVED ===
+Topic: ff898965-5c47-41af-b447-5b538a0c7847
+Payload: b'SUBSCRIPTION_CONFIRMED'
+Timestamp: 2025-11-28 18:09:02
+================================
+Scheduler confirmed subscription, sending startup signals...
+STARTUP signal sent to scheduler
+READY signal sent to scheduler
+=== MQTT MESSAGE RECEIVED ===
+Topic: ff898965-5c47-41af-b447-5b538a0c7847
+Payload: b'EfficiencyScoreSet:{"cpu": 1.0, "memory": 1.0}'
+Timestamp: 2025-11-28 18:09:02
+================================
+Fetched this provider's efficiency score set
+1.0
+1.0
+=== MQTT MESSAGE RECEIVED ===
+Topic: ff898965-5c47-41af-b447-5b538a0c7847
+Payload: b'STARTUP'
+Timestamp: 2025-11-28 18:09:03
+================================
+=== MQTT MESSAGE RECEIVED ===
+Topic: ff898965-5c47-41af-b447-5b538a0c7847
+Payload: b'READY'
+Timestamp: 2025-11-28 18:09:03
+================================
+=== MQTT MESSAGE RECEIVED ===
+Topic: ff898965-5c47-41af-b447-5b538a0c7847
+Payload: b'{"provider_id": "ff898965-5c47-41af-b447-5b538a0c7847", "task_link": "peercompute/benchmark.502.graph-mst-3.9", "task_developer": "0316778b-d20b-4415-a993-d95172340c2d", "job_id": 2967, "numberOfInvocations": 1, "isChained": false, "inputData": "None", "runMultipleInvocations": false, "stage": "dockernotrun"}'
+Timestamp: 2025-11-28 18:09:12
+================================
+Parsed JSON data: {'provider_id': 'ff898965-5c47-41af-b447-5b538a0c7847', 'task_link': 'peercompute/benchmark.502.graph-mst-3.9', 'task_developer': '0316778b-d20b-4415-a993-d95172340c2d', 'job_id': 2967, 'numberOfInvocations': 1, 'isChained': False, 'inputData': 'None', 'runMultipleInvocations': False, 'stage': 'dockernotrun'}
+Processing dockernotrun request for job_id: 2967
+[DEBUG] process_dockernotrun_request started for job_id: 2967
+Pending jobs incremented: 1
+[DEBUG] Processing job with runMultipleInvocations: False
+[DEBUG] Single job, calling on_request
+[DEBUG] Starting job processing for job_id: 2967
+[DEBUG] About to send ACK signal for job_id: 2967
+[DEBUG] ACK signal sent successfully for job_id: 2967
+[DEBUG] About to send NOT_READY signal for provider: ff898965-5c47-41af-b447-5b538a0c7847
+[DEBUG] NOT_READY signal sent successfully for provider: ff898965-5c47-41af-b447-5b538a0c7847
+[on_request] in provider1.py
+[DEBUG] run_and_invoke_docker started with body: peercompute/benchmark.502.graph-mst-3.9, container_name: 2967_container_
+inside run_and_invoke_docker with body : peercompute/benchmark.502.graph-mst-3.9
+[DEBUG] Requesting image: peercompute/benchmark.502.graph-mst-3.9
+[request_image] Requesting image: peercompute/benchmark.502.graph-mst-3.9
+[request_image] Found peercompute/benchmark.502.graph-mst-3.9 in disk cache.
+[request_image] Cached image data: {'tar_path': 'cached_images/peercompute_slash_benchmarkdot502dotgraph-mst-3dot9.tar', 'size': 177854785}
+[load_image_from_tar] Loading image from tar file: cached_images/peercompute_slash_benchmarkdot502dotgraph-mst-3dot9.tar
+=== MQTT MESSAGE RECEIVED ===
+Topic: ff898965-5c47-41af-b447-5b538a0c7847
+Payload: b'ACK:2967'
+Timestamp: 2025-11-28 18:09:12
+================================
+=== MQTT MESSAGE RECEIVED ===
+Topic: ff898965-5c47-41af-b447-5b538a0c7847
+Payload: b'NOT_READY'
+Timestamp: 2025-11-28 18:09:12
+================================
+2025-11-28 18:09:12 - DEBUG - http://localhost:None "POST /v1.52/images/load HTTP/1.1" 200 None
+2025-11-28 18:09:12 - DEBUG - http://localhost:None "GET /v1.52/images/sha256:b9202ffe135370f03e0858dc3b3d3bade5bc8f450a46f9aeee424bcd772198df/json HTTP/1.1" 200 None
+[load_image_from_tar] Image loaded from tar file: cached_images/peercompute_slash_benchmarkdot502dotgraph-mst-3dot9.tar
+[store_in_memory] Stored peercompute/benchmark.502.graph-mst-3.9 in memory.
+Out of Hybrid Caching manager and inside run_and_invoke_docker again
+[DEBUG] Image obtained: <Image: ''>
+[DEBUG] Image pull time: 575ms
+Benchmark number: 502
+Size: large
+{'size': 100000}
+container started running
+[DEBUG] Creating container with name: 2967_container_
+2025-11-28 18:09:12 - DEBUG - http://localhost:None "POST /v1.52/containers/create?name=2967_container_ HTTP/1.1" 201 88
+2025-11-28 18:09:12 - DEBUG - http://localhost:None "GET /v1.52/containers/5eb6cf4b3d20a3f92b03bde2a0f4e43cfe99c4867c78b784090bf035213a2edc/json HTTP/1.1" 200 None
+2025-11-28 18:09:13 - DEBUG - http://localhost:None "POST /v1.52/containers/5eb6cf4b3d20a3f92b03bde2a0f4e43cfe99c4867c78b784090bf035213a2edc/start HTTP/1.1" 204 0
+[DEBUG] Container created successfully: 5eb6cf4b3d20a3f92b03bde2a0f4e43cfe99c4867c78b784090bf035213a2edc
+=== MQTT MESSAGE RECEIVED ===
+Topic: EVERYONE
+Payload: b'SCHEDULER_PONG:{"scheduler_name": "colva2", "timestamp": 1764333553.7850413, "status": "active"}'
+Timestamp: 2025-11-28 18:09:14
+================================
+2025-11-28 18:09:15 - DEBUG - http://localhost:None "GET /v1.52/containers/5eb6cf4b3d20a3f92b03bde2a0f4e43cfe99c4867c78b784090bf035213a2edc/json HTTP/1.1" 200 None
+[DEBUG] Container reloaded, status: running
+[DEBUG] Port info: [{'HostIp': '0.0.0.0', 'HostPort': '32783'}, {'HostIp': '::', 'HostPort': '32783'}]
+[DEBUG] Host port: 32783
+[DEBUG] Container ID: 5eb6cf4b3d20a3f92b03bde2a0f4e43cfe99c4867c78b784090bf035213a2edc
+[DEBUG] Container name: 2967_container_
+2025-11-28 18:09:15 - DEBUG - http://localhost:None "GET /v1.52/images/b9202ffe135370f03e0858dc3b3d3bade5bc8f450a46f9aeee424bcd772198df/json HTTP/1.1" 200 None
+[DEBUG] Container image: <Image: ''>
+[DEBUG] Container created: 2025-11-28T12:39:12.79761941Z
+[DEBUG] Container state: {'Status': 'running', 'Running': True, 'Paused': False, 'Restarting': False, 'OOMKilled': False, 'Dead': False, 'Pid': 3976241, 'ExitCode': 0, 'Error': '', 'StartedAt': '2025-11-28T12:39:12.929419926Z', 'FinishedAt': '0001-01-01T00:00:00Z'}
+container name ID:  5eb6cf4b3d20a3f92b03bde2a0f4e43cfe99c4867c78b784090bf035213a2edc
+container name:  2967_container_
+peercompute/benchmark.502.graph-mst-3.9
+monitoring container
+[DEBUG] Starting container monitoring with timeout: 3000s
+[DEBUG] monitor_container started for container: 2967_container_
+container monitored
+Using host IP: 10.1.19.1
+[DEBUG] IP 10.1.19.1 not accessible
+[DEBUG] Found working IP: 127.0.0.1
+[DEBUG] Using working IP: 127.0.0.1
+2025-11-28 18:09:15 - DEBUG - http://localhost:None "GET /v1.52/containers/5eb6cf4b3d20a3f92b03bde2a0f4e43cfe99c4867c78b784090bf035213a2edc/logs?stderr=1&stdout=1&timestamps=0&follow=0&tail=10 HTTP/1.1" 200 None
+2025-11-28 18:09:15 - DEBUG - http://localhost:None "GET /v1.52/containers/5eb6cf4b3d20a3f92b03bde2a0f4e43cfe99c4867c78b784090bf035213a2edc/json HTTP/1.1" 200 None
+[DEBUG] Container logs (last 10 lines): Starting HTTP server on port 8080...
+
+[DEBUG] Port 32783 is accessible on 127.0.0.1
+[DEBUG] Making POST request to http://127.0.0.1:32783
+[DEBUG] Request payload: {'size': 100000}
+2025-11-28 18:09:15 - DEBUG - Starting new HTTP connection (1): 127.0.0.1:32783
+[DEBUG] POST request failed: ('Connection aborted.', ConnectionResetError(104, 'Connection reset by peer'))
+[DEBUG] Trying GET request as fallback...
+2025-11-28 18:09:15 - DEBUG - Starting new HTTP connection (1): 127.0.0.1:32783
+[DEBUG] GET request also failed: ('Connection aborted.', ConnectionResetError(104, 'Connection reset by peer'))
+2025-11-28 18:09:16 - DEBUG - http://localhost:None "GET /v1.52/containers/5eb6cf4b3d20a3f92b03bde2a0f4e43cfe99c4867c78b784090bf035213a2edc/stats?stream=False HTTP/1.1" 200 907
+[DEBUG] Container stats - memory_stats empty: True
+[DEBUG] Memory stats empty, but continuing monitoring (container may still be starting)
+[DEBUG] Added stats to stack (even with empty memory_stats), stack length: 1
+2025-11-28 18:09:18 - DEBUG - http://localhost:None "GET /v1.52/containers/5eb6cf4b3d20a3f92b03bde2a0f4e43cfe99c4867c78b784090bf035213a2edc/json HTTP/1.1" 200 None
+[DEBUG] Container status check: exited
+[DEBUG] monitor_container finished, returning stack with length: 1
+[DEBUG] Getting monitoring results from future
+[DEBUG] Monitoring results - stack length: 1
+[DEBUG] Stack content: [{'id': '5eb6cf4b3d20a3f92b03bde2a0f4e43cfe99c4867c78b784090bf035213a2edc', 'name': '/2967_container_', 'os_type': 'linux', 'read': '0001-01-01T00:00:00Z', 'cpu_stats': {'cpu_usage': {'total_usage': 0, 'usage_in_kernelmode': 0, 'usage_in_usermode': 0}, 'throttling_data': {'periods': 0, 'throttled_periods': 0, 'throttled_time': 0}}, 'memory_stats': {}, 'pids_stats': {}, 'blkio_stats': {'io_service_bytes_recursive': None, 'io_serviced_recursive': None, 'io_queue_recursive': None, 'io_service_time_recursive': None, 'io_wait_time_recursive': None, 'io_merged_recursive': None, 'io_time_recursive': None, 'sectors_recursive': None}, 'num_procs': 0, 'storage_stats': {}, 'preread': '2025-11-28T12:39:15.195959174Z', 'precpu_stats': {'cpu_usage': {'total_usage': 99936000, 'usage_in_kernelmode': 23984000, 'usage_in_usermode': 75952000}, 'system_cpu_usage': 42822636040000000, 'online_cpus': 20, 'throttling_data': {'periods': 0, 'throttled_periods': 0, 'throttled_time': 0}}}]
+[DEBUG] No response received, using default result: {'error': 'No response received from container'}
+[{'id': '5eb6cf4b3d20a3f92b03bde2a0f4e43cfe99c4867c78b784090bf035213a2edc', 'name': '/2967_container_', 'os_type': 'linux', 'read': '0001-01-01T00:00:00Z', 'cpu_stats': {'cpu_usage': {'total_usage': 0, 'usage_in_kernelmode': 0, 'usage_in_usermode': 0}, 'throttling_data': {'periods': 0, 'throttled_periods': 0, 'throttled_time': 0}}, 'memory_stats': {}, 'pids_stats': {}, 'blkio_stats': {'io_service_bytes_recursive': None, 'io_serviced_recursive': None, 'io_queue_recursive': None, 'io_service_time_recursive': None, 'io_wait_time_recursive': None, 'io_merged_recursive': None, 'io_time_recursive': None, 'sectors_recursive': None}, 'num_procs': 0, 'storage_stats': {}, 'preread': '2025-11-28T12:39:15.195959174Z', 'precpu_stats': {'cpu_usage': {'total_usage': 99936000, 'usage_in_kernelmode': 23984000, 'usage_in_usermode': 75952000}, 'system_cpu_usage': 42822636040000000, 'online_cpus': 20, 'throttling_data': {'periods': 0, 'throttled_periods': 0, 'throttled_time': 0}}}]
+[DEBUG] Run time: 5414ms
+[DEBUG] About to access stack[0] - stack length: 1
+[DEBUG] Accessing stack[0] - memory_stats: {}
+[DEBUG] Accessing stack[0] - cpu_stats: {'cpu_usage': {'total_usage': 0, 'usage_in_kernelmode': 0, 'usage_in_usermode': 0}, 'throttling_data': {'periods': 0, 'throttled_periods': 0, 'throttled_time': 0}}
+[DEBUG] No memory usage in stats, using default: 100000000
+[DEBUG] Successfully extracted cpu_usage: 0
+[DEBUG] Appending runtime data to file
+runtime data: 
+{'memory_usage': 100000000, 'cpu_usage': 0, 'actual_runtime': 5414, 'cpu_efficiency_score': 1.0, 'memory_efficiency_score': 1.0, 'service': 'peercompute/benchmark.502.graph-mst-3.9'}
+Predicted Runtime:
+running predictions inside trainAndPredict
+[DEBUG] run_vars: {'memory_usage': 100000000, 'cpu_usage': 0, 'actual_runtime': 5414, 'cpu_efficiency_score': 1.0, 'memory_efficiency_score': 1.0, 'service': 'peercompute/benchmark.502.graph-mst-3.9'}
+[DEBUG] Loaded 57 entries, cleaned to 57 valid entries
+[DEBUG] Loaded training data from file
+[DEBUG] Training data length: 57
+[DEBUG] First training data sample: {'memory_usage': 9809920, 'cpu_usage': 52768162887, 'actual_runtime': 55972, 'cpu_efficiency_score': 1.0, 'memory_efficiency_score': 1.0}
+[DEBUG] Data types in first sample:
+  memory_usage: <class 'int'> = 9809920
+  cpu_usage: <class 'int'> = 52768162887
+  actual_runtime: <class 'int'> = 55972
+  cpu_efficiency_score: <class 'float'> = 1.0
+  memory_efficiency_score: <class 'float'> = 1.0
+[DEBUG] Sample 0: cpu=52768162887.0, mem=9809920.0, runtime=55972.0
+[DEBUG] Sample 1: cpu=52955478575.0, mem=4304896.0, runtime=56036.0
+[DEBUG] Sample 2: cpu=53063947225.0, mem=5566464.0, runtime=55711.0
+[DEBUG] Sample 3: cpu=53104984586.0, mem=5398528.0, runtime=54601.0
+[DEBUG] Sample 4: cpu=51156085417.0, mem=4067328.0, runtime=54526.0
+[DEBUG] Sample 5: cpu=51574808447.0, mem=9351168.0, runtime=55057.0
+[DEBUG] Sample 6: cpu=52600057511.0, mem=9883648.0, runtime=56604.0
+[DEBUG] Sample 7: cpu=53334860797.0, mem=9969664.0, runtime=56372.0
+[DEBUG] Sample 8: cpu=51401969170.0, mem=7344128.0, runtime=54819.0
+[DEBUG] Sample 9: cpu=52762771606.0, mem=3719168.0, runtime=56105.0
+[DEBUG] Sample 10: cpu=53319007277.0, mem=9965568.0, runtime=55977.0
+[DEBUG] Sample 11: cpu=52708667180.0, mem=8855552.0, runtime=56956.0
+[DEBUG] Sample 12: cpu=51683591745.0, mem=3420160.0, runtime=53779.0
+[DEBUG] Sample 13: cpu=52479502171.0, mem=3350528.0, runtime=55657.0
+[DEBUG] Sample 14: cpu=1985666119.0, mem=151228416.0, runtime=66234.0
+[DEBUG] Sample 15: cpu=52806828269.0, mem=10035200.0, runtime=55461.0
+[DEBUG] Sample 16: cpu=52062038406.0, mem=4063232.0, runtime=55293.0
+[DEBUG] Sample 17: cpu=52200971005.0, mem=3444736.0, runtime=54937.0
+[DEBUG] Sample 18: cpu=52063255335.0, mem=4026368.0, runtime=55136.0
+[DEBUG] Sample 19: cpu=52807907029.0, mem=9891840.0, runtime=55205.0
+[DEBUG] Sample 20: cpu=52107581502.0, mem=9936896.0, runtime=56415.0
+[DEBUG] Sample 21: cpu=52161761998.0, mem=3420160.0, runtime=55113.0
+[DEBUG] Sample 22: cpu=51447911991.0, mem=8663040.0, runtime=54563.0
+[DEBUG] Sample 23: cpu=51643841416.0, mem=9875456.0, runtime=54688.0
+[DEBUG] Sample 24: cpu=51862640411.0, mem=3338240.0, runtime=54448.0
+[DEBUG] Sample 25: cpu=52155270892.0, mem=9986048.0, runtime=56588.0
+[DEBUG] Sample 26: cpu=52698441720.0, mem=9695232.0, runtime=58043.0
+[DEBUG] Sample 27: cpu=52952802489.0, mem=9789440.0, runtime=57726.0
+[DEBUG] Sample 28: cpu=51168388623.0, mem=3411968.0, runtime=54055.0
+[DEBUG] Sample 29: cpu=52836962847.0, mem=9789440.0, runtime=58055.0
+[DEBUG] Sample 30: cpu=53884753458.0, mem=12619776.0, runtime=60279.0
+[DEBUG] Sample 31: cpu=50756510704.0, mem=9682944.0, runtime=54017.0
+[DEBUG] Sample 32: cpu=50807444600.0, mem=9658368.0, runtime=53658.0
+[DEBUG] Sample 33: cpu=50406913402.0, mem=12554240.0, runtime=58228.0
+[DEBUG] Sample 34: cpu=51131038941.0, mem=12505088.0, runtime=59446.0
+[DEBUG] Sample 35: cpu=51206733025.0, mem=3469312.0, runtime=54107.0
+[DEBUG] Sample 36: cpu=51216267167.0, mem=3436544.0, runtime=53949.0
+[DEBUG] Sample 37: cpu=92704327.0, mem=10055680.0, runtime=105058.0
+[DEBUG] Sample 38: cpu=113105126.0, mem=19017728.0, runtime=105509.0
+[DEBUG] Sample 39: cpu=381694237.0, mem=39866368.0, runtime=6963.0
+[DEBUG] Sample 40: cpu=398147823.0, mem=39923712.0, runtime=6865.0
+[DEBUG] Sample 41: cpu=0.0, mem=100000000.0, runtime=5436.0
+[DEBUG] Sample 42: cpu=0.0, mem=100000000.0, runtime=5383.0
+[DEBUG] Sample 43: cpu=21117135000.0, mem=3620864.0, runtime=23726.0
+[DEBUG] Sample 44: cpu=0.0, mem=100000000.0, runtime=5386.0
+[DEBUG] Sample 45: cpu=1000000000.0, mem=100000000.0, runtime=6.0
+[DEBUG] Sample 46: cpu=1000000000.0, mem=100000000.0, runtime=2349.0
+[DEBUG] Sample 47: cpu=1000000000.0, mem=100000000.0, runtime=2302.0
+[DEBUG] Sample 48: cpu=0.0, mem=100000000.0, runtime=5361.0
+[DEBUG] Sample 49: cpu=0.0, mem=100000000.0, runtime=5347.0
+[DEBUG] Sample 50: cpu=0.0, mem=100000000.0, runtime=5339.0
+[DEBUG] Sample 51: cpu=0.0, mem=100000000.0, runtime=5341.0
+[DEBUG] Sample 52: cpu=0.0, mem=100000000.0, runtime=8964.0
+[DEBUG] Sample 53: cpu=0.0, mem=100000000.0, runtime=9414.0
+[DEBUG] Sample 54: cpu=0.0, mem=100000000.0, runtime=5369.0
+[DEBUG] Sample 55: cpu=0.0, mem=100000000.0, runtime=9272.0
+[DEBUG] Sample 56: cpu=0.0, mem=100000000.0, runtime=5414.0
+[DEBUG] Training model with 57 samples
+[DEBUG] Model trained successfully
+[DEBUG] predict_runtime called with service: peercompute/benchmark.502.graph-mst-3.9
+[DEBUG] Loaded 1 entries, cleaned to 1 valid entries
+[DEBUG] Reference service list length: 1
+[DEBUG] No reference data found for service peercompute/benchmark.502.graph-mst-3.9, using defaults
+[DEBUG] Efficiency scores: cpu=1.0, mem=1.0
+[DEBUG] Input features X: [[1000. 1000.]]
+[DEBUG] Model prediction: [53931.20960873]
+[DEBUG] Prediction completed: [53931.20960873]
+53931.20960873097
+Actual Runtime 5414
+[DEBUG] Stopping and removing container: 2967_container_
+2025-11-28 18:09:18 - DEBUG - http://localhost:None "POST /v1.52/containers/5eb6cf4b3d20a3f92b03bde2a0f4e43cfe99c4867c78b784090bf035213a2edc/stop HTTP/1.1" 304 0
+2025-11-28 18:09:18 - DEBUG - http://localhost:None "DELETE /v1.52/containers/5eb6cf4b3d20a3f92b03bde2a0f4e43cfe99c4867c78b784090bf035213a2edc?v=False&link=False&force=False HTTP/1.1" 204 0
+[DEBUG] Container stopped and removed successfully
+[DEBUG] run_and_invoke_docker completed successfully for container: 2967_container_
+[DEBUG] pull_time: 575, run_time: 5414, total_time: 6000
+[DEBUG] About to call delete_container_and_image for container: 2967_container_
+[DEBUG] delete_container_and_image called with body: peercompute/benchmark.502.graph-mst-3.9, container_name: 2967_container_
+2025-11-28 18:09:18 - DEBUG - http://localhost:None "GET /v1.52/containers/json?limit=-1&all=1&size=0&trunc_cmd=0&filters=%7B%22name%22%3A+%5B%222967_container_%22%5D%7D HTTP/1.1" 200 3
+[DEBUG] Found 0 containers with name 2967_container_
+[DEBUG] Container 2967_container_ not found, already removed
+[DEBUG] delete_container_and_image completed for container: 2967_container_
+[DEBUG] Creating response object for job_id: 2967
+[DEBUG] Response object created: {'stage': 'dockerrun', 'Result': {'error': 'No response received from container'}, 'pull_time': 575, 'run_time': 5414, 'total_time': 6000, 'job_id': 2967}
+[DEBUG] About to send job result for job_id: 2967
+[DEBUG] Job result sent successfully for job_id: 2967
+[DEBUG] About to send READY signal for provider: ff898965-5c47-41af-b447-5b538a0c7847
+[DEBUG] READY signal sent successfully for provider: ff898965-5c47-41af-b447-5b538a0c7847
+published response to scheduler
+[DEBUG] Job processing completed successfully for job_id: 2967
+Pending jobs decremented: 0
+[DEBUG] process_dockernotrun_request finished for job_id: 2967
+=== MQTT MESSAGE RECEIVED ===
+Topic: ff898965-5c47-41af-b447-5b538a0c7847
+Payload: b'{"stage": "dockerrun", "Result": {"error": "No response received from container"}, "pull_time": 575, "run_time": 5414, "total_time": 6000, "job_id": 2967}'
+Timestamp: 2025-11-28 18:09:18
+================================
+Parsed JSON data: {'stage': 'dockerrun', 'Result': {'error': 'No response received from container'}, 'pull_time': 575, 'run_time': 5414, 'total_time': 6000, 'job_id': 2967}
+=== MQTT MESSAGE RECEIVED ===
+Topic: ff898965-5c47-41af-b447-5b538a0c7847
+Payload: b'READY'
+Timestamp: 2025-11-28 18:09:18
+================================
+Connected successfully
+=== MQTT MESSAGE RECEIVED ===
+Topic: ff898965-5c47-41af-b447-5b538a0c7847
+Payload: b'{"stage": "dockerrun", "Result": {"error": "No response received from container"}, "pull_time": 575, "run_time": 5414, "total_time": 6000, "job_id": 2967}'
+Timestamp: 2025-11-28 18:09:20
+================================
+Parsed JSON data: {'stage': 'dockerrun', 'Result': {'error': 'No response received from container'}, 'pull_time': 575, 'run_time': 5414, 'total_time': 6000, 'job_id': 2967}
+=== MQTT MESSAGE RECEIVED ===
+Topic: ff898965-5c47-41af-b447-5b538a0c7847
+Payload: b'READY'
+Timestamp: 2025-11-28 18:09:20
+================================
+=== MQTT MESSAGE RECEIVED ===
+Topic: EVERYONE
+Payload: b'SCHEDULER_PONG:{"scheduler_name": "colva2", "timestamp": 1764333569.595115, "status": "active"}'
+Timestamp: 2025-11-28 18:09:29
+================================
+=== MQTT MESSAGE RECEIVED ===
+Topic: EVERYONE
+Payload: b'SCHEDULER_PONG:{"scheduler_name": "colva2", "timestamp": 1764333583.815226, "status": "active"}'
+Timestamp: 2025-11-28 18:09:43
+================================
+=== MQTT MESSAGE RECEIVED ===
+Topic: EVERYONE
+Payload: b'SCHEDULER_PONG:{"scheduler_name": "colva2", "timestamp": 1764333599.6202202, "status": "active"}'
+Timestamp: 2025-11-28 18:09:59
+================================
+=== MQTT MESSAGE RECEIVED ===
+Topic: EVERYONE
+Payload: b'SCHEDULER_PONG:{"scheduler_name": "colva2", "timestamp": 1764333613.8432374, "status": "active"}'
+Timestamp: 2025-11-28 18:10:14
+================================
+=== MQTT MESSAGE RECEIVED ===
+Topic: EVERYONE
+Payload: b'SCHEDULER_PONG:{"scheduler_name": "colva2", "timestamp": 1764333629.6453285, "status": "active"}'
+Timestamp: 2025-11-28 18:10:29
+================================
+=== MQTT MESSAGE RECEIVED ===
+Topic: EVERYONE
+Payload: b'SCHEDULER_PONG:{"scheduler_name": "colva2", "timestamp": 1764333643.8532004, "status": "active"}'
+Timestamp: 2025-11-28 18:10:43
+================================
+=== MQTT MESSAGE RECEIVED ===
+Topic: EVERYONE
+Payload: b'SCHEDULER_PONG:{"scheduler_name": "colva2", "timestamp": 1764333659.646382, "status": "active"}'
+Timestamp: 2025-11-28 18:10:59
+================================

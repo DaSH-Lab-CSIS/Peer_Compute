@@ -78,17 +78,39 @@ def on_message(mqtt_client, userdata, msg):
     print(f'Received message on topic: {msg.topic} with payload: {msg.payload}')
     global ilp_state
     
-    # Check for ILP_DONE message
     payload_str = msg.payload.decode("utf-8")
+    
+    # Check for ILP_DONE message
     if payload_str == "ILP_DONE":
         print("Received ILP_DONE signal, setting ilp_state to 'done'")
         ilp_state = "done"
         return
     
-    # Process other messages
+    # Handle messages with prefixes (don't try to parse as JSON directly)
+    if payload_str.startswith("SCHEDULER_PONG:"):
+        # Heartbeat message - just acknowledge, don't parse JSON
+        print(f"Received scheduler heartbeat on topic: {msg.topic}")
+        return
+    
+    if payload_str.startswith("BATCH_RESPONSE:"):
+        # Batch response - extract JSON part after prefix
+        try:
+            response_json = payload_str[15:]  # Remove "BATCH_RESPONSE:" prefix
+            data = json.loads(response_json)
+            print(f"Received BATCH_RESPONSE: {data}")
+            # Add your batch response handling logic here
+        except Exception as e:
+            print(f"Error processing BATCH_RESPONSE: {e}")
+        return
+    
+    # Process other messages that might be pure JSON
     try:
-        data = json.loads(msg.payload.decode("utf-8"))
+        data = json.loads(payload_str)
+        print(f"Received JSON message: {data}")
         # Add your message handling logic here
+    except (json.JSONDecodeError, ValueError):
+        # Not JSON - that's okay, just log it
+        print(f"Received non-JSON message on {msg.topic}: {payload_str[:100]}")
     except Exception as e:
         print(f"Error processing MQTT message: {e}")
 

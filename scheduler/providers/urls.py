@@ -1,5 +1,5 @@
 from django.urls import path
-from .views import publish_to_topic_mqtt, ready, not_ready,  job_ack, calculate_efficiency, providerStartup, set_reference_stats
+from .views import publish_to_topic_mqtt, ready, not_ready,  job_ack, calculate_efficiency, providerStartup, set_reference_stats, get_user_id
 # from .views import recover_pending_jobs
 
 urlpatterns = [
@@ -12,6 +12,7 @@ urlpatterns = [
     path('job_ack/<int:job_id>', job_ack, name='job_ack'),
     path('calculate_efficiency/<str:user_id>', calculate_efficiency, name='calculate_efficiency'),
     path('startup/<str:user_id>', providerStartup, name='startup'),
-    path('set_reference_stats_for_service/', set_reference_stats, name='set_reference_stats')
+    path('set_reference_stats_for_service/', set_reference_stats, name='set_reference_stats'),
+    path('get_user_id/', get_user_id, name='get_user_id')
     # path('recover_jobs/', recover_pending_jobs, name='recover_jobs')
 ]
