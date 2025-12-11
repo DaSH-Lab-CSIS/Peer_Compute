@@ -200,21 +200,104 @@ def start_scheduler_on_host(
             time.sleep(2)  # Increased wait time for better error detection
             if process.poll() is not None:
                 stdout, stderr = process.communicate()
+                
+                # Filter out harmless SSH warnings
+                harmless_patterns = [
+                    r'Warning: Permanently added.*to the list of known hosts',
+                    r'declare -x',  # Environment variable declarations
+                ]
+                
+                filtered_stderr = stderr
+                if stderr:
+                    lines = stderr.split('\n')
+                    filtered_lines = []
+                    for line in lines:
+                        is_harmless = False
+                        for pattern in harmless_patterns:
+                            if re.search(pattern, line):
+                                is_harmless = True
+                                break
+                        if not is_harmless and line.strip():
+                            filtered_lines.append(line)
+                    filtered_stderr = '\n'.join(filtered_lines)
+                
                 if verbose:
                     if stdout:
                         print(f"[{host}] STDOUT: {stdout}")
                     if stderr:
-                        print(f"[{host}] STDERR: {stderr}")
-                if stderr or process.returncode != 0:
+                        print(f"[{host}] STDERR (raw): {stderr}")
+                    if filtered_stderr:
+                        print(f"[{host}] STDERR (filtered): {filtered_stderr}")
+                
+                # Only fail on non-zero exit code or actual errors (not harmless warnings)
+                if process.returncode != 0:
                     print(f"[{host}] ❌ Failed to start scheduler (exit code: {process.returncode})")
-                    if stderr:
-                        print(f"[{host}] Error output: {stderr}")
+                    if filtered_stderr:
+                        print(f"[{host}] Error output: {filtered_stderr}")
                     if stdout:
                         print(f"[{host}] Output: {stdout}")
                     return None
+                elif filtered_stderr:
+                    # Exit code is 0 but there are non-harmless errors
+                    print(f"[{host}] ⚠️  Started but with warnings:")
+                    print(f"[{host}] {filtered_stderr}")
+                
+                # Verify scheduler actually started by checking log file
+                verify_cmd = f"test -f /tmp/scheduler_{host}.log && echo 'OK' || echo 'MISSING'"
+                verify_ssh_cmd = build_ssh_command(
+                    host, verify_cmd,
+                    jumpnode_password=jumpnode_password,
+                    node_password=node_password,
+                    ssh_config_path=ssh_config_path,
+                    ssh_key_path=ssh_key_path
+                )
+                try:
+                    verify_result = subprocess.run(
+                        verify_ssh_cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                    if 'OK' in verify_result.stdout:
+                        print(f"[{host}] ✅ Scheduler started successfully (log file created)")
+                    else:
+                        print(f"[{host}] ⚠️  Started but log file not found yet (may take a moment)")
+                except Exception:
+                    # Verification failed, but don't fail the whole operation
+                    if verbose:
+                        print(f"[{host}] Could not verify log file creation")
+                
                 return process
             if verbose:
                 print(f"[{host}] ✅ Process started successfully (PID: {process.pid})")
+            
+            # Verify scheduler started by checking log file (for processes that didn't exit immediately)
+            time.sleep(1)  # Give it a moment to create the log file
+            verify_cmd = f"test -f /tmp/scheduler_{host}.log && echo 'OK' || echo 'MISSING'"
+            verify_ssh_cmd = build_ssh_command(
+                host, verify_cmd,
+                jumpnode_password=jumpnode_password,
+                node_password=node_password,
+                ssh_config_path=ssh_config_path,
+                ssh_key_path=ssh_key_path
+            )
+            try:
+                verify_result = subprocess.run(
+                    verify_ssh_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                if 'OK' in verify_result.stdout:
+                    if not verbose:
+                        print(f"[{host}] ✅ Scheduler started successfully")
+                else:
+                    print(f"[{host}] ⚠️  Started but log file not found yet (may take a moment)")
+            except Exception:
+                # Verification failed, but don't fail the whole operation
+                if verbose:
+                    print(f"[{host}] Could not verify log file creation")
+            
             return process
         else:
             # For foreground, we want to see output
