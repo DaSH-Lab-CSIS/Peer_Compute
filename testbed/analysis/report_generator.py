@@ -301,10 +301,13 @@ class ReportGenerator:
             
             batch_size = ilp_metrics.get('batch_size', {})
             if batch_size:
+                avg_batch_size = batch_size.get('avg', 0)
                 report_lines.extend([
-                    f"Batch Size - Avg: {batch_size.get('avg', 0):.1f}, "
-                    f"Min: {batch_size.get('min', 0)}, Max: {batch_size.get('max', 0)}, "
-                    f"P95: {batch_size.get('p95', 0):.1f}",
+                    f"Average Batch Size: {avg_batch_size:.2f}",
+                    f"Batch Size - Min: {batch_size.get('min', 0)}, "
+                    f"Max: {batch_size.get('max', 0)}, "
+                    f"P95: {batch_size.get('p95', 0):.1f}, "
+                    f"Median: {batch_size.get('median', 0):.1f}",
                 ])
             
             ilp_solve_time = ilp_metrics.get('ilp_solve_time', {})
