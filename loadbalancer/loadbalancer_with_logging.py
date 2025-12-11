@@ -402,8 +402,14 @@ def on_message(mqtt_client, userdata, msg):
             scheduler_name = pong_data.get('scheduler_name')
             if scheduler_name:
                 if scheduler_name in discovered_schedulers:
-                    # Update existing scheduler
-                    discovered_schedulers[scheduler_name]['last_seen'] = time.time()
+                    # Update existing scheduler - mark as online if sending heartbeats
+                    scheduler_info = discovered_schedulers[scheduler_name]
+                    scheduler_info['last_seen'] = time.time()
+                    # If scheduler was offline, mark it back as online (recovery)
+                    if scheduler_info.get('status') != 'online':
+                        scheduler_info['status'] = 'online'
+                        scheduler_info['failure_count'] = 0  # Reset failure count on recovery
+                        logger.info(f"Scheduler {scheduler_name} recovered (received heartbeat, marking as online)")
                     logger.debug(f"Received heartbeat from scheduler {scheduler_name}")
                 else:
                     # Discover new scheduler from heartbeat (in case we missed the announcement)
@@ -491,22 +497,27 @@ async def get_next_active_scheduler() -> Optional[str]:
         logger.debug(f"Found {num_online} online schedulers out of {len(scheduler_order)} total")
         logger.debug(f"Current round-robin index: {next_scheduler_index}")
         
-        # Try schedulers starting from current index
-        for i in range(num_online):
-            # Calculate index in the online schedulers list
-            idx = (next_scheduler_index + i) % num_online
-            scheduler_name = online_schedulers[idx]
-            scheduler_topic = discovered_schedulers[scheduler_name]['topic']
+        # Try schedulers starting from current index in scheduler_order
+        # This ensures proper round-robin even when some schedulers are offline
+        for i in range(len(scheduler_order)):
+            # Calculate index in scheduler_order (wrap around)
+            idx = (next_scheduler_index + i) % len(scheduler_order)
+            scheduler_name = scheduler_order[idx]
             
-            logger.debug(f"Trying scheduler {idx}: {scheduler_name} -> {scheduler_topic}")
+            # Skip if scheduler is not online
+            if scheduler_name not in online_schedulers:
+                logger.debug(f"Skipping scheduler {scheduler_name} (not online)")
+                continue
+            
+            scheduler_topic = discovered_schedulers[scheduler_name]['topic']
+            logger.debug(f"Trying scheduler {scheduler_name} (position {idx} in scheduler_order) -> {scheduler_topic}")
             
             # Check if scheduler is available (based on heartbeat)
             is_available = await check_scheduler_availability(scheduler_topic)
             
             if is_available:
-                # Update the round-robin index for next time
-                # We increment by 1, not by the number of schedulers we checked
-                next_scheduler_index = (next_scheduler_index + 1) % len(scheduler_order)
+                # Update the round-robin index to the next position in scheduler_order
+                next_scheduler_index = (idx + 1) % len(scheduler_order)
                 logger.info(f"Selected scheduler: {scheduler_name} (round-robin index: {next_scheduler_index})")
                 return scheduler_topic
             else:
@@ -639,6 +650,10 @@ async def process_batch():
         # Handle successful response
         scheduler_name = scheduler_topic.replace("SCHEDULER_", "")
         handle_scheduler_success(scheduler_name)
+        
+        # Reset ILP state to "done" after processing response
+        ilp_state = "done"
+        logger.info("Batch processing complete, resetting ILP state to 'done'")
         
     except Exception as e:
         logger.error(f"Error sending batch to {scheduler_topic} via MQTT: {e}")
