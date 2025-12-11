@@ -101,4 +101,50 @@ class BaseScenario(ABC):
     def get_metrics(self) -> MetricsCollector:
         """Get the metrics collector."""
         return self.metrics_collector
+    
+    async def collect_batch_metrics(self):
+        """
+        Collect batch metrics from the load balancer at the end of the test run.
+        This queries the load balancer for recent batches and adds batch size information.
+        """
+        try:
+            async with LoadBalancerClient(base_url=self.load_balancer_url) as client:
+                # Get recent batches from load balancer (query a large number to get all batches)
+                batches_data = await client.get_recent_batches(limit=1000)
+                
+                if 'error' in batches_data:
+                    self.logger.warning(f"Failed to get batch metrics: {batches_data['error']}")
+                    return
+                
+                batches = batches_data.get('batches', [])
+                self.logger.info(f"Collected {len(batches)} batch records from load balancer")
+                
+                # Add batch size information to metrics collector
+                for batch in batches:
+                    batch_size = batch.get('batch_size')
+                    if batch_size is not None:
+                        # Check if this batch already exists in metrics collector
+                        batch_id = batch.get('batch_id')
+                        existing_batch = None
+                        if batch_id:
+                            for existing in self.metrics_collector.ilp_batches:
+                                if existing.get('batch_id') == batch_id:
+                                    existing_batch = existing
+                                    break
+                        
+                        if existing_batch:
+                            # Update existing batch with batch_size from scheduler
+                            existing_batch['batch_size'] = batch_size
+                        else:
+                            # Create new batch entry with batch_size from scheduler
+                            batch_metrics = {
+                                'batch_id': batch_id or batch.get('correlation_id'),
+                                'batch_size': batch_size,
+                                'ilp_solve_time': batch.get('ilp_solve_time'),
+                                'batch_processing_time': batch.get('processing_time'),
+                                'scheduler_name': batch.get('scheduler_name')
+                            }
+                            self.metrics_collector.add_ilp_batch(batch_metrics)
+        except Exception as e:
+            self.logger.warning(f"Error collecting batch metrics: {e}")
 

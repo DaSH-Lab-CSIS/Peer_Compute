@@ -407,6 +407,14 @@ class MetricsCollector:
             self.calculate_aggregates()
         
         agg = self.aggregate_metrics
+        ilp_metrics = agg.get('ilp_metrics', {})
+        batch_size_info = ""
+        if ilp_metrics:
+            batch_size = ilp_metrics.get('batch_size', {})
+            if batch_size:
+                avg_batch_size = batch_size.get('avg', 0)
+                batch_size_info = f"\nILP Batch Metrics:\n  Average Batch Size: {avg_batch_size:.2f}\n  Total Batches: {ilp_metrics.get('total_batches', 0)}"
+        
         summary = f"""
 Metrics Summary for Run: {self.run_id}
 ========================================
@@ -422,7 +430,7 @@ Latency Metrics:
   Average: {agg.get('latency_metrics', {}).get('avg_latency', 0.0):.3f}s
   Median (p50): {agg.get('latency_metrics', {}).get('p50_latency', 0.0):.3f}s
   p95: {agg.get('latency_metrics', {}).get('p95_latency', 0.0):.3f}s
-  p99: {agg.get('latency_metrics', {}).get('p99_latency', 0.0):.3f}s
+  p99: {agg.get('latency_metrics', {}).get('p99_latency', 0.0):.3f}s{batch_size_info}
 """
         return summary
 

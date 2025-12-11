@@ -117,6 +117,10 @@ class BaselineScenario(BaseScenario):
                     self.logger.info(f"Progress: {completed}/{total_requests} requests completed")
         
         self.metrics_collector.stop_collection()
+        
+        # Collect batch metrics from load balancer
+        await self.collect_batch_metrics()
+        
         self.logger.info(f"Baseline scenario completed (run_id: {self.run_id})")
         
         return self.metrics_collector

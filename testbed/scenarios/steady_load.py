@@ -82,6 +82,10 @@ class SteadyLoadScenario(BaseScenario):
                 self.logger.info(f"  Level {level_idx + 1} completed: {successful}/{total_requests} successful")
         
         self.metrics_collector.stop_collection()
+        
+        # Collect batch metrics from load balancer
+        await self.collect_batch_metrics()
+        
         self.logger.info(f"Steady load scenario completed (run_id: {self.run_id})")
         
         return self.metrics_collector

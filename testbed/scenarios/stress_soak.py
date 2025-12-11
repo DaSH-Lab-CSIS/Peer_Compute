@@ -116,6 +116,10 @@ class StressSoakScenario(BaseScenario):
                     self.logger.info(f"Sent {request_counter} requests ({elapsed:.0f}s elapsed)")
         
         self.metrics_collector.stop_collection()
+        
+        # Collect batch metrics from load balancer
+        await self.collect_batch_metrics()
+        
         self.logger.info(f"Stress/soak scenario completed (run_id: {self.run_id})")
         
         return self.metrics_collector
