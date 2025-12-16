@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/4.2/ref/settings/
 """
 
 from pathlib import Path
+import os
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -111,18 +112,45 @@ WSGI_APPLICATION = 'scheduler.wsgi.application'
 # }
 
 
-# SUPABASE
+# SUPABASE (kept for rollback)
+# DATABASES = {
+#     "default": {
+#         "ENGINE": "django.db.backends.postgresql",
+#         "NAME": "postgres",
+#         "USER": "postgres.uufnsxmqnwegackubear",
+#         "PASSWORD": "16G6MNonNa7ny9pG",
+#         "HOST": "aws-0-ap-south-1.pooler.supabase.com",
+#         "PORT": "5432",
+#         "OPTIONS": {
+#             "options": "-c pool_mode=session"
+#         },
+#     }
+# }
+
+# COCKROACHDB
+# Configure to use first node in cluster (or use load balancer)
+# Update COCKROACH_HOST to point to your CockroachDB node
+COCKROACH_HOST = os.environ.get("COCKROACH_HOST", "localhost")
+COCKROACH_PORT = os.environ.get("COCKROACH_PORT", "26257")
+COCKROACH_DB = os.environ.get("COCKROACH_DB", "peercompute")
+
 DATABASES = {
     "default": {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": "postgres",
-        "USER": "postgres.uufnsxmqnwegackubear",
-        "PASSWORD": "16G6MNonNa7ny9pG",
-        "HOST": "aws-0-ap-south-1.pooler.supabase.com",
-        "PORT": "5432",
+        "ENGINE": "django.db.backends.postgresql",  # Same engine (CockroachDB is PostgreSQL-compatible)
+        "NAME": COCKROACH_DB,
+        "USER": "root",
+        "PASSWORD": "",  # Insecure mode initially
+        "HOST": COCKROACH_HOST,
+        "PORT": COCKROACH_PORT,
         "OPTIONS": {
-            "options": "-c pool_mode=session"
+            "sslmode": "disable",  # For insecure mode
+            # For secure mode (future):
+            # "sslmode": "verify-full",
+            # "sslcert": "/path/to/client.crt",
+            # "sslkey": "/path/to/client.key",
+            # "sslrootcert": "/path/to/ca.crt",
         },
+        "CONN_MAX_AGE": 600,  # Connection pooling
     }
 }
 
