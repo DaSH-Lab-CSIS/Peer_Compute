@@ -62,6 +62,9 @@ CONTROLLER_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE2OTM5NzE5NTM
 
 CORS_ORIGIN_ALLOW_ALL = True
 
+# Host configuration for provider connections
+HOST = "localhost"  # Change this to your machine's IP address for remote connections
+
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',

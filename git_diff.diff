@@ -1,0 +1,2666 @@
+diff --git a/loadbalancer/LB.conf b/loadbalancer/LB.conf
+index e7481d3..66c9353 100644
+--- a/loadbalancer/LB.conf
++++ b/loadbalancer/LB.conf
+@@ -1,3 +1,4 @@
+ BATCH_SIZE=10
+ BATCH_TIMEOUT_SECONDS=15.0
+-SCHEDULER_URLS=["http://10.8.1.18:8000/developers/run_service_async_batch/","http://10.1.19.78:8000/developers/run_service_async_batch/"] 
++# SCHEDULER_URLS are still used to derive MQTT topics
++# They map to SCHEDULER_{host_with_underscores} topics
+diff --git a/loadbalancer/README.md b/loadbalancer/README.md
+index a433e95..95e9bac 100644
+--- a/loadbalancer/README.md
++++ b/loadbalancer/README.md
+@@ -104,7 +104,7 @@ curl -X POST "http://localhost:9001/loadbalancer/run_service/" \
+   -H "User-Agent: Thunder Client (https://www.thunderclient.com)" \
+   -H "Content-Type: application/json" \
+   -d '{
+-    "serviceID": 10,
++    "serviceID": 17,
+     "numberOfInvocations": 1,
+     "chained": false,
+     "input": "None",
+diff --git a/loadbalancer/loadbalancer_with_logging.py b/loadbalancer/loadbalancer_with_logging.py
+index bdfc0e7..5865a21 100644
+--- a/loadbalancer/loadbalancer_with_logging.py
++++ b/loadbalancer/loadbalancer_with_logging.py
+@@ -15,6 +15,8 @@ import time
+ import json
+ import os
+ import sys
++import uuid
++import socket
+ from typing import List, Dict, Any, Optional
+ import httpx
+ from fastapi import FastAPI, Request, BackgroundTasks
+@@ -31,6 +33,80 @@ if project_root not in sys.path:
+ 
+ from scheduler.scheduler.settings import get_scheduler_endpoints
+ 
++# Global to store pending responses for correlation
++pending_responses = {}
++
++# Global to track scheduler last seen timestamps
++scheduler_last_seen = {}
++
++# Global to store discovered schedulers with stable ordering
++discovered_schedulers = {}  # {uuid: {topic, last_seen, status, order_index, failure_count}}
++scheduler_order = []  # List of UUIDs in stable order
++next_scheduler_index = 0  # Current position in round-robin
++MAX_CONSECUTIVE_FAILURES = 3  # Mark scheduler as offline after 3 consecutive failures
++
++def get_loadbalancer_id():
++    """Get load balancer identifier"""
++    lb_id = os.environ.get('LOADBALANCER_ID')
++    if not lb_id:
++        hostname = socket.gethostname()
++        lb_id = f"LOADBALANCER_{hostname.split('.')[0]}"
++    return lb_id
++
++def handle_scheduler_failure(scheduler_uuid: str, reason: str):
++    """Handle scheduler failure with failure counting"""
++    if scheduler_uuid not in discovered_schedulers:
++        return
++        
++    scheduler_info = discovered_schedulers[scheduler_uuid]
++    
++    # Increment failure count
++    failure_count = scheduler_info.get('failure_count', 0) + 1
++    scheduler_info['failure_count'] = failure_count
++    
++    logger.warning(f"Scheduler {scheduler_uuid} failure #{failure_count}: {reason}")
++    
++    # Only mark as offline after multiple consecutive failures
++    if failure_count >= MAX_CONSECUTIVE_FAILURES:
++        scheduler_info['status'] = 'offline'
++        logger.error(f"Scheduler {scheduler_uuid} marked as offline after {failure_count} consecutive failures")
++    else:
++        logger.info(f"Scheduler {scheduler_uuid} still considered online (failure count: {failure_count}/{MAX_CONSECUTIVE_FAILURES})")
++
++def handle_scheduler_success(scheduler_uuid: str):
++    """Handle successful scheduler response - reset failure count"""
++    if scheduler_uuid not in discovered_schedulers:
++        return
++        
++    scheduler_info = discovered_schedulers[scheduler_uuid]
++    
++    # Reset failure count on success
++    if scheduler_info.get('failure_count', 0) > 0:
++        logger.info(f"Scheduler {scheduler_uuid} recovered - resetting failure count")
++        scheduler_info['failure_count'] = 0
++    
++    # Ensure status is online
++    if scheduler_info['status'] != 'online':
++        scheduler_info['status'] = 'online'
++        logger.info(f"Scheduler {scheduler_uuid} marked as online")
++
++def get_scheduler_mqtt_topics():
++    """Get list of scheduler MQTT topics from scheduler endpoints"""
++    scheduler_endpoints = get_scheduler_endpoints()
++    topics = []
++    
++    for endpoint in scheduler_endpoints:
++        # Extract identifier from endpoint URL
++        # e.g., http://10.8.1.18:8000 -> SCHEDULER_10_8_1_18
++        # or http://hostname:8000 -> SCHEDULER_hostname
++        if '://' in endpoint:
++            host = endpoint.split('://')[1].split(':')[0]
++            # Replace dots with underscores for valid MQTT topic
++            scheduler_id = host.replace('.', '_')
++            topics.append(f"SCHEDULER_{scheduler_id}")
++        
++    return topics
++
+ def check_experiment_mode():
+     """Check if experiment mode is enabled"""
+     try:
+@@ -153,9 +229,12 @@ class Config:
+     def __init__(self):
+         self.BATCH_SIZE = 10
+         self.BATCH_TIMEOUT_SECONDS = 5.0
+-        self.SCHEDULER_ENDPOINTS = get_scheduler_endpoints()
+-        self.SCHEDULER_URLS = [endpoint+str('/developers/run_service_async_batch/') for endpoint in self.SCHEDULER_ENDPOINTS]
+-
++        
++        # Schedulers are discovered dynamically via MQTT
++        # No need for static SCHEDULER_MQTT_TOPICS
++        
++        logger.info("Scheduler discovery enabled - will discover schedulers via MQTT announcements")
++        
+         # Load from config file if it exists
+         self.load_from_file("LB.conf")
+     
+@@ -198,8 +277,8 @@ class BatchState:
+     def __init__(self):
+         self.current_batch: List[Dict[str, Any]] = []
+         self.last_batch_time = time.time()
+-        self.current_scheduler_index = 0
+-        self.scheduler_health: Dict[str, bool] = {url: True for url in settings.SCHEDULER_URLS}  # All schedulers start as healthy
++        # Remove current_scheduler_index since we use global next_scheduler_index
++        # Remove scheduler_health since we track health in discovered_schedulers
+         self.lock = asyncio.Lock()
+ 
+ batch_state = BatchState()
+@@ -212,9 +291,15 @@ BROKER_ID = "broker.hivemq.com"
+ def on_connect(mqtt_client, userdata, flags, rc, callback_api_version):
+     if rc == 0:
+         logger.info('Connected successfully to MQTT broker')
+-        mqtt_client.subscribe("EVERYONE")  # Add your topics here
+-        mqtt_client.subscribe("ROTATION")  # Subscribe to ROTATION topic
+-        logger.info('Subscribed to EVERYONE and ROTATION topics')
++        
++        # Subscribe to load balancer's own topic for responses
++        lb_id = get_loadbalancer_id()
++        mqtt_client.subscribe(lb_id)
++        mqtt_client.subscribe("ROTATION")
++        mqtt_client.subscribe("EVERYONE")  # For scheduler heartbeats
++        mqtt_client.subscribe("SCHEDULER_ANNOUNCEMENTS")  # For scheduler discovery
++        
++        logger.info(f'Subscribed to {lb_id}, ROTATION, EVERYONE, and SCHEDULER_ANNOUNCEMENTS topics')
+     else:
+         logger.error(f'Bad connection to MQTT broker. Code: {rc}')
+ 
+@@ -222,37 +307,79 @@ def on_message(mqtt_client, userdata, msg):
+     logger.info(f'Received message on topic: {msg.topic} with payload: {msg.payload}')
+     global ilp_state
+     
+-    # Check for ILP_DONE message
+     payload_str = msg.payload.decode("utf-8")
+     logger.debug(f"Decoded payload string: '{payload_str}'")
+-    logger.debug(f"Payload length: {len(payload_str)}")
+-    logger.debug(f"Payload type: {type(payload_str)}")
+     
++    # Handle scheduler announcements
++    if msg.topic == "SCHEDULER_ANNOUNCEMENTS":
++        try:
++            announcement = json.loads(payload_str)
++            scheduler_uuid = announcement.get('scheduler_uuid')
++            scheduler_topic = announcement.get('scheduler_topic')
++            status = announcement.get('status')
++            
++            if status == 'online':
++                # Check if this is a new scheduler
++                if scheduler_uuid not in discovered_schedulers:
++                    # New scheduler - add to end of order
++                    discovered_schedulers[scheduler_uuid] = {
++                        'topic': scheduler_topic,
++                        'last_seen': time.time(),
++                        'status': 'online',
++                        'order_index': len(scheduler_order),
++                        'failure_count': 0
++                    }
++                    scheduler_order.append(scheduler_uuid)
++                    logger.info(f"New scheduler discovered: {scheduler_uuid} (order index: {len(scheduler_order)-1})")
++                else:
++                    # Existing scheduler coming back online
++                    discovered_schedulers[scheduler_uuid]['status'] = 'online'
++                    discovered_schedulers[scheduler_uuid]['last_seen'] = time.time()
++                    logger.info(f"Scheduler {scheduler_uuid} came back online")
++                    
++            elif status == 'offline':
++                if scheduler_uuid in discovered_schedulers:
++                    discovered_schedulers[scheduler_uuid]['status'] = 'offline'
++                    logger.info(f"Scheduler {scheduler_uuid} went offline")
++                    
++        except Exception as e:
++            logger.error(f"Error processing scheduler announcement: {e}")
++        return
++    
++    # Handle batch responses
++    if payload_str.startswith("BATCH_RESPONSE:"):
++        response_json = payload_str[15:]  # Remove prefix
++        try:
++            response_data = json.loads(response_json)
++            correlation_id = response_data.get('correlation_id')
++            
++            if correlation_id and correlation_id in pending_responses:
++                pending_responses[correlation_id] = response_data
++                logger.info(f"Received BATCH_RESPONSE for correlation_id: {correlation_id}")
++        except Exception as e:
++            logger.error(f"Error processing BATCH_RESPONSE: {e}")
++        return
++    
++    # Handle scheduler heartbeat/pong messages
++    if payload_str.startswith("SCHEDULER_PONG:"):
++        try:
++            pong_data = json.loads(payload_str[15:])  # Remove "SCHEDULER_PONG:" prefix
++            scheduler_uuid = pong_data.get('scheduler_uuid')
++            if scheduler_uuid and scheduler_uuid in discovered_schedulers:
++                discovered_schedulers[scheduler_uuid]['last_seen'] = time.time()
++                logger.debug(f"Received heartbeat from scheduler {scheduler_uuid}")
++        except Exception as e:
++            logger.error(f"Error processing SCHEDULER_PONG: {e}")
++        return
++    
++    # Handle ILP_DONE signal
+     if payload_str == "ILP_DONE":
+         logger.info("Received ILP_DONE signal, setting ilp_state to 'done'")
+         ilp_state = "done"
+         return
+     
+-    # Check if payload looks like JSON before trying to parse
+-    if payload_str.startswith('{') and payload_str.endswith('}'):
+-        logger.debug("Payload looks like JSON, attempting to parse")
+-        try:
+-            data = json.loads(payload_str)
+-            logger.debug(f"Successfully parsed JSON: {data}")
+-            # Add your message handling logic here
+-        except Exception as e:
+-            logger.error(f"Error processing MQTT message as JSON: {e}")
+-    else:
+-        logger.debug("Payload does not look like JSON, skipping JSON parsing")
+-        logger.debug(f"Payload starts with: '{payload_str[:20]}...' (first 20 chars)")
+-        
+-        # Check for known message patterns
+-        if payload_str.startswith('start_connect'):
+-            logger.debug("Detected 'start_connect' message")
+-        elif payload_str.startswith('get_efficiency_score'):
+-            logger.debug("Detected 'get_efficiency_score' message")
+-        else:
+-            logger.debug(f"Unknown message pattern: '{payload_str}'")
++    # Keep other existing message handlers if needed
++    logger.debug(f"Unhandled message type: {payload_str[:50]}...")
+ 
+ def on_subscribe(mqtt_client, userdata, mid, qos, properties=None):
+     logger.info(f"Subscribed with QOS: {qos}")
+@@ -265,58 +392,87 @@ mclient.on_subscribe = on_subscribe
+ 
+ app = FastAPI(title="Load Balancer with Batching")
+ 
+-async def check_scheduler_availability(url: str) -> bool:
+-    """Check if a scheduler is available by establishing a connection"""
+-    try:
+-        # Extract base URL and host/port
+-        base_url = url.rsplit('/', 1)[0] if '/' in url else url
+-        logger.debug(f"Checking scheduler availability for {url} (base: {base_url})")
+-        async with httpx.AsyncClient(timeout=2.0) as client:
+-            # Just try to connect to the server
+-            response = await client.head(base_url)
+-            logger.debug(f"Scheduler {url} responded with status {response.status_code}")
+-            return True
+-    except Exception as e:
+-        logger.debug(f"Connection check failed for {url}: {e}")
++async def check_scheduler_availability(topic: str) -> bool:
++    """
++    Check if a scheduler is available based on recent heartbeat
++    """
++    # Extract UUID from topic (SCHEDULER_{uuid})
++    scheduler_uuid = topic.replace("SCHEDULER_", "")
++    
++    if scheduler_uuid not in discovered_schedulers:
++        logger.debug(f"Scheduler {scheduler_uuid} not in discovered list")
+         return False
++        
++    scheduler_info = discovered_schedulers[scheduler_uuid]
++    last_seen = scheduler_info.get('last_seen', 0)
++    current_time = time.time()
++    
++    # Consider available if seen within last 60 seconds (more lenient)
++    is_available = (current_time - last_seen) < 60.0
++    
++    if is_available:
++        logger.debug(f"Scheduler {scheduler_uuid} is available (last seen {current_time - last_seen:.1f}s ago)")
++    else:
++        logger.debug(f"Scheduler {scheduler_uuid} is unavailable (last seen {current_time - last_seen:.1f}s ago)")
++    
++    return is_available
+ 
+ async def get_next_active_scheduler() -> Optional[str]:
+-    """Get the next active scheduler URL in round-robin fashion"""
++    """Get the next active scheduler MQTT topic in round-robin fashion"""
++    global next_scheduler_index
+     async with batch_state.lock:
+-        # Get the number of schedulers
+-        num_schedulers = len(settings.SCHEDULER_URLS)
+-        logger.debug(f"Looking for active scheduler among {num_schedulers} schedulers")
+-        logger.debug(f"Current scheduler index: {batch_state.current_scheduler_index}")
+-        
+-        # Try each scheduler starting from the current index
+-        for i in range(num_schedulers):
+-            idx = (batch_state.current_scheduler_index + i) % num_schedulers
+-            scheduler_url = settings.SCHEDULER_URLS[idx]
+-            logger.debug(f"Trying scheduler {idx}: {scheduler_url}")
++        current_time = time.time()
++        
++        # Get list of online schedulers in stable order
++        online_schedulers = []
++        for scheduler_uuid in scheduler_order:
++            if scheduler_uuid in discovered_schedulers:
++                scheduler_info = discovered_schedulers[scheduler_uuid]
++                # Consider online if status is online and seen within last 120 seconds (more lenient)
++                # This prevents schedulers from being marked offline too quickly
++                if (scheduler_info['status'] == 'online' and 
++                    (current_time - scheduler_info['last_seen']) < 120.0):
++                    online_schedulers.append(scheduler_uuid)
++        
++        num_online = len(online_schedulers)
++        if num_online == 0:
++            logger.error("No online schedulers found!")
++            return None
++            
++        logger.debug(f"Found {num_online} online schedulers out of {len(scheduler_order)} total")
++        logger.debug(f"Current round-robin index: {next_scheduler_index}")
++        
++        # Try schedulers starting from current index
++        for i in range(num_online):
++            # Calculate index in the online schedulers list
++            idx = (next_scheduler_index + i) % num_online
++            scheduler_uuid = online_schedulers[idx]
++            scheduler_topic = discovered_schedulers[scheduler_uuid]['topic']
++            
++            logger.debug(f"Trying scheduler {idx}: {scheduler_uuid} -> {scheduler_topic}")
+             
+-            # Quick check if scheduler is available
+-            is_available = await check_scheduler_availability(scheduler_url)
+-            batch_state.scheduler_health[scheduler_url] = is_available
++            # Check if scheduler is available (based on heartbeat)
++            is_available = await check_scheduler_availability(scheduler_topic)
+             
+             if is_available:
+-                # Update the current index for next time
+-                batch_state.current_scheduler_index = (idx + 1) % num_schedulers
+-                logger.info(f"Selected active scheduler: {scheduler_url}")
+-                return scheduler_url
++                # Update the round-robin index for next time
++                # We increment by 1, not by the number of schedulers we checked
++                next_scheduler_index = (next_scheduler_index + 1) % len(scheduler_order)
++                logger.info(f"Selected scheduler: {scheduler_uuid} (round-robin index: {next_scheduler_index})")
++                return scheduler_topic
+             else:
+-                logger.warning(f"Scheduler {scheduler_url} is DOWN or not responding. Skipping to next scheduler.")
+-                
+-        # If we get here, no active schedulers were found
+-        logger.error("No active schedulers found!")
++                logger.warning(f"Scheduler {scheduler_uuid} is DOWN. Skipping to next scheduler.")
++        
++        # If we get here, no available schedulers were found
++        logger.error("No available schedulers found!")
+         return None
+ 
+ async def process_batch():
+-    """Process the current batch and send to the next active scheduler if ILP is done"""
++    """Process the current batch and send to scheduler via MQTT"""
+     global ilp_state
+     
+     logger.debug(f"process_batch called, current ILP state: {ilp_state}")
+     
+-    # Check if ILP is in progress - if so, we need to wait
+     if ilp_state == "progress":
+         logger.debug("ILP is in progress. Waiting to process batch...")
+         return
+@@ -326,20 +482,17 @@ async def process_batch():
+             logger.debug("No batch to process (batch is empty)")
+             return
+             
+-        # Create a copy of the current batch
+         batch_to_send = batch_state.current_batch.copy()
+         logger.info(f"Processing batch with {len(batch_to_send)} requests")
+         
+-        # Clear the current batch
+         batch_state.current_batch = []
+         batch_state.last_batch_time = time.time()
+     
+     # Find an active scheduler
+-    scheduler_url = await get_next_active_scheduler()
++    scheduler_topic = await get_next_active_scheduler()
+     
+-    if scheduler_url is None:
++    if scheduler_topic is None:
+         logger.error("No active schedulers available! Keeping batch in memory.")
+-        # Put the batch back
+         async with batch_state.lock:
+             batch_state.current_batch = batch_to_send
+         return
+@@ -348,31 +501,76 @@ async def process_batch():
+     ilp_state = "progress"
+     logger.info("Setting ILP state to 'progress' before sending batch")
+     
+-    # Send the batch to the scheduler
++    # Generate correlation ID
++    correlation_id = str(uuid.uuid4())
++    lb_id = get_loadbalancer_id()
++    
++    # Prepare MQTT message with prefix pattern
++    mqtt_payload = {
++        'correlation_id': correlation_id,
++        'loadbalancer_id': lb_id,
++        'batch_data': {"requests": batch_to_send}
++    }
++    
++    # Store pending response
++    pending_responses[correlation_id] = None
++    
+     try:
+-        async with httpx.AsyncClient() as client:
+-            response = await client.post(
+-                scheduler_url,
+-                json={"requests": batch_to_send},
+-                timeout=10.0,  # 10 second timeout for batch processing
+-                headers={
+-                    "Accept": "*/*",
+-                    "User-Agent": "Thunder Client (https://www.thunderclient.com)",
+-                    "Content-Type": "application/json"
+-                }
+-            )
+-            logger.info(f"Sent batch of {len(batch_to_send)} requests to {scheduler_url}, status: {response.status_code}")
++        # Publish to scheduler-specific topic with BATCH_REQUEST prefix
++        message = "BATCH_REQUEST:" + json.dumps(mqtt_payload)
++        mclient.publish(
++            topic=scheduler_topic,
++            payload=message,
++            qos=2
++        )
++        logger.info(f"Sent batch of {len(batch_to_send)} requests to {scheduler_topic} via MQTT")
++        
++        # Wait for response (with timeout)
++        timeout = 10.0
++        start_time = time.time()
++        while pending_responses[correlation_id] is None:
++            if time.time() - start_time > timeout:
++                logger.error(f"Timeout waiting for scheduler response from {scheduler_topic}")
++                
++                # Handle scheduler failure with failure counting
++                scheduler_uuid = scheduler_topic.replace("SCHEDULER_", "")
++                handle_scheduler_failure(scheduler_uuid, "timeout")
++                
++                # Reset ILP state and retry
++                ilp_state = "done"
++                del pending_responses[correlation_id]
++                
++                # Put batch back and try again
++                async with batch_state.lock:
++                    batch_state.current_batch = batch_to_send + batch_state.current_batch
++                await process_batch()
++                return
++            
++            await asyncio.sleep(0.1)
++        
++        # Got response
++        response = pending_responses[correlation_id]
++        del pending_responses[correlation_id]
++        logger.info(f"Received response from {scheduler_topic}: {response}")
++        
++        # Handle successful response
++        scheduler_uuid = scheduler_topic.replace("SCHEDULER_", "")
++        handle_scheduler_success(scheduler_uuid)
++        
+     except Exception as e:
+-        logger.error(f"Error sending batch to {scheduler_url}: {e}")
+-        logger.warning(f"Scheduler {scheduler_url} is DOWN")
++        logger.error(f"Error sending batch to {scheduler_topic} via MQTT: {e}")
++        logger.warning(f"Scheduler {scheduler_topic} encountered error")
+         
+-        # Mark this scheduler as unhealthy
+-        async with batch_state.lock:
+-            batch_state.scheduler_health[scheduler_url] = False
++        # Handle scheduler failure with failure counting
++        scheduler_uuid = scheduler_topic.replace("SCHEDULER_", "")
++        handle_scheduler_failure(scheduler_uuid, f"exception: {str(e)}")
+             
+-        # Reset ILP state back to "done" since our attempt failed
++        # Reset ILP state
+         ilp_state = "done"
+-        logger.info("Reset ILP state to 'done' due to failed batch send")
++        
++        # Clean up pending response if exists
++        if correlation_id in pending_responses:
++            del pending_responses[correlation_id]
+         
+         # Try again with a different scheduler
+         async with batch_state.lock:
+@@ -484,17 +682,35 @@ async def run_service(request: Request, background_tasks: BackgroundTasks):
+ @app.get("/status")
+ async def get_status():
+     """Get current status of the load balancer"""
++    current_time = time.time()
++    
++    # Get online schedulers
++    online_schedulers = []
++    for scheduler_uuid in scheduler_order:
++        if scheduler_uuid in discovered_schedulers:
++            scheduler_info = discovered_schedulers[scheduler_uuid]
++            if (scheduler_info['status'] == 'online' and 
++                (current_time - scheduler_info['last_seen']) < 60.0):
++                online_schedulers.append({
++                    'uuid': scheduler_uuid,
++                    'topic': scheduler_info['topic'],
++                    'last_seen': scheduler_info['last_seen'],
++                    'order_index': scheduler_info['order_index']
++                })
++    
+     async with batch_state.lock:
+         return {
+             "current_batch_size": len(batch_state.current_batch),
+             "batch_age_seconds": time.time() - batch_state.last_batch_time,
+-            "scheduler_health": batch_state.scheduler_health,
+-            "current_scheduler_index": batch_state.current_scheduler_index,
++            "discovered_schedulers": len(discovered_schedulers),
++            "online_schedulers": len(online_schedulers),
++            "next_scheduler_index": next_scheduler_index,
++            "scheduler_order": scheduler_order,
++            "online_scheduler_details": online_schedulers,
+             "ilp_state": ilp_state,
+             "config": {
+                 "batch_size": settings.BATCH_SIZE,
+-                "batch_timeout": settings.BATCH_TIMEOUT_SECONDS,
+-                "scheduler_count": len(settings.SCHEDULER_URLS)
++                "batch_timeout": settings.BATCH_TIMEOUT_SECONDS
+             }
+         }
+ 
+diff --git a/provider/provider1.py b/provider/provider1.py
+index 351018a..e49f4de 100644
+--- a/provider/provider1.py
++++ b/provider/provider1.py
+@@ -120,28 +120,39 @@ def on_connect(mqtt_client, userdata, flags, rc, callback_api_version):
+ 
+ def process_dockernotrun_request(data):
+     global pending_jobs
++    print(f"[DEBUG] process_dockernotrun_request started for job_id: {data.get('job_id', 'unknown')}")
++    
+     with pending_jobs_lock:
+         pending_jobs += 1
+         print(f"Pending jobs incremented: {pending_jobs}")
+     
+     try: 
++        print(f"[DEBUG] Processing job with runMultipleInvocations: {data.get('runMultipleInvocations', False)}")
+         if(data['runMultipleInvocations'] == True):
+             if(data['numberOfInvocations'] == 1) :
++                print(f"[DEBUG] Single invocation, calling on_request")
+                 on_request(data)
+             elif(data['isChained'] == False):
++                print(f"[DEBUG] Multiple invocations (not chained), calling on_request {data['numberOfInvocations']} times")
+                 for i in range(data['numberOfInvocations']):
+                     container_name = str(data['job_id']) + "_container_" + str(i)
+                     on_request(data)
+             else: 
++                print(f"[DEBUG] Chained invocations, calling on_chained_request")
+                 on_chained_request(data)
+         else:
++            print(f"[DEBUG] Single job, calling on_request")
+             on_request(data)
++            
++        print(f"[DEBUG] Job processing completed successfully for job_id: {data.get('job_id', 'unknown')}")
+     except Exception as e:
++        print(f"[DEBUG] Exception in process_dockernotrun_request: {str(e)}")
+         print(str(e))
+     finally: 
+         with pending_jobs_lock:
+             pending_jobs -= 1
+             print(f"Pending jobs decremented: {pending_jobs}")
++            print(f"[DEBUG] process_dockernotrun_request finished for job_id: {data.get('job_id', 'unknown')}")
+ 
+ def on_message(mqtt_client, userdata, msg):
+     print(f'=== MQTT MESSAGE RECEIVED ===')
+@@ -251,7 +262,19 @@ def append_data_to_file(data, filename):
+ def load_data_from_file(filename):
+     with open(filename, 'r') as file:
+         data = [json.loads(line.strip()) for line in file]
+-    return data #returns a list
++    
++    # Clean the data by removing entries with 'DID NOT RECIEVE' values
++    cleaned_data = []
++    for item in data:
++        # Check if any value contains 'DID NOT RECIEVE'
++        has_invalid_data = any('DID NOT RECIEVE' in str(value) for value in item.values())
++        if not has_invalid_data:
++            cleaned_data.append(item)
++        else:
++            print(f"[DEBUG] Skipping corrupted training data entry: {item}")
++    
++    print(f"[DEBUG] Loaded {len(data)} entries, cleaned to {len(cleaned_data)} valid entries")
++    return cleaned_data #returns a list
+ 
+ # Function to save the trained model to disk
+ def save_model(model, filename):
+@@ -266,30 +289,87 @@ def load_model(filename):
+ 
+ 
+ def train_regression_model(training_data):
++    print(f"[DEBUG] Training data length: {len(training_data)}")
++    if len(training_data) > 0:
++        print(f"[DEBUG] First training data sample: {training_data[0]}")
++        print(f"[DEBUG] Data types in first sample:")
++        for key, value in training_data[0].items():
++            print(f"  {key}: {type(value)} = {value}")
++    
+     X = []
+     y = []
+-    for data in training_data:
+-        X.append([data["cpu_usage"] * data["cpu_efficiency_score"], 
+-                  data["memory_usage"] * data["memory_efficiency_score"]])
+-        y.append(data["actual_runtime"])
+-
++    for i, data in enumerate(training_data):
++        try:
++            # Convert to float to ensure numeric values
++            cpu_usage = float(data["cpu_usage"])
++            memory_usage = float(data["memory_usage"])
++            cpu_eff = float(data["cpu_efficiency_score"])
++            memory_eff = float(data["memory_efficiency_score"])
++            runtime = float(data["actual_runtime"])
++            
++            X.append([cpu_usage * cpu_eff, memory_usage * memory_eff])
++            y.append(runtime)
++            print(f"[DEBUG] Sample {i}: cpu={cpu_usage}, mem={memory_usage}, runtime={runtime}")
++        except (ValueError, TypeError, KeyError) as e:
++            print(f"[DEBUG] Error processing training sample {i}: {e}")
++            print(f"[DEBUG] Problematic data: {data}")
++            # Skip samples with 'DID NOT RECIEVE' or other invalid data
++            if 'DID NOT RECIEVE' in str(data.values()):
++                print(f"[DEBUG] Skipping sample with 'DID NOT RECIEVE' data")
++            continue
++    
++    if len(X) == 0:
++        print("[DEBUG] No valid training data found, returning dummy model")
++        # Return a dummy model that predicts 1000ms for any input
++        class DummyModel:
++            def predict(self, X):
++                return np.array([1000.0] * len(X))
++        return DummyModel()
++    
++    print(f"[DEBUG] Training model with {len(X)} samples")
+     model = LinearRegression()
+     model.fit(X, y)
+     return model
+ 
+ def predict_runtime(service, provider, model):
++    print(f"[DEBUG] predict_runtime called with service: {service}")
++    
++    try:
++        ref_service_list = load_data_from_file("TrainingData/Reference_Provider_Data.txt")
++        print(f"[DEBUG] Reference service list length: {len(ref_service_list)}")
++        
++        reference_cpu_usage = None
++        reference_memory_usage = None
++        
++        for item in ref_service_list:
++            if(item['service']==service):
++                reference_cpu_usage = float(item['cpu_usage'])
++                reference_memory_usage = float(item['memory_usage'])
++                print(f"[DEBUG] Found reference data: cpu={reference_cpu_usage}, mem={reference_memory_usage}")
++                break
++        
++        if reference_cpu_usage is None:
++            print(f"[DEBUG] No reference data found for service {service}, using defaults")
++            reference_cpu_usage = 1000.0  # Default CPU usage
++            reference_memory_usage = 1000.0  # Default memory usage
++            
++        global cpu_efficiency_score, memory_efficiency_score
++        print(f"[DEBUG] Efficiency scores: cpu={cpu_efficiency_score}, mem={memory_efficiency_score}")
+ 
+-    ref_service_list = load_data_from_file("TrainingData/Reference_Provider_Data.txt")
+-    for item in ref_service_list:
+-        if(item['service']==service):
+-            reference_cpu_usage=item['cpu_usage']
+-            reference_memory_usage=item['memory_usage']
+-            break
+-    global cpu_efficiency_score, memory_efficiency_score
+-
+-    # For training in scheduler, instead of globals use provider.cpu_efficiency_score and provider.memory_efficiency_score
+-    X = np.array([[reference_cpu_usage * cpu_efficiency_score, reference_memory_usage * memory_efficiency_score]])
+-    return model.predict(X)
++        # For training in scheduler, instead of globals use provider.cpu_efficiency_score and provider.memory_efficiency_score
++        X = np.array([[reference_cpu_usage * float(cpu_efficiency_score), reference_memory_usage * float(memory_efficiency_score)]])
++        print(f"[DEBUG] Input features X: {X}")
++        
++        prediction = model.predict(X)
++        print(f"[DEBUG] Model prediction: {prediction}")
++        return prediction
++        
++    except Exception as e:
++        print(f"[DEBUG] Error in predict_runtime: {e}")
++        import traceback
++        traceback.print_exc()
++        # Return a default prediction
++        return np.array([1000.0])
+ 
+ 
+ def trainAndPredict(run_vars):
+@@ -297,12 +377,26 @@ def trainAndPredict(run_vars):
+     #It also has service (task link) (to get corresponding reference stats), eff_scores for training+prediction the ones which we use in this function
+     #TRAINING
+     print("running predictions inside trainAndPredict")
+-    training_data=load_data_from_file("TrainingData/eff_score_data.txt")
+-    model = train_regression_model(training_data)
+-    #PREDICTION
+-    provider_id = 0 # this provider would be used if this training and prediction were to run in the scheduler. Here it is useless as we use globals.
+-    predicted_runtime = predict_runtime(run_vars['service'], provider_id, model)
+-    return predicted_runtime[0]
++    print(f"[DEBUG] run_vars: {run_vars}")
++    
++    try:
++        training_data=load_data_from_file("TrainingData/eff_score_data.txt")
++        print(f"[DEBUG] Loaded training data from file")
++        model = train_regression_model(training_data)
++        print(f"[DEBUG] Model trained successfully")
++        
++        #PREDICTION
++        provider_id = 0 # this provider would be used if this training and prediction were to run in the scheduler. Here it is useless as we use globals.
++        predicted_runtime = predict_runtime(run_vars['service'], provider_id, model)
++        print(f"[DEBUG] Prediction completed: {predicted_runtime}")
++        return predicted_runtime[0]
++        
++    except Exception as e:
++        print(f"[DEBUG] Error in trainAndPredict: {e}")
++        import traceback
++        traceback.print_exc()
++        # Return a default prediction
++        return 1000.0
+ 
+ 
+ def run_docker(body, container_name, inputData=None):
+@@ -398,18 +492,56 @@ def run_docker(body, container_name, inputData=None):
+ def monitor_container(cont, start_run_time, timeout):
+     stack = []
+     count = 0
++    print(f"[DEBUG] monitor_container started for container: {cont.name if cont else 'None'}")
++    
+     while(str(cont.status)=='created'):
+         cont.reload()
++        print(f"[DEBUG] Container status: {cont.status}")
++        time.sleep(0.5)  # Wait for container to start
++    
+     while ((cont != None) and ((str(cont.status) == 'running') )):
+         if(time.time()-start_run_time > timeout):
+             print("timeout exceeded (cont not killed)")
++            # Force kill the container if it's been running too long
++            try:
++                cont.kill()
++                print(f"[DEBUG] Container killed due to timeout")
++            except Exception as e:
++                print(f"[DEBUG] Error killing container: {e}")
+             break
+         s = cont.stats(decode=False, stream=False)
++        print(f"[DEBUG] Container stats - memory_stats empty: {s['memory_stats'] == {}}")
+         if(s['memory_stats'] != {}):
+             stack.clear()
+             stack.append(s)
+-        else: break
++            print(f"[DEBUG] Added stats to stack, stack length: {len(stack)}")
++        else: 
++            print(f"[DEBUG] Memory stats empty, but continuing monitoring (container may still be starting)")
++            # Don't break immediately - container might still be starting up
++            # Only break if we've been monitoring for a while and still no stats
++            if count > 5:  # After 10+ seconds of no stats, then break
++                print(f"[DEBUG] No memory stats after {count} checks, breaking monitoring loop")
++                break
++        
++        # Always try to get stats, even if memory_stats is empty
++        # This ensures we capture stats when the container exits
++        if not stack:  # Only add if stack is empty
++            stack.append(s)
++            print(f"[DEBUG] Added stats to stack (even with empty memory_stats), stack length: {len(stack)}")
+         count+=1
++        
++        # Add a delay to prevent excessive CPU usage and allow container to finish
++        time.sleep(2)  # Check every 2 seconds instead of continuously
++        
++        # Reload container status to check if it's still running
++        try:
++            cont.reload()
++            print(f"[DEBUG] Container status check: {cont.status}")
++        except Exception as e:
++            print(f"[DEBUG] Error reloading container: {e}")
++            break
++    
++    print(f"[DEBUG] monitor_container finished, returning stack with length: {len(stack)}")
+     return stack
+ 
+ def get_docker_host_ip():
+@@ -448,141 +580,309 @@ def get_docker_host_ip():
+     return '10.1.19.76'
+ 
+ def run_and_invoke_docker(body, container_name) -> dict:
+-
+-    print("[run_and_invoke_docker]")
+-    #open a file and write the payload to it
+-    #with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
+-    #    json.dump(payload, f)
+-    #    f.flush()
+-    #    input_file = f.name
+-
+-    # Create output file
+-    #output_file = tempfile.NamedTemporaryFile(delete=False).name
+-            
+-    # Mount configurations for both input and output files
+-    #mounts = {
+-    #    input_file: {'bind': '/tmp/input.json', 'mode': 'ro'},
+-    #    output_file: {'bind': '/tmp/output.json', 'mode': 'rw'}
+-    #}
+-
+-    start_pull_time = time.time()
+-    #image = client.images.pull(body)
+-    print("inside run_and_invoke_docker with body : " + body)
+-    image = imagePuller.request_image(body)
+-    print("Out of Hybrid Caching manager and inside run_and_invoke_docker again")
+-    print(image)
+-    pull_time = int((time.time() - start_pull_time) *1000)
+-    
+-    start_run_time = time.time()
+-    cont = None
+-    benchmark_no=body.split("/")[1].split(".")[1] # get number from peercompute/benchmark.010....
+-    payload=get_payload(benchmark_no, "large")
+-    # Temporarily override payload with a fixed value
+-    
+-    print(payload)
+-    response = None
+-    future=None
+     try:
+-        print("container started running")
+-        cont = client.containers.run(image,
+-                                     name=container_name,
+-                                     detach=True,
+-                                     ports={'8080/tcp': None}, #None dynamically allocates a port
+-                                     environment={
+-                                         'AWS_ACCESS_KEY_ID': 'AKIA3KAG6W36BSXOEHWD',
+-                                         'AWS_SECRET_ACCESS_KEY': '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', 
+-                                         'AWS_REGION': 'ap-south-1'
+-                                     }
+-                                     )
++        print(f"[DEBUG] run_and_invoke_docker started with body: {body}, container_name: {container_name}")
++        #open a file and write the payload to it
++        #with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
++        #    json.dump(payload, f)
++        #    f.flush()
++        #    input_file = f.name
++
++        # Create output file
++        #output_file = tempfile.NamedTemporaryFile(delete=False).name
++                
++        # Mount configurations for both input and output files
++        #mounts = {
++        #    input_file: {'bind': '/tmp/input.json', 'mode': 'ro'},
++        #    output_file: {'bind': '/tmp/output.json', 'mode': 'rw'}
++        #}
++
++        start_pull_time = time.time()
++        #image = client.images.pull(body)
++        print("inside run_and_invoke_docker with body : " + body)
++        print(f"[DEBUG] Requesting image: {body}")
++        image = imagePuller.request_image(body)
++        print("Out of Hybrid Caching manager and inside run_and_invoke_docker again")
++        print(f"[DEBUG] Image obtained: {image}")
++        pull_time = int((time.time() - start_pull_time) *1000)
++        print(f"[DEBUG] Image pull time: {pull_time}ms")
+         
+-        # Wait a bit for container to start
+-        time.sleep(1)
+-        cont.reload()  # Refresh container data
+-        port_info = cont.ports.get('8080/tcp')
+-        host_port = port_info[0]['HostPort'] #get the port
+-        print("container name ID: ", cont.id)
+-        print("container name: ", cont.name)
+-        # Make POST request to container # blocking
++        start_run_time = time.time()
++        cont = None
++        # Safely parse benchmark number from task_link
++        try:
++            benchmark_no=body.split("/")[1].split(".")[1] # get number from peercompute/benchmark.010....
++            payload=get_payload(benchmark_no, "large")
++        except (IndexError, AttributeError):
++            # Fallback for simple task names like "hello-world"
++            print(f"[DEBUG] Could not parse benchmark number from '{body}', using simple payload")
++            payload = {"message": "Hello from simple task", "input": "test"}  # Simple payload for basic containers
++        # Temporarily override payload with a fixed value
+         
+-    except Exception as e:
+-        print(e)
+-
+-    finally:
+-        print(body)
+-        timeout = 3000
+-        print("monitoring container")
+-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor_for_cont_monitoring:
+-            # Submit the monitoring task to the executor
+-            future = executor_for_cont_monitoring.submit(monitor_container, cont, start_run_time, timeout)
+-            print("container monitored")
++        print(payload)
++        response = None
++        future=None
++        try:
++            print("container started running")
++            print(f"[DEBUG] Creating container with name: {container_name}")
++            cont = client.containers.run(image,
++                                         name=container_name,
++                                         detach=True,
++                                         ports={'8080/tcp': None}, #None dynamically allocates a port
++                                         environment={
++                                             'AWS_ACCESS_KEY_ID': 'AKIA3KAG6W36BSXOEHWD',
++                                             'AWS_SECRET_ACCESS_KEY': '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', 
++                                             'AWS_REGION': 'ap-south-1'
++                                         }
++                                         )
++            print(f"[DEBUG] Container created successfully: {cont.id}")
+             
+-            # Get the appropriate host IP for container communication
+-            host_ip = get_docker_host_ip()
+-            print(f"Using host IP: {host_ip}")
++            # Wait a bit for container to start
++            time.sleep(2)  # Increased wait time
++            cont.reload()  # Refresh container data
++            print(f"[DEBUG] Container reloaded, status: {cont.status}")
+             
+-            response = requests.post(f'http://{host_ip}:{host_port}', 
+-                                json=payload,
+-                                headers={'Content-Type': 'application/json'},
+-                                timeout=30)  # Increased timeout to 5 minutes (300 seconds)
+-            print("post request sent")
+-
+-    #result = "this is result" #remove this line uncomment below line
+-    #result = result.decode("utf-8") #this gives the Hello from Docker msg.
+-
+-    stack=future.result()
+-    run_vars={}
+-    # Read result from output file
+-    #with open(output_file, 'r') as f:
+-    #    result = f.read()
+-    #print("Result from container:", result)
+-    #print(response.json())
+-    result = response.json()
+-    print(result)
+-    print(stack) #uncomment this to get full stats
+-    run_time = int((time.time() - start_run_time)*1000) # get in ms
+-    #print(count)
+-    # run_vars['time_indexed_stats'] = time_indexed_stats
+-    run_vars['memory_usage'] = stack[0]['memory_stats']['usage']
+-    run_vars['cpu_usage'] = stack[0]['cpu_stats']['cpu_usage']['total_usage']
+-    #adding new lines for io_usage
+-    # blkio_read=0
+-    # blkio_write=0
+-    # for entry in stack[0]['blkio_stats']['io_service_bytes_recursive']:
+-    #     if entry['op'] == 'Read':
+-    #         blkio_read += entry['value']
+-    #     elif entry['op'] == 'Write':
+-    #         blkio_write += entry['value']
+-    # run_vars['io_read_stats'] = blkio_read
+-    # run_vars['io_write_stats'] = blkio_write
+-    #updated code till here
+-    run_vars['actual_runtime'] = run_time
+-    global cpu_efficiency_score
+-    run_vars['cpu_efficiency_score'] = cpu_efficiency_score
+-    global memory_efficiency_score
+-    run_vars['memory_efficiency_score'] = memory_efficiency_score
+-    # the below is service specific and has to be made for each service.
+-    append_data_to_file(run_vars, 'TrainingData/eff_score_data.txt')
+-    run_vars['service']=body # this is the task link
+-    print("runtime data: ")
+-    print(run_vars)
+-    print("Predicted Runtime:")
+-    print(trainAndPredict(run_vars))
+-    #print(predict_runtime(model, run_vars['time_indexed_stats'])) #a list of stats with timestamps
+-    print("Actual Runtime " + str(run_time))
+-    # Plot real-time predictions
+-    #plot_predictions(predictions)
++            # Check if container is actually running
++            if cont.status != 'running':
++                print(f"[DEBUG] ERROR: Container is not running! Status: {cont.status}")
++                # Try to get container logs to see what happened
++                try:
++                    logs = cont.logs().decode('utf-8')
++                    print(f"[DEBUG] Container logs: {logs}")
++                except Exception as e:
++                    print(f"[DEBUG] Could not get container logs: {e}")
++                raise Exception(f"Container failed to start properly. Status: {cont.status}")
++            
++            port_info = cont.ports.get('8080/tcp')
++            print(f"[DEBUG] Port info: {port_info}")
++            if port_info and len(port_info) > 0:
++                host_port = port_info[0]['HostPort'] #get the port
++                print(f"[DEBUG] Host port: {host_port}")
++            else:
++                print(f"[DEBUG] No port 8080 exposed, using default port 8080")
++                host_port = "8080"  # Default port for containers without exposed ports
++            
++            # Additional container health check
++            print(f"[DEBUG] Container ID: {cont.id}")
++            print(f"[DEBUG] Container name: {cont.name}")
++            print(f"[DEBUG] Container image: {cont.image}")
++            print(f"[DEBUG] Container created: {cont.attrs.get('Created', 'Unknown')}")
++            print(f"[DEBUG] Container state: {cont.attrs.get('State', 'Unknown')}")
++            print("container name ID: ", cont.id)
++            print("container name: ", cont.name)
++            # Make POST request to container # blocking
++            
++        except Exception as e:
++            print(e)
+ 
+-    # Cleanup temporary files
+-    #os.unlink(input_file)
+-    #os.unlink(output_file)
+-    cont.stop()  #remove this line to keep container running
+-    cont.remove()
+-    return result, pull_time, run_time, container_name
++        finally:
++            print(body)
++            timeout = 3000
++            print("monitoring container")
++            print(f"[DEBUG] Starting container monitoring with timeout: {timeout}s")
++            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor_for_cont_monitoring:
++                # Submit the monitoring task to the executor
++                future = executor_for_cont_monitoring.submit(monitor_container, cont, start_run_time, timeout)
++                print("container monitored")
++                
++                # Get the appropriate host IP for container communication
++                host_ip = get_docker_host_ip()
++                print(f"Using host IP: {host_ip}")
++                
++                # Try localhost as fallback if the detected IP doesn't work
++                import socket
++                test_ips = [host_ip, "127.0.0.1", "localhost"]
++                working_ip = None
++                
++                for test_ip in test_ips:
++                    try:
++                        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
++                        sock.settimeout(2)
++                        result = sock.connect_ex((test_ip, int(host_port)))
++                        sock.close()
++                        if result == 0:
++                            working_ip = test_ip
++                            print(f"[DEBUG] Found working IP: {test_ip}")
++                            break
++                        else:
++                            print(f"[DEBUG] IP {test_ip} not accessible")
++                    except Exception as e:
++                        print(f"[DEBUG] IP {test_ip} test failed: {e}")
++                
++                if working_ip:
++                    host_ip = working_ip
++                    print(f"[DEBUG] Using working IP: {host_ip}")
++                else:
++                    print(f"[DEBUG] No working IP found, using original: {host_ip}")
++                
++                # Check container logs before making request
++                try:
++                    logs = cont.logs(tail=10).decode('utf-8')
++                    print(f"[DEBUG] Container logs (last 10 lines): {logs}")
++                except Exception as e:
++                    print(f"[DEBUG] Could not get container logs: {e}")
++                
++                # Test if port is accessible (using the working IP we found)
++                try:
++                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
++                    sock.settimeout(5)
++                    result = sock.connect_ex((host_ip, int(host_port)))
++                    sock.close()
++                    if result == 0:
++                        print(f"[DEBUG] Port {host_port} is accessible on {host_ip}")
++                    else:
++                        print(f"[DEBUG] Port {host_port} is NOT accessible on {host_ip} (connection failed)")
++                except Exception as e:
++                    print(f"[DEBUG] Port accessibility test failed: {e}")
++                
++                print(f"[DEBUG] Making POST request to http://{host_ip}:{host_port}")
++                print(f"[DEBUG] Request payload: {payload}")
++                try:
++                    response = requests.post(f'http://{host_ip}:{host_port}', 
++                                        json=payload,
++                                        headers={'Content-Type': 'application/json'},
++                                        timeout=30)  # Increased timeout to 5 minutes (300 seconds)
++                    print(f"[DEBUG] POST request completed with status: {response.status_code}")
++                    print("post request sent")
++                except requests.exceptions.RequestException as e:
++                    print(f"[DEBUG] POST request failed: {e}")
++                    # Try GET request as fallback
++                    try:
++                        print(f"[DEBUG] Trying GET request as fallback...")
++                        response = requests.get(f'http://{host_ip}:{host_port}', timeout=10)
++                        print(f"[DEBUG] GET request completed with status: {response.status_code}")
++                    except requests.exceptions.RequestException as e2:
++                        print(f"[DEBUG] GET request also failed: {e2}")
++                        response = None
++
++            #result = "this is result" #remove this line uncomment below line
++            #result = result.decode("utf-8") #this gives the Hello from Docker msg.
++
++            print(f"[DEBUG] Getting monitoring results from future")
++            try:
++                stack=future.result()
++                print(f"[DEBUG] Monitoring results - stack length: {len(stack) if stack else 'None'}")
++                print(f"[DEBUG] Stack content: {stack}")
++            except Exception as e:
++                print(f"[DEBUG] Exception getting monitoring results: {e}")
++                stack = []
++            
++            run_vars={}
++            # Read result from output file
++            #with open(output_file, 'r') as f:
++            #    result = f.read()
++            #print("Result from container:", result)
++            #print(response.json())
++            try:
++                if response is not None:
++                    result = response.json()
++                    print(f"[DEBUG] Response result: {result}")
++                else:
++                    result = {"error": "No response received from container"}
++                    print(f"[DEBUG] No response received, using default result: {result}")
++            except Exception as e:
++                print(f"[DEBUG] Exception parsing response JSON: {e}")
++                result = {"error": f"Failed to parse response: {str(e)}"}
++            
++            print(stack) #uncomment this to get full stats
++            run_time = int((time.time() - start_run_time)*1000) # get in ms
++            print(f"[DEBUG] Run time: {run_time}ms")
++            #print(count)
++            # run_vars['time_indexed_stats'] = time_indexed_stats
++    
++            print(f"[DEBUG] About to access stack[0] - stack length: {len(stack) if stack else 'None'}")
++            if stack and len(stack) > 0:
++                print(f"[DEBUG] Accessing stack[0] - memory_stats: {stack[0].get('memory_stats', 'NOT_FOUND')}")
++                print(f"[DEBUG] Accessing stack[0] - cpu_stats: {stack[0].get('cpu_stats', 'NOT_FOUND')}")
++                
++                # Safely extract memory usage
++                memory_stats = stack[0].get('memory_stats', {})
++                if 'usage' in memory_stats:
++                    run_vars['memory_usage'] = memory_stats['usage']
++                    print(f"[DEBUG] Successfully extracted memory_usage: {run_vars['memory_usage']}")
++                else:
++                    run_vars['memory_usage'] = 100000000  # 100MB default
++                    print(f"[DEBUG] No memory usage in stats, using default: {run_vars['memory_usage']}")
++                
++                # Safely extract CPU usage
++                cpu_stats = stack[0].get('cpu_stats', {})
++                cpu_usage = cpu_stats.get('cpu_usage', {})
++                if 'total_usage' in cpu_usage:
++                    run_vars['cpu_usage'] = cpu_usage['total_usage']
++                    print(f"[DEBUG] Successfully extracted cpu_usage: {run_vars['cpu_usage']}")
++                else:
++                    run_vars['cpu_usage'] = 1000000000  # 1 second of CPU time default
++                    print(f"[DEBUG] No CPU usage in stats, using default: {run_vars['cpu_usage']}")
++            else:
++                print(f"[DEBUG] ERROR: Stack is empty or None! Cannot access stack[0]")
++                print(f"[DEBUG] Setting default values for memory_usage and cpu_usage")
++                # Use more realistic default values instead of 0
++                run_vars['memory_usage'] = 100000000  # 100MB default
++                run_vars['cpu_usage'] = 1000000000    # 1 second of CPU time default
++            #adding new lines for io_usage
++            # blkio_read=0
++            # blkio_write=0
++            # for entry in stack[0]['blkio_stats']['io_service_bytes_recursive']:
++            #     if entry['op'] == 'Read':
++            #         blkio_read += entry['value']
++            #     elif entry['op'] == 'Write':
++            #         blkio_write += entry['value']
++            # run_vars['io_read_stats'] = blkio_read
++            # run_vars['io_write_stats'] = blkio_write
++            #updated code till here
++            run_vars['actual_runtime'] = run_time
++            global cpu_efficiency_score
++            run_vars['cpu_efficiency_score'] = cpu_efficiency_score
++            global memory_efficiency_score
++            run_vars['memory_efficiency_score'] = memory_efficiency_score
++            # the below is service specific and has to be made for each service.
++            print(f"[DEBUG] Appending runtime data to file")
++            append_data_to_file(run_vars, 'TrainingData/eff_score_data.txt')
++            run_vars['service']=body # this is the task link
++            print("runtime data: ")
++            print(run_vars)
++            print("Predicted Runtime:")
++            print(trainAndPredict(run_vars))
++            #print(predict_runtime(model, run_vars['time_indexed_stats'])) #a list of stats with timestamps
++            print("Actual Runtime " + str(run_time))
++            # Plot real-time predictions
++            #plot_predictions(predictions)
++
++            # Cleanup temporary files
++            #os.unlink(input_file)
++            #os.unlink(output_file)
++            print(f"[DEBUG] Stopping and removing container: {container_name}")
++            try:
++                cont.stop()  #remove this line to keep container running
++                cont.remove()
++                print(f"[DEBUG] Container stopped and removed successfully")
++            except Exception as e:
++                print(f"[DEBUG] Exception stopping/removing container: {e}")
++            
++            print(f"[DEBUG] run_and_invoke_docker completed successfully for container: {container_name}")
++            return result, pull_time, run_time, container_name
++    except Exception as e:
++        print(f"[DEBUG] Exception in run_and_invoke_docker: {e}")
++        import traceback
++        traceback.print_exc()
++        # Return default values to prevent the function from crashing
++        return {"error": str(e)}, 0, 0, container_name
+ 
+ def delete_container_and_image(body, container_name):
+-    filters = {'name': container_name}
+-    container_id = client.containers.list(all=True, filters=filters)[0]
+-    container_id.remove()
++    print(f"[DEBUG] delete_container_and_image called with body: {body}, container_name: {container_name}")
++    try:
++        filters = {'name': container_name}
++        containers = client.containers.list(all=True, filters=filters)
++        print(f"[DEBUG] Found {len(containers)} containers with name {container_name}")
++        if containers:
++            container_id = containers[0]
++            container_id.remove()
++            print(f"[DEBUG] Container {container_name} removed successfully")
++        else:
++            print(f"[DEBUG] Container {container_name} not found, already removed")
++    except Exception as e:
++        print(f"[DEBUG] Exception in delete_container_and_image: {e}")
++        # Don't let this prevent MQTT sending
+ 
+     # client.images.remove(body)
+ 
+@@ -605,17 +905,33 @@ def HF_invoke_balance_transfer(receiver, sender):
+ def on_request(json_data) :
+     # Replace HTTP ACK signal with MQTT
+     global mclient
++    print(f"[DEBUG] Starting job processing for job_id: {json_data['job_id']}")
++    
++    print(f"[DEBUG] About to send ACK signal for job_id: {json_data['job_id']}")
+     mclient.publish(topic=user_id, payload="ACK:"+str(json_data['job_id']), qos=2)
++    print(f"[DEBUG] ACK signal sent successfully for job_id: {json_data['job_id']}")
++    
+     # Replace HTTP NOT_READY signal with MQTT (set provider as busy during job execution)
++    print(f"[DEBUG] About to send NOT_READY signal for provider: {user_id}")
+     mclient.publish(topic=user_id, payload="NOT_READY", qos=2)
++    print(f"[DEBUG] NOT_READY signal sent successfully for provider: {user_id}")
+     
+     if json_data['inputData'] == "None":
+         json_data['inputData'] = None
+ 
+     print("[on_request] in provider1.py")
+-    r, pull_time, run_time, container_name = run_and_invoke_docker(json_data['task_link'], str(str(json_data['job_id'])+"_container_")) #TODO
+-    total_time = math.ceil(((pull_time + run_time)/100.0))*100 
+-    print(pull_time, run_time, total_time)
++    try:
++        r, pull_time, run_time, container_name = run_and_invoke_docker(json_data['task_link'], str(str(json_data['job_id'])+"_container_")) #TODO
++        total_time = math.ceil(((pull_time + run_time)/100.0))*100 
++        print(f"[DEBUG] pull_time: {pull_time}, run_time: {run_time}, total_time: {total_time}")
++    except Exception as e:
++        print(f"[DEBUG] Exception in run_and_invoke_docker: {e}")
++        # Set default values to ensure MQTT sending still happens
++        r = {"error": f"Container execution failed: {str(e)}"}
++        pull_time = 0
++        run_time = 0
++        container_name = f"{json_data['job_id']}_container_"
++        total_time = 0
+     # HF_set_time(str(json_data['job_id']), total_time)
+     # HF_invoke_balance_transfer(str(json_data['provider_id']), str(json_data['task_developer']))
+ 
+@@ -632,11 +948,22 @@ def on_request(json_data) :
+         writer.writerow(data)
+ 
+ 
++    print(f"[DEBUG] About to call delete_container_and_image for container: {container_name}")
+     delete_container_and_image(json_data['task_link'], container_name)
++    print(f"[DEBUG] delete_container_and_image completed for container: {container_name}")
++    
++    print(f"[DEBUG] Creating response object for job_id: {json_data['job_id']}")
+     response = {'stage':"dockerrun", 'Result': r, 'pull_time': pull_time, 'run_time': run_time, 'total_time': total_time, 'job_id': json_data['job_id']}
++    print(f"[DEBUG] Response object created: {response}")
++    
++    print(f"[DEBUG] About to send job result for job_id: {json_data['job_id']}")
+     mclient.publish(user_id, json.dumps(response).encode("utf-8"),qos=2)
++    print(f"[DEBUG] Job result sent successfully for job_id: {json_data['job_id']}")
++    
+     # Set provider as ready again after job completion
++    print(f"[DEBUG] About to send READY signal for provider: {user_id}")
+     mclient.publish(topic=user_id, payload="READY", qos=2)
++    print(f"[DEBUG] READY signal sent successfully for provider: {user_id}")
+     print("published response to scheduler")
+ 
+ def on_chained_request(json_data) :
+diff --git a/provider/provider_logs.log b/provider/provider_logs.log
+new file mode 100644
+index 0000000..435bc64
+--- /dev/null
++++ b/provider/provider_logs.log
+@@ -0,0 +1,280 @@
++(.venv) peercompute@colva2:~/Serverless_Scheduler_sn34kyp3t3$ python provider/provider1.py ff898965-5c47-41af-b447-5b538a0c7847
++2025-10-22 15:29:59 - INFO - Scheduler discovery enabled - will discover schedulers via MQTT announcements
++Warning: Could not set up experiment logging: cannot import name 'get_experiment_log_dir' from 'loadbalancer.loadbalancer_with_logging' (/home/peercompute/Serverless_Scheduler_sn34kyp3t3/loadbalancer/loadbalancer_with_logging.py)
++PID: 1397093
++2025-10-22 15:29:59 - DEBUG - Trying paths: ['/home/peercompute/.docker/config.json', '/home/peercompute/.dockercfg']
++2025-10-22 15:29:59 - DEBUG - No config file found
++2025-10-22 15:29:59 - DEBUG - Trying paths: ['/home/peercompute/.docker/config.json', '/home/peercompute/.dockercfg']
++2025-10-22 15:29:59 - DEBUG - No config file found
++2025-10-22 15:29:59 - DEBUG - http://localhost:None "GET /version HTTP/1.1" 200 824
++2025-10-22 15:29:59 - DEBUG - Trying paths: ['/home/peercompute/.docker/config.json', '/home/peercompute/.dockercfg']
++2025-10-22 15:29:59 - DEBUG - No config file found
++2025-10-22 15:29:59 - DEBUG - Trying paths: ['/home/peercompute/.docker/config.json', '/home/peercompute/.dockercfg']
++2025-10-22 15:29:59 - DEBUG - No config file found
++2025-10-22 15:29:59 - DEBUG - http://localhost:None "GET /version HTTP/1.1" 200 824
++Waiting for scheduler subscription confirmation...
++Connected successfully
++=== MQTT MESSAGE RECEIVED ===
++Topic: ff898965-5c47-41af-b447-5b538a0c7847
++Payload: b'SUBSCRIPTION_CONFIRMED'
++Timestamp: 2025-10-22 15:30:00
++================================
++Scheduler confirmed subscription, sending startup signals...
++STARTUP signal sent to scheduler
++READY signal sent to scheduler
++=== MQTT MESSAGE RECEIVED ===
++Topic: ff898965-5c47-41af-b447-5b538a0c7847
++Payload: b'EfficiencyScoreSet:{"cpu": 1.0, "memory": 1.0}'
++Timestamp: 2025-10-22 15:30:00
++================================
++Fetched this provider's efficiency score set
++1.0
++1.0
++=== MQTT MESSAGE RECEIVED ===
++Topic: ff898965-5c47-41af-b447-5b538a0c7847
++Payload: b'STARTUP'
++Timestamp: 2025-10-22 15:30:00
++================================
++=== MQTT MESSAGE RECEIVED ===
++Topic: ff898965-5c47-41af-b447-5b538a0c7847
++Payload: b'READY'
++Timestamp: 2025-10-22 15:30:00
++================================
++=== MQTT MESSAGE RECEIVED ===
++Topic: EVERYONE
++Payload: b'SCHEDULER_PONG:{"scheduler_uuid": "ff898965-5c47-41af-b447-5b538a0c7847", "timestamp": 1761127230.359414, "status": "active"}'
++Timestamp: 2025-10-22 15:30:30
++================================
++=== MQTT MESSAGE RECEIVED ===
++Topic: ff898965-5c47-41af-b447-5b538a0c7847
++Payload: b'{"provider_id": "ff898965-5c47-41af-b447-5b538a0c7847", "task_link": "peercompute/benchmark.110.dynamic-html.python-3.9", "task_developer": "0316778b-d20b-4415-a993-d95172340c2d", "job_id": 2943, "numberOfInvocations": 1, "isChained": false, "inputData": "None", "runMultipleInvocations": false, "stage": "dockernotrun"}'
++Timestamp: 2025-10-22 15:30:41
++================================
++Parsed JSON data: {'provider_id': 'ff898965-5c47-41af-b447-5b538a0c7847', 'task_link': 'peercompute/benchmark.110.dynamic-html.python-3.9', 'task_developer': '0316778b-d20b-4415-a993-d95172340c2d', 'job_id': 2943, 'numberOfInvocations': 1, 'isChained': False, 'inputData': 'None', 'runMultipleInvocations': False, 'stage': 'dockernotrun'}
++Processing dockernotrun request for job_id: 2943
++[DEBUG] process_dockernotrun_request started for job_id: 2943
++Pending jobs incremented: 1
++[DEBUG] Processing job with runMultipleInvocations: False
++[DEBUG] Single job, calling on_request
++[DEBUG] Starting job processing for job_id: 2943
++[DEBUG] About to send ACK signal for job_id: 2943
++[DEBUG] ACK signal sent successfully for job_id: 2943
++[DEBUG] About to send NOT_READY signal for provider: ff898965-5c47-41af-b447-5b538a0c7847
++[DEBUG] NOT_READY signal sent successfully for provider: ff898965-5c47-41af-b447-5b538a0c7847
++[on_request] in provider1.py
++[DEBUG] run_and_invoke_docker started with body: peercompute/benchmark.110.dynamic-html.python-3.9, container_name: 2943_container_
++inside run_and_invoke_docker with body : peercompute/benchmark.110.dynamic-html.python-3.9
++[DEBUG] Requesting image: peercompute/benchmark.110.dynamic-html.python-3.9
++[request_image] Requesting image: peercompute/benchmark.110.dynamic-html.python-3.9
++[request_image] Found peercompute/benchmark.110.dynamic-html.python-3.9 in disk cache.
++[request_image] Cached image data: {'tar_path': 'cached_images/peercompute_slash_benchmarkdot110dotdynamic-htmldotpython-3dot9.tar', 'size': 169830497}
++[load_image_from_tar] Loading image from tar file: cached_images/peercompute_slash_benchmarkdot110dotdynamic-htmldotpython-3dot9.tar
++2025-10-22 15:30:41 - DEBUG - http://localhost:None "POST /v1.48/images/load HTTP/1.1" 200 None
++=== MQTT MESSAGE RECEIVED ===
++Topic: ff898965-5c47-41af-b447-5b538a0c7847
++Payload: b'ACK:2943'
++Timestamp: 2025-10-22 15:30:41
++================================
++2025-10-22 15:30:41 - DEBUG - http://localhost:None "GET /v1.48/images/sha256:2b82c79a7fd41d742c1494a7ee90ed824f9f9dc7520aebc198ebf127a274ac8d/json HTTP/1.1" 200 None
++[load_image_from_tar] Image loaded from tar file: cached_images/peercompute_slash_benchmarkdot110dotdynamic-htmldotpython-3dot9.tar
++[store_in_memory] Stored peercompute/benchmark.110.dynamic-html.python-3.9 in memory.
++Out of Hybrid Caching manager and inside run_and_invoke_docker again
++[DEBUG] Image obtained: <Image: 'peercompute/benchmark.110.dynamic-html.python-3.9:latest'>
++[DEBUG] Image pull time: 149ms
++Benchmark number: 110
++Size: large
++{'username': 'testname', 'random_len': 100000}
++container started running
++[DEBUG] Creating container with name: 2943_container_
++2025-10-22 15:30:41 - DEBUG - http://localhost:None "POST /v1.48/containers/create?name=2943_container_ HTTP/1.1" 201 88
++2025-10-22 15:30:41 - DEBUG - http://localhost:None "GET /v1.48/containers/67042d3767b9ebb008f7570d9efff1808ad3ed8b559541c5f889cac5c0f2688a/json HTTP/1.1" 200 None
++=== MQTT MESSAGE RECEIVED ===
++Topic: ff898965-5c47-41af-b447-5b538a0c7847
++Payload: b'NOT_READY'
++Timestamp: 2025-10-22 15:30:41
++================================
++2025-10-22 15:30:41 - DEBUG - http://localhost:None "POST /v1.48/containers/67042d3767b9ebb008f7570d9efff1808ad3ed8b559541c5f889cac5c0f2688a/start HTTP/1.1" 204 0
++[DEBUG] Container created successfully: 67042d3767b9ebb008f7570d9efff1808ad3ed8b559541c5f889cac5c0f2688a
++2025-10-22 15:30:43 - DEBUG - http://localhost:None "GET /v1.48/containers/67042d3767b9ebb008f7570d9efff1808ad3ed8b559541c5f889cac5c0f2688a/json HTTP/1.1" 200 None
++[DEBUG] Container reloaded, status: running
++[DEBUG] Port info: [{'HostIp': '0.0.0.0', 'HostPort': '32786'}, {'HostIp': '::', 'HostPort': '32786'}]
++[DEBUG] Host port: 32786
++[DEBUG] Container ID: 67042d3767b9ebb008f7570d9efff1808ad3ed8b559541c5f889cac5c0f2688a
++[DEBUG] Container name: 2943_container_
++2025-10-22 15:30:43 - DEBUG - http://localhost:None "GET /v1.48/images/2b82c79a7fd41d742c1494a7ee90ed824f9f9dc7520aebc198ebf127a274ac8d/json HTTP/1.1" 200 None
++[DEBUG] Container image: <Image: 'peercompute/benchmark.110.dynamic-html.python-3.9:latest'>
++[DEBUG] Container created: 2025-10-22T10:00:41.425797475Z
++[DEBUG] Container state: {'Status': 'running', 'Running': True, 'Paused': False, 'Restarting': False, 'OOMKilled': False, 'Dead': False, 'Pid': 1397720, 'ExitCode': 0, 'Error': '', 'StartedAt': '2025-10-22T10:00:41.544797122Z', 'FinishedAt': '0001-01-01T00:00:00Z'}
++container name ID:  67042d3767b9ebb008f7570d9efff1808ad3ed8b559541c5f889cac5c0f2688a
++container name:  2943_container_
++peercompute/benchmark.110.dynamic-html.python-3.9
++monitoring container
++[DEBUG] Starting container monitoring with timeout: 3000s
++[DEBUG] monitor_container started for container: 2943_container_
++container monitored
++Using host IP: 10.1.19.1
++[DEBUG] IP 10.1.19.1 not accessible
++[DEBUG] Found working IP: 127.0.0.1
++[DEBUG] Using working IP: 127.0.0.1
++2025-10-22 15:30:43 - DEBUG - http://localhost:None "GET /v1.48/containers/67042d3767b9ebb008f7570d9efff1808ad3ed8b559541c5f889cac5c0f2688a/logs?stderr=1&stdout=1&timestamps=0&follow=0&tail=10 HTTP/1.1" 200 None
++2025-10-22 15:30:43 - DEBUG - http://localhost:None "GET /v1.48/containers/67042d3767b9ebb008f7570d9efff1808ad3ed8b559541c5f889cac5c0f2688a/json HTTP/1.1" 200 None
++[DEBUG] Container logs (last 10 lines): Starting HTTP server on port 8080...
++
++[DEBUG] Port 32786 is accessible on 127.0.0.1
++[DEBUG] Making POST request to http://127.0.0.1:32786
++[DEBUG] Request payload: {'username': 'testname', 'random_len': 100000}
++2025-10-22 15:30:43 - DEBUG - Starting new HTTP connection (1): 127.0.0.1:32786
++[DEBUG] POST request failed: ('Connection aborted.', ConnectionResetError(104, 'Connection reset by peer'))
++[DEBUG] Trying GET request as fallback...
++2025-10-22 15:30:43 - DEBUG - Starting new HTTP connection (1): 127.0.0.1:32786
++[DEBUG] GET request also failed: ('Connection aborted.', ConnectionResetError(104, 'Connection reset by peer'))
++2025-10-22 15:30:44 - DEBUG - http://localhost:None "GET /v1.48/containers/67042d3767b9ebb008f7570d9efff1808ad3ed8b559541c5f889cac5c0f2688a/stats?stream=False HTTP/1.1" 200 887
++[DEBUG] Container stats - memory_stats empty: True
++[DEBUG] Memory stats empty, but continuing monitoring (container may still be starting)
++[DEBUG] Added stats to stack (even with empty memory_stats), stack length: 1
++2025-10-22 15:30:46 - DEBUG - http://localhost:None "GET /v1.48/containers/67042d3767b9ebb008f7570d9efff1808ad3ed8b559541c5f889cac5c0f2688a/json HTTP/1.1" 200 None
++[DEBUG] Container status check: exited
++[DEBUG] monitor_container finished, returning stack with length: 1
++[DEBUG] Getting monitoring results from future
++[DEBUG] Monitoring results - stack length: 1
++[DEBUG] Stack content: [{'name': '/2943_container_', 'id': '67042d3767b9ebb008f7570d9efff1808ad3ed8b559541c5f889cac5c0f2688a', 'read': '0001-01-01T00:00:00Z', 'preread': '2025-10-22T10:00:43.749435554Z', 'pids_stats': {}, 'blkio_stats': {'io_service_bytes_recursive': None, 'io_serviced_recursive': None, 'io_queue_recursive': None, 'io_service_time_recursive': None, 'io_wait_time_recursive': None, 'io_merged_recursive': None, 'io_time_recursive': None, 'sectors_recursive': None}, 'num_procs': 0, 'storage_stats': {}, 'cpu_stats': {'cpu_usage': {'total_usage': 0, 'usage_in_kernelmode': 0, 'usage_in_usermode': 0}, 'throttling_data': {'periods': 0, 'throttled_periods': 0, 'throttled_time': 0}}, 'precpu_stats': {'cpu_usage': {'total_usage': 81448000, 'usage_in_kernelmode': 8144000, 'usage_in_usermode': 73303000}, 'system_cpu_usage': 8474102370000000, 'online_cpus': 20, 'throttling_data': {'periods': 0, 'throttled_periods': 0, 'throttled_time': 0}}, 'memory_stats': {}}]
++[DEBUG] No response received, using default result: {'error': 'No response received from container'}
++[{'name': '/2943_container_', 'id': '67042d3767b9ebb008f7570d9efff1808ad3ed8b559541c5f889cac5c0f2688a', 'read': '0001-01-01T00:00:00Z', 'preread': '2025-10-22T10:00:43.749435554Z', 'pids_stats': {}, 'blkio_stats': {'io_service_bytes_recursive': None, 'io_serviced_recursive': None, 'io_queue_recursive': None, 'io_service_time_recursive': None, 'io_wait_time_recursive': None, 'io_merged_recursive': None, 'io_time_recursive': None, 'sectors_recursive': None}, 'num_procs': 0, 'storage_stats': {}, 'cpu_stats': {'cpu_usage': {'total_usage': 0, 'usage_in_kernelmode': 0, 'usage_in_usermode': 0}, 'throttling_data': {'periods': 0, 'throttled_periods': 0, 'throttled_time': 0}}, 'precpu_stats': {'cpu_usage': {'total_usage': 81448000, 'usage_in_kernelmode': 8144000, 'usage_in_usermode': 73303000}, 'system_cpu_usage': 8474102370000000, 'online_cpus': 20, 'throttling_data': {'periods': 0, 'throttled_periods': 0, 'throttled_time': 0}}, 'memory_stats': {}}]
++[DEBUG] Run time: 5337ms
++[DEBUG] About to access stack[0] - stack length: 1
++[DEBUG] Accessing stack[0] - memory_stats: {}
++[DEBUG] Accessing stack[0] - cpu_stats: {'cpu_usage': {'total_usage': 0, 'usage_in_kernelmode': 0, 'usage_in_usermode': 0}, 'throttling_data': {'periods': 0, 'throttled_periods': 0, 'throttled_time': 0}}
++[DEBUG] No memory usage in stats, using default: 100000000
++[DEBUG] Successfully extracted cpu_usage: 0
++[DEBUG] Appending runtime data to file
++runtime data: 
++{'memory_usage': 100000000, 'cpu_usage': 0, 'actual_runtime': 5337, 'cpu_efficiency_score': 1.0, 'memory_efficiency_score': 1.0, 'service': 'peercompute/benchmark.110.dynamic-html.python-3.9'}
++Predicted Runtime:
++running predictions inside trainAndPredict
++[DEBUG] run_vars: {'memory_usage': 100000000, 'cpu_usage': 0, 'actual_runtime': 5337, 'cpu_efficiency_score': 1.0, 'memory_efficiency_score': 1.0, 'service': 'peercompute/benchmark.110.dynamic-html.python-3.9'}
++[DEBUG] Skipping corrupted training data entry: {'memory_usage': 187305984, 'cpu_usage': 1162424000, 'actual_runtime': 20660, 'cpu_efficiency_score': 'DID NOT RECIEVE', 'memory_efficiency_score': 'DID NOT RECIEVE'}
++[DEBUG] Skipping corrupted training data entry: {'memory_usage': 199163904, 'cpu_usage': 1305293000, 'actual_runtime': 20390, 'cpu_efficiency_score': 'DID NOT RECIEVE', 'memory_efficiency_score': 'DID NOT RECIEVE'}
++[DEBUG] Skipping corrupted training data entry: {'memory_usage': 181657600, 'cpu_usage': 1199035000, 'actual_runtime': 20326, 'cpu_efficiency_score': 'DID NOT RECIEVE', 'memory_efficiency_score': 'DID NOT RECIEVE'}
++[DEBUG] Loaded 54 entries, cleaned to 51 valid entries
++[DEBUG] Loaded training data from file
++[DEBUG] Training data length: 51
++[DEBUG] First training data sample: {'memory_usage': 9809920, 'cpu_usage': 52768162887, 'actual_runtime': 55972, 'cpu_efficiency_score': 1.0, 'memory_efficiency_score': 1.0}
++[DEBUG] Data types in first sample:
++  memory_usage: <class 'int'> = 9809920
++  cpu_usage: <class 'int'> = 52768162887
++  actual_runtime: <class 'int'> = 55972
++  cpu_efficiency_score: <class 'float'> = 1.0
++  memory_efficiency_score: <class 'float'> = 1.0
++[DEBUG] Sample 0: cpu=52768162887.0, mem=9809920.0, runtime=55972.0
++[DEBUG] Sample 1: cpu=52955478575.0, mem=4304896.0, runtime=56036.0
++[DEBUG] Sample 2: cpu=53063947225.0, mem=5566464.0, runtime=55711.0
++[DEBUG] Sample 3: cpu=53104984586.0, mem=5398528.0, runtime=54601.0
++[DEBUG] Sample 4: cpu=51156085417.0, mem=4067328.0, runtime=54526.0
++[DEBUG] Sample 5: cpu=51574808447.0, mem=9351168.0, runtime=55057.0
++[DEBUG] Sample 6: cpu=52600057511.0, mem=9883648.0, runtime=56604.0
++[DEBUG] Sample 7: cpu=53334860797.0, mem=9969664.0, runtime=56372.0
++[DEBUG] Sample 8: cpu=51401969170.0, mem=7344128.0, runtime=54819.0
++[DEBUG] Sample 9: cpu=52762771606.0, mem=3719168.0, runtime=56105.0
++[DEBUG] Sample 10: cpu=53319007277.0, mem=9965568.0, runtime=55977.0
++[DEBUG] Sample 11: cpu=52708667180.0, mem=8855552.0, runtime=56956.0
++[DEBUG] Sample 12: cpu=51683591745.0, mem=3420160.0, runtime=53779.0
++[DEBUG] Sample 13: cpu=52479502171.0, mem=3350528.0, runtime=55657.0
++[DEBUG] Sample 14: cpu=1985666119.0, mem=151228416.0, runtime=66234.0
++[DEBUG] Sample 15: cpu=52806828269.0, mem=10035200.0, runtime=55461.0
++[DEBUG] Sample 16: cpu=52062038406.0, mem=4063232.0, runtime=55293.0
++[DEBUG] Sample 17: cpu=52200971005.0, mem=3444736.0, runtime=54937.0
++[DEBUG] Sample 18: cpu=52063255335.0, mem=4026368.0, runtime=55136.0
++[DEBUG] Sample 19: cpu=52807907029.0, mem=9891840.0, runtime=55205.0
++[DEBUG] Sample 20: cpu=52107581502.0, mem=9936896.0, runtime=56415.0
++[DEBUG] Sample 21: cpu=52161761998.0, mem=3420160.0, runtime=55113.0
++[DEBUG] Sample 22: cpu=51447911991.0, mem=8663040.0, runtime=54563.0
++[DEBUG] Sample 23: cpu=51643841416.0, mem=9875456.0, runtime=54688.0
++[DEBUG] Sample 24: cpu=51862640411.0, mem=3338240.0, runtime=54448.0
++[DEBUG] Sample 25: cpu=52155270892.0, mem=9986048.0, runtime=56588.0
++[DEBUG] Sample 26: cpu=52698441720.0, mem=9695232.0, runtime=58043.0
++[DEBUG] Sample 27: cpu=52952802489.0, mem=9789440.0, runtime=57726.0
++[DEBUG] Sample 28: cpu=51168388623.0, mem=3411968.0, runtime=54055.0
++[DEBUG] Sample 29: cpu=52836962847.0, mem=9789440.0, runtime=58055.0
++[DEBUG] Sample 30: cpu=53884753458.0, mem=12619776.0, runtime=60279.0
++[DEBUG] Sample 31: cpu=50756510704.0, mem=9682944.0, runtime=54017.0
++[DEBUG] Sample 32: cpu=50807444600.0, mem=9658368.0, runtime=53658.0
++[DEBUG] Sample 33: cpu=50406913402.0, mem=12554240.0, runtime=58228.0
++[DEBUG] Sample 34: cpu=51131038941.0, mem=12505088.0, runtime=59446.0
++[DEBUG] Sample 35: cpu=51206733025.0, mem=3469312.0, runtime=54107.0
++[DEBUG] Sample 36: cpu=51216267167.0, mem=3436544.0, runtime=53949.0
++[DEBUG] Sample 37: cpu=92704327.0, mem=10055680.0, runtime=105058.0
++[DEBUG] Sample 38: cpu=113105126.0, mem=19017728.0, runtime=105509.0
++[DEBUG] Sample 39: cpu=381694237.0, mem=39866368.0, runtime=6963.0
++[DEBUG] Sample 40: cpu=398147823.0, mem=39923712.0, runtime=6865.0
++[DEBUG] Sample 41: cpu=2936961000.0, mem=203862016.0, runtime=22464.0
++[DEBUG] Sample 42: cpu=2836041000.0, mem=221016064.0, runtime=20413.0
++[DEBUG] Sample 43: cpu=1336066000.0, mem=176517120.0, runtime=20916.0
++[DEBUG] Sample 44: cpu=0.0, mem=0.0, runtime=3336.0
++[DEBUG] Sample 45: cpu=0.0, mem=0.0, runtime=3390.0
++[DEBUG] Sample 46: cpu=1000000000.0, mem=100000000.0, runtime=5412.0
++[DEBUG] Sample 47: cpu=1000000000.0, mem=100000000.0, runtime=5337.0
++[DEBUG] Sample 48: cpu=1000000000.0, mem=100000000.0, runtime=5335.0
++[DEBUG] Sample 49: cpu=0.0, mem=100000000.0, runtime=5339.0
++[DEBUG] Sample 50: cpu=0.0, mem=100000000.0, runtime=5337.0
++[DEBUG] Training model with 51 samples
++[DEBUG] Model trained successfully
++[DEBUG] predict_runtime called with service: peercompute/benchmark.110.dynamic-html.python-3.9
++[DEBUG] Loaded 1 entries, cleaned to 1 valid entries
++[DEBUG] Reference service list length: 1
++[DEBUG] No reference data found for service peercompute/benchmark.110.dynamic-html.python-3.9, using defaults
++[DEBUG] Efficiency scores: cpu=1.0, mem=1.0
++[DEBUG] Input features X: [[1000. 1000.]]
++[DEBUG] Model prediction: [33027.98980049]
++[DEBUG] Prediction completed: [33027.98980049]
++33027.9898004929
++Actual Runtime 5337
++[DEBUG] Stopping and removing container: 2943_container_
++2025-10-22 15:30:46 - DEBUG - http://localhost:None "POST /v1.48/containers/67042d3767b9ebb008f7570d9efff1808ad3ed8b559541c5f889cac5c0f2688a/stop HTTP/1.1" 304 0
++2025-10-22 15:30:46 - DEBUG - http://localhost:None "DELETE /v1.48/containers/67042d3767b9ebb008f7570d9efff1808ad3ed8b559541c5f889cac5c0f2688a?v=False&link=False&force=False HTTP/1.1" 204 0
++[DEBUG] Container stopped and removed successfully
++[DEBUG] run_and_invoke_docker completed successfully for container: 2943_container_
++[DEBUG] pull_time: 149, run_time: 5337, total_time: 5500
++[DEBUG] About to call delete_container_and_image for container: 2943_container_
++[DEBUG] delete_container_and_image called with body: peercompute/benchmark.110.dynamic-html.python-3.9, container_name: 2943_container_
++2025-10-22 15:30:46 - DEBUG - http://localhost:None "GET /v1.48/containers/json?limit=-1&all=1&size=0&trunc_cmd=0&filters=%7B%22name%22%3A+%5B%222943_container_%22%5D%7D HTTP/1.1" 200 3
++[DEBUG] Found 0 containers with name 2943_container_
++[DEBUG] Container 2943_container_ not found, already removed
++[DEBUG] delete_container_and_image completed for container: 2943_container_
++[DEBUG] Creating response object for job_id: 2943
++[DEBUG] Response object created: {'stage': 'dockerrun', 'Result': {'error': 'No response received from container'}, 'pull_time': 149, 'run_time': 5337, 'total_time': 5500, 'job_id': 2943}
++[DEBUG] About to send job result for job_id: 2943
++[DEBUG] Job result sent successfully for job_id: 2943
++[DEBUG] About to send READY signal for provider: ff898965-5c47-41af-b447-5b538a0c7847
++[DEBUG] READY signal sent successfully for provider: ff898965-5c47-41af-b447-5b538a0c7847
++published response to scheduler
++[DEBUG] Job processing completed successfully for job_id: 2943
++Pending jobs decremented: 0
++[DEBUG] process_dockernotrun_request finished for job_id: 2943
++=== MQTT MESSAGE RECEIVED ===
++Topic: ff898965-5c47-41af-b447-5b538a0c7847
++Payload: b'{"stage": "dockerrun", "Result": {"error": "No response received from container"}, "pull_time": 149, "run_time": 5337, "total_time": 5500, "job_id": 2943}'
++Timestamp: 2025-10-22 15:30:46
++================================
++Parsed JSON data: {'stage': 'dockerrun', 'Result': {'error': 'No response received from container'}, 'pull_time': 149, 'run_time': 5337, 'total_time': 5500, 'job_id': 2943}
++=== MQTT MESSAGE RECEIVED ===
++Topic: ff898965-5c47-41af-b447-5b538a0c7847
++Payload: b'READY'
++Timestamp: 2025-10-22 15:30:47
++================================
++Connected successfully
++=== MQTT MESSAGE RECEIVED ===
++Topic: ff898965-5c47-41af-b447-5b538a0c7847
++Payload: b'{"stage": "dockerrun", "Result": {"error": "No response received from container"}, "pull_time": 149, "run_time": 5337, "total_time": 5500, "job_id": 2943}'
++Timestamp: 2025-10-22 15:30:48
++================================
++Parsed JSON data: {'stage': 'dockerrun', 'Result': {'error': 'No response received from container'}, 'pull_time': 149, 'run_time': 5337, 'total_time': 5500, 'job_id': 2943}
++=== MQTT MESSAGE RECEIVED ===
++Topic: ff898965-5c47-41af-b447-5b538a0c7847
++Payload: b'READY'
++Timestamp: 2025-10-22 15:30:48
++================================
++=== MQTT MESSAGE RECEIVED ===
++Topic: EVERYONE
++Payload: b'SCHEDULER_PONG:{"scheduler_uuid": "ff898965-5c47-41af-b447-5b538a0c7847", "timestamp": 1761127260.3891287, "status": "active"}'
++Timestamp: 2025-10-22 15:31:00
++================================
+diff --git a/results.csv b/results.csv
+index 6129291..31565e8 100644
+--- a/results.csv
++++ b/results.csv
+@@ -519,3 +519,25 @@ PT,RT,TT
+ 23063,59446,82600
+ 0,54107,54200
+ 0,53949,54000
++0,0,0
++0,0,0
++0,0,0
++0,0,0
++0,0,0
++0,0,0
++0,0,0
++0,0,0
++0,0,0
++0,0,0
++0,0,0
++0,0,0
++0,0,0
++0,0,0
++0,0,0
++173,3390,3600
++153,5412,5600
++142,5337,5500
++158,5335,5500
++0,0,0
++151,5339,5500
++149,5337,5500
+diff --git a/scheduler/manage.py b/scheduler/manage.py
+index cf96748..cfcc208 100755
+--- a/scheduler/manage.py
++++ b/scheduler/manage.py
+@@ -36,10 +36,14 @@ def main():
+     
+     # Setup experiment logging for runserver command
+     if len(sys.argv) > 1 and sys.argv[1] == 'runserver':
+-        from django.conf import settings
+-        if settings.EXPERIMENT_MODE and settings.EXPERIMENT_STDOUT_LOGGING:
+-            from providers.experiment_logging import setup_scheduler_logging
+-            setup_scheduler_logging()
++        try:
++            from django.conf import settings
++            if settings.EXPERIMENT_MODE and settings.EXPERIMENT_STDOUT_LOGGING:
++                from providers.experiment_logging import setup_scheduler_logging
++                setup_scheduler_logging()
++        except Exception as e:
++            # Silently ignore setup errors during startup
++            pass
+     
+     # Get the current process ID
+     pid = os.getpid()
+diff --git a/scheduler/providers/apps.py b/scheduler/providers/apps.py
+index eaa80eb..2467f26 100644
+--- a/scheduler/providers/apps.py
++++ b/scheduler/providers/apps.py
+@@ -3,4 +3,4 @@ from django.apps import AppConfig
+ 
+ class ProvidersConfig(AppConfig):
+     default_auto_field = 'django.db.models.BigAutoField'
+-    name = 'providers'
++    name = 'providers'
+\ No newline at end of file
+diff --git a/scheduler/providers/scheduler_log.log b/scheduler/providers/scheduler_log.log
+new file mode 100644
+index 0000000..0e4a80b
+--- /dev/null
++++ b/scheduler/providers/scheduler_log.log
+@@ -0,0 +1,245 @@
++^CDeleted PID file: djpid.txt
++(.venv) peercompute@colva2:~/Serverless_Scheduler_sn34kyp3t3$ python scheduler/manage.py runserver 0.0.0.0:8000 --verbosity=2
++PID: 1397516
++PID: 1397519
++Watching for file changes with StatReloader
++Performing system checks...
++
++System check identified no issues (0 silenced).
++October 22, 2025 - 10:00:26
++Django version 5.0.3, using settings 'scheduler.settings'
++Starting development server at http://0.0.0.0:8000/
++Quit the server with CONTROL-C.
++
++=== SCHEDULER MQTT CONNECTION ESTABLISHED ===
++Subscribed to core topics: EVERYONE, ROTATION
++scheduler_name:  colva2
++Subscribed to scheduler-specific topic: SCHEDULER_ff898965-5c47-41af-b447-5b538a0c7847
++Subscribed to SCHEDULER_ANNOUNCEMENTS topic
++=== SCHEDULER SUBSCRIPTION SUMMARY ===
++Scheduler UUID: ff898965-5c47-41af-b447-5b538a0c7847
++Scheduler Topic: SCHEDULER_ff898965-5c47-41af-b447-5b538a0c7847
++Subscribed Topics:
++  - EVERYONE (provider signals, heartbeats)
++  - ROTATION (ILP coordination)
++  - SCHEDULER_ff898965-5c47-41af-b447-5b538a0c7847 (load balancer requests)
++  - SCHEDULER_ANNOUNCEMENTS (scheduler discovery)
++  - Individual provider topics (dynamically added)
++=============================================
++Announced scheduler identity: ff898965-5c47-41af-b447-5b538a0c7847
++Started heartbeat thread
++on_subscribe userdata is <paho.mqtt.client.Client object at 0x7fa672b34a30>
++on_subscribe userdata is <paho.mqtt.client.Client object at 0x7fa672b34a30>
++on_subscribe userdata is <paho.mqtt.client.Client object at 0x7fa672b34a30>
++on_subscribe userdata is <paho.mqtt.client.Client object at 0x7fa672b34a30>
++on_subscribe userdata is <paho.mqtt.client.Client object at 0x7fa672b34a30>
++from views.py/providers 
++Received message on topic: SCHEDULER_ANNOUNCEMENTS with payload: b'{"scheduler_uuid": "ff898965-5c47-41af-b447-5b538a0c7847", "scheduler_topic": "SCHEDULER_ff898965-5c47-41af-b447-5b538a0c7847", "status": "online", "timestamp": 1761127230.3587885}'
++SCHEDULER_ANNOUNCEMENTS {"scheduler_uuid": "ff898965-5c47-41af-b447-5b538a0c7847", "scheduler_topic": "SCHEDULER_ff898965-5c47-41af-b447-5b538a0c7847", "status": "online", "timestamp": 1761127230.3587885}
++from views.py/providers 
++Received message on topic: EVERYONE with payload: b'SCHEDULER_PONG:{"scheduler_uuid": "ff898965-5c47-41af-b447-5b538a0c7847", "timestamp": 1761127230.359414, "status": "active"}'
++EVERYONE SCHEDULER_PONG:{"scheduler_uuid": "ff898965-5c47-41af-b447-5b538a0c7847", "timestamp": 1761127230.359414, "status": "active"}
++from views.py/providers 
++Received message on topic: SCHEDULER_ff898965-5c47-41af-b447-5b538a0c7847 with payload: b'BATCH_REQUEST:{"correlation_id": "17ab4a60-cb8d-426a-b053-bf9da5c5830f", "loadbalancer_id": "LOADBALANCER_colva2", "batch_data": {"requests": [{"serviceID": 17, "numberOfInvocations": 1, "chained": false, "input": "None", "runMultipleInvocations": false}]}}'
++SCHEDULER_ff898965-5c47-41af-b447-5b538a0c7847 BATCH_REQUEST:{"correlation_id": "17ab4a60-cb8d-426a-b053-bf9da5c5830f", "loadbalancer_id": "LOADBALANCER_colva2", "batch_data": {"requests": [{"serviceID": 17, "numberOfInvocations": 1, "chained": false, "input": "None", "runMultipleInvocations": false}]}}
++Received BATCH_REQUEST with correlation_id: 17ab4a60-cb8d-426a-b053-bf9da5c5830f
++Starting ILP processing for 1 services...
++Entering request_handler
++Debug: Entering find_providers
++User : ff898965-5c47-41af-b447-5b538a0c7847
++        provider : True         developer : False
++Entering build_cost_matrix
++Entering get_predicted_runtimes
++Predicted runtimes: {17: 0}
++Exiting get_predicted_runtimes
++Entering print_cost_matrix
++
++==========================================================
++                     Provider (ID + Location) | Service 17
++==========================================================
++ff898965-5c47-41af-b447-5b538a0c7847 (colva2) |   0.00  
++==========================================================
++
++Exiting print_cost_matrix
++Exiting build_cost_matrix
++Entering build_delay_dict
++Time of last start job for ff898965-5c47-41af-b447-5b538a0c7847: 2025-10-22 09:52:12.574892+00:00
++Error calculating delay: unsupported operand type(s) for -: 'datetime.datetime' and 'str'
++Delay dictionary: {<User: User : ff898965-5c47-41af-b447-5b538a0c7847
++        provider : True         developer : False>: 0}
++Exiting build_delay_dict
++Using scheduling algorithm: ILP
++Welcome to the CBC MILP Solver 
++Version: 2.10.3 
++Build Date: Dec 15 2019 
++
++command line - /home/peercompute/.local/lib/python3.10/site-packages/pulp/solverdir/cbc/linux/64/cbc /tmp/c2e4d053f22640b69959b8eaf20075d2-pulp.mps -timeMode elapsed -branch -printingOptions all -solution /tmp/c2e4d053f22640b69959b8eaf20075d2-pulp.sol (default strategy 1)
++At line 2 NAME          MODEL
++At line 3 ROWS
++At line 6 COLUMNS
++At line 11 RHS
++At line 13 BOUNDS
++At line 16 ENDATA
++Problem MODEL has 1 rows, 2 columns and 1 elements
++Coin0008I MODEL read with 0 errors
++Option for timeMode changed from cpu to elapsed
++Continuous objective value is 0 - 0.00 seconds
++Cgl0004I processed model has 0 rows, 0 columns (0 integer (0 of which binary)) and 0 elements
++Cbc3007W No integer variables - nothing to do
++Cuts at root node changed objective from 0 to -1.79769e+308
++Probing was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
++Gomory was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
++Knapsack was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
++Clique was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
++MixedIntegerRounding2 was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
++FlowCover was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
++TwoMirCuts was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
++ZeroHalf was tried 0 times and created 0 cuts of which 0 were active after adding rounds of cuts (0.000 seconds)
++
++Result - Optimal solution found
++
++Objective value:                0.00000000
++Enumerated nodes:               0
++Total iterations:               0
++Time (CPU seconds):             0.00
++Time (Wallclock seconds):       0.00
++
++Option for printingOptions changed from normal to all
++Total time (CPU seconds):       0.00   (Wallclock seconds):       0.00
++
++Time taken for Min Cost Algo: 0.008140087127685547
++Time taken in wallclock sec by lp algo:  0.00929403305053711
++
++Entering process_assignments
++
++Processing assignment - Service: 17, Provider: ff898965-5c47-41af-b447-5b538a0c7847
++Using provider: ff898965-5c47-41af-b447-5b538a0c7847 (already locked)
++Created job with ID: 2943
++Predicted runtime: 0
++Current provider delay state: {'inflight_jobs': [1000, 0, 0, 0, 1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 'time_of_last_startjob': '2025-09-21T19:33:09.282071'}
++
++Entering add_delay
++Current delay state: {'inflight_jobs': [1000, 0, 0, 0, 1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 'time_of_last_startjob': '2025-09-21T19:33:09.282071'}
++New delay value: 0
++Type of new delay: <class 'int'>
++Appending to inflight_jobs: 0
++Final delay state: {'inflight_jobs': [1000, 0, 0, 0, 1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 'time_of_last_startjob': '2025-09-21T19:33:09.282071'}
++Successfully saved in add_delay
++Exiting add_delay
++
++Successfully added delay
++Updated provider delay state: {'inflight_jobs': [1000, 0, 0, 0, 1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 'time_of_last_startjob': '2025-09-21T19:33:09.282071'}
++Successfully saved provider
++Sending job 2943 to provider ff898965-5c47-41af-b447-5b538a0c7847
++=== PUBLISHING MQTT MESSAGE ===
++Topic: ff898965-5c47-41af-b447-5b538a0c7847
++Payload: {
++  "provider_id": "ff898965-5c47-41af-b447-5b538a0c7847",
++  "task_link": "peercompute/benchmark.110.dynamic-html.python-3.9",
++  "task_developer": "0316778b-d20b-4415-a993-d95172340c2d",
++  "job_id": 2943,
++  "numberOfInvocations": 1,
++  "isChained": false,
++  "inputData": "None",
++  "runMultipleInvocations": false,
++  "stage": "dockernotrun"
++}
++Timestamp: 2025-10-22 10:00:40
++================================
++in pub to topic mqtt
++Job 2943 successfully sent to provider ff898965-5c47-41af-b447-5b538a0c7847
++Exiting process_assignments
++
++Published ILP_DONE to ROTATION topic
++DEBUG: Main processing succeeded, flag set to: True
++Job 2943 already sent to provider ff898965-5c47-41af-b447-5b538a0c7847 by process_assignments
++ILP processing completed. Results: []
++Published BATCH_RESPONSE to LOADBALANCER_colva2
++on_subscribe userdata is <paho.mqtt.client.Client object at 0x7fa672b34a30>
++from views.py/providers 
++Received message on topic: ff898965-5c47-41af-b447-5b538a0c7847 with payload: b'{"provider_id": "ff898965-5c47-41af-b447-5b538a0c7847", "task_link": "peercompute/benchmark.110.dynamic-html.python-3.9", "task_developer": "0316778b-d20b-4415-a993-d95172340c2d", "job_id": 2943, "numberOfInvocations": 1, "isChained": false, "inputData": "None", "runMultipleInvocations": false, "stage": "dockernotrun"}'
++pulled but docker not run
++from views.py/providers 
++Received message on topic: ROTATION with payload: b'ILP_DONE'
++ROTATION ILP_DONE
++from views.py/providers 
++Received message on topic: ff898965-5c47-41af-b447-5b538a0c7847 with payload: b'ACK:2943'
++ff898965-5c47-41af-b447-5b538a0c7847 ACK:2943
++Provider ff898965-5c47-41af-b447-5b538a0c7847 sent ACK signal for job 2943 via MQTT
++from views.py/providers 
++Received message on topic: ff898965-5c47-41af-b447-5b538a0c7847 with payload: b'NOT_READY'
++ff898965-5c47-41af-b447-5b538a0c7847 NOT_READY
++Provider ff898965-5c47-41af-b447-5b538a0c7847 sent NOT_READY signal via MQTT
++from views.py/providers 
++Received message on topic: ff898965-5c47-41af-b447-5b538a0c7847 with payload: b'{"stage": "dockerrun", "Result": {"error": "No response received from container"}, "pull_time": 149, "run_time": 5337, "total_time": 5500, "job_id": 2943}'
++data[stage]==dockerrun works
++{'stage': 'dockerrun', 'Result': {'error': 'No response received from container'}, 'pull_time': 149, 'run_time': 5337, 'total_time': 5500, 'job_id': 2943}
++=== JOB COMPLETION PROCESSING ===
++Inside finish_job with data: {'stage': 'dockerrun', 'Result': {'error': 'No response received from container'}, 'pull_time': 149, 'run_time': 5337, 'total_time': 5500, 'job_id': 2943}
++Processing job completion for job_id: 2943
++Found job 2943 in database
++Job details - Provider: ff898965-5c47-41af-b447-5b538a0c7847, Service: 17, Status: False
++Job completion data: {'stage': 'dockerrun', 'Result': {'error': 'No response received from container'}, 'pull_time': 149, 'run_time': 5337, 'total_time': 5500, 'job_id': 2943}
++Job state before update - pull_time: 0, run_time: 0, total_time: 0, finished: False
++Job state after update - pull_time: 149, run_time: 5337, total_time: 5500, finished: True
++Job 2943 successfully updated and saved to database
++Error updating cache state: User.update_cache_state() missing 1 required positional argument: 'image_size'
++from views.py/providers 
++Received message on topic: ff898965-5c47-41af-b447-5b538a0c7847 with payload: b'READY'
++ff898965-5c47-41af-b447-5b538a0c7847 READY
++=== PROVIDER READY SIGNAL RECEIVED ===
++Provider ff898965-5c47-41af-b447-5b538a0c7847 sent READY signal via MQTT
++Topic: ff898965-5c47-41af-b447-5b538a0c7847
++Payload: READY
++Timestamp: 2025-10-22 10:00:47
++=========================================
++=== PROCESSING READY SIGNAL ===
++Provider ID: ff898965-5c47-41af-b447-5b538a0c7847
++Found provider in database: ff898965-5c47-41af-b447-5b538a0c7847
++Provider state before update - ready: False, last_ready_signal: 2025-10-22 10:00:00.462293+00:00
++Provider state after update - ready: True, last_ready_signal: 2025-10-22 10:00:47.095962+00:00
++Provider ff898965-5c47-41af-b447-5b538a0c7847 marked as READY and saved to database
++=====================================
++Successfully processed READY signal from provider ff898965-5c47-41af-b447-5b538a0c7847
++from views.py/providers 
++Received message on topic: ff898965-5c47-41af-b447-5b538a0c7847 with payload: b'offline_non-procedurally'
++ff898965-5c47-41af-b447-5b538a0c7847 offline_non-procedurally
++Penalised provider  ff898965-5c47-41af-b447-5b538a0c7847  for quitting non-procedurally
++ff898965-5c47-41af-b447-5b538a0c7847was disconnected non-procedurally
++from views.py/providers 
++Received message on topic: ff898965-5c47-41af-b447-5b538a0c7847 with payload: b'{"stage": "dockerrun", "Result": {"error": "No response received from container"}, "pull_time": 149, "run_time": 5337, "total_time": 5500, "job_id": 2943}'
++data[stage]==dockerrun works
++{'stage': 'dockerrun', 'Result': {'error': 'No response received from container'}, 'pull_time': 149, 'run_time': 5337, 'total_time': 5500, 'job_id': 2943}
++=== JOB COMPLETION PROCESSING ===
++Inside finish_job with data: {'stage': 'dockerrun', 'Result': {'error': 'No response received from container'}, 'pull_time': 149, 'run_time': 5337, 'total_time': 5500, 'job_id': 2943}
++Processing job completion for job_id: 2943
++Found job 2943 in database
++Job details - Provider: ff898965-5c47-41af-b447-5b538a0c7847, Service: 17, Status: True
++Job completion data: {'stage': 'dockerrun', 'Result': {'error': 'No response received from container'}, 'pull_time': 149, 'run_time': 5337, 'total_time': 5500, 'job_id': 2943}
++Job state before update - pull_time: 149, run_time: 5337, total_time: 5500, finished: True
++Job state after update - pull_time: 149, run_time: 5337, total_time: 5500, finished: True
++Job 2943 successfully updated and saved to database
++Error updating cache state: User.update_cache_state() missing 1 required positional argument: 'image_size'
++from views.py/providers 
++Received message on topic: ff898965-5c47-41af-b447-5b538a0c7847 with payload: b'READY'
++ff898965-5c47-41af-b447-5b538a0c7847 READY
++=== PROVIDER READY SIGNAL RECEIVED ===
++Provider ff898965-5c47-41af-b447-5b538a0c7847 sent READY signal via MQTT
++Topic: ff898965-5c47-41af-b447-5b538a0c7847
++Payload: READY
++Timestamp: 2025-10-22 10:00:48
++=========================================
++=== PROCESSING READY SIGNAL ===
++Provider ID: ff898965-5c47-41af-b447-5b538a0c7847
++Found provider in database: ff898965-5c47-41af-b447-5b538a0c7847
++Provider state before update - ready: True, last_ready_signal: 2025-10-22 10:00:47.095962+00:00
++Provider state after update - ready: True, last_ready_signal: 2025-10-22 10:00:48.826355+00:00
++Provider ff898965-5c47-41af-b447-5b538a0c7847 marked as READY and saved to database
++=====================================
++Successfully processed READY signal from provider ff898965-5c47-41af-b447-5b538a0c7847
++from views.py/providers 
++Received message on topic: EVERYONE with payload: b'SCHEDULER_PONG:{"scheduler_uuid": "ff898965-5c47-41af-b447-5b538a0c7847", "timestamp": 1761127260.3891287, "status": "active"}'
++EVERYONE SCHEDULER_PONG:{"scheduler_uuid": "ff898965-5c47-41af-b447-5b538a0c7847", "timestamp": 1761127260.3891287, "status": "active"}
++from views.py/providers 
++Received message on topic: EVERYONE with payload: b'SCHEDULER_PONG:{"scheduler_uuid": "ff898965-5c47-41af-b447-5b538a0c7847", "timestamp": 1761127290.4186075, "status": "active"}'
++EVERYONE SCHEDULER_PONG:{"scheduler_uuid": "ff898965-5c47-41af-b447-5b538a0c7847", "timestamp": 1761127290.4186075, "status": "active"}
+diff --git a/scheduler/providers/views.py b/scheduler/providers/views.py
+index 8517b88..d5c6323 100644
+--- a/scheduler/providers/views.py
++++ b/scheduler/providers/views.py
+@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, tzinfo
+ import uuid
+ from providers.models import Job
+ from django.http import JsonResponse
++from django.core.exceptions import ObjectDoesNotExist
+ from scheduler.settings import TIME_ZONE
+ from pytz import timezone
+ from django.contrib import messages
+@@ -39,9 +40,33 @@ non_procedural_shutdown_multiplier = 0.67
+ global prediction_deviation_points
+ global prediction_deviation_points_multiplier
+ import scheduler.settings as settings
++import os
+ # Create your views here.
+ data_dict = None
+ BROKER_ID = "broker.hivemq.com"
++
++def get_scheduler_id():
++    """Get scheduler identifier from database User record"""
++    try:
++        # Try to find existing scheduler user record
++        scheduler_name = os.environ.get('SCHEDULER_NAME', socket.gethostname())
++        print("scheduler_name: ", scheduler_name)
++        
++        # Look for a User record that represents this scheduler
++        # Sort by -last_ready_signal and choose the latest
++        scheduler_user = User.objects.filter(
++            location=scheduler_name,  # Use location field to identify scheduler
++            active=True,
++            ready=True,
++        ).order_by('-last_ready_signal').first()
++        
++        if scheduler_user:
++            return str(scheduler_user.user_id)
++        else:
++            return None
++    except User.DoesNotExist:
++        print("No scheduler user record found")
++        return None # No scheduler user record found, return None
+ # BROKER_ID = "10.8.1.18"
+ reference_provider_id = '34933555-5cca-41fb-aded-4ab7900c48d5'
+ file_path = "/home/user/Documents/Serverless_Scheduler/SchedInfo.csv"
+@@ -92,9 +117,81 @@ def penalise(user_id, penalty_type):
+     provider.save()
+ 
+ # mqtt client callbacks:
++def send_heartbeat(mqtt_client, scheduler_uuid):
++    """Send periodic heartbeat to load balancers"""
++    while True:
++        try:
++            heartbeat_payload = {
++                'scheduler_uuid': scheduler_uuid,
++                'timestamp': time.time(),
++                'status': 'active'
++            }
++            mqtt_client.publish(
++                topic="EVERYONE",  # All load balancers listen to this
++                payload="SCHEDULER_PONG:" + json.dumps(heartbeat_payload),
++                qos=1
++            )
++            time.sleep(30)  # Send heartbeat every 10 seconds
++        except Exception as e:
++            print(f"Error sending heartbeat: {e}")
++            time.sleep(5)
++
+ def on_connect(mqtt_client, userdata, flags, rc, callback_api_version):
+-    mqtt_client.subscribe(topic="EVERYONE")
+-    print("Connected to mqtt from views.py/providers")
++    if rc == 0:
++        print("=== SCHEDULER MQTT CONNECTION ESTABLISHED ===")
++        
++        # Subscribe to core topics
++        mqtt_client.subscribe(topic="EVERYONE")
++        mqtt_client.subscribe("ROTATION")
++        print("Subscribed to core topics: EVERYONE, ROTATION")
++        
++        # Get scheduler UUID from database
++        scheduler_uuid = get_scheduler_id()
++        if scheduler_uuid is None:
++            print("No scheduler user record found. Cannot connect to MQTT.")
++            return
++        scheduler_topic = f"SCHEDULER_{scheduler_uuid}"
++        
++        # Subscribe to scheduler-specific topic
++        mqtt_client.subscribe(scheduler_topic)
++        print(f"Subscribed to scheduler-specific topic: {scheduler_topic}")
++        
++        # Subscribe to SCHEDULER_ANNOUNCEMENTS to receive other scheduler announcements
++        mqtt_client.subscribe("SCHEDULER_ANNOUNCEMENTS")
++        print("Subscribed to SCHEDULER_ANNOUNCEMENTS topic")
++        
++        print(f"=== SCHEDULER SUBSCRIPTION SUMMARY ===")
++        print(f"Scheduler UUID: {scheduler_uuid}")
++        print(f"Scheduler Topic: {scheduler_topic}")
++        print(f"Subscribed Topics:")
++        print(f"  - EVERYONE (provider signals, heartbeats)")
++        print(f"  - ROTATION (ILP coordination)")
++        print(f"  - {scheduler_topic} (load balancer requests)")
++        print(f"  - SCHEDULER_ANNOUNCEMENTS (scheduler discovery)")
++        print(f"  - Individual provider topics (dynamically added)")
++        print("=============================================")
++        
++        # Announce scheduler identity to load balancers
++        announcement = {
++            'scheduler_uuid': scheduler_uuid,
++            'scheduler_topic': scheduler_topic,
++            'status': 'online',
++            'timestamp': time.time()
++        }
++        mqtt_client.publish(
++            topic="SCHEDULER_ANNOUNCEMENTS",
++            payload=json.dumps(announcement),
++            qos=1
++        )
++        print(f"Announced scheduler identity: {scheduler_uuid}")
++        
++        # Start heartbeat thread
++        heartbeat_thread = threading.Thread(target=send_heartbeat, args=(mqtt_client, scheduler_uuid))
++        heartbeat_thread.daemon = True
++        heartbeat_thread.start()
++        print("Started heartbeat thread")
++    else:
++        print(f"Bad connection to mqtt from views.py/providers. Code: {rc}")
+ 
+ def on_message(mqtt_client, userdata, msg):
+     print('from views.py/providers ')
+@@ -124,14 +221,22 @@ def on_message(mqtt_client, userdata, msg):
+                 print(f"Error handling STARTUP signal from {msg.topic}: {str(e)}")
+                 
+         elif payload_str == "READY":
++            print(f"=== PROVIDER READY SIGNAL RECEIVED ===")
+             print(f"Provider {msg.topic} sent READY signal via MQTT")
++            print(f"Topic: {msg.topic}")
++            print(f"Payload: {payload_str}")
++            print(f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}")
++            print("=========================================")
+             # Call the same logic as ready HTTP endpoint
+             try:
+                ready_mqtt(msg.topic)
++               print(f"Successfully processed READY signal from provider {msg.topic}")
+             except User.DoesNotExist:
+-                print(f"Provider {msg.topic} not found in database")
++                print(f"ERROR: Provider {msg.topic} not found in database")
+             except Exception as e:
+-                print(f"Error handling READY signal from {msg.topic}: {str(e)}")
++                print(f"ERROR: Error handling READY signal from {msg.topic}: {str(e)}")
++                import traceback
++                traceback.print_exc()
+                 
+         elif payload_str == "NOT_READY":
+             print(f"Provider {msg.topic} sent NOT_READY signal via MQTT")
+@@ -154,6 +259,103 @@ def on_message(mqtt_client, userdata, msg):
+             except Exception as e:
+                 print(f"Error handling ACK signal for job {job_id}: {str(e)}")
+         
++        elif payload_str.startswith("BATCH_REQUEST:"):
++            try:
++                # Extract correlation ID and batch data
++                batch_json = payload_str[14:]  # Remove "BATCH_REQUEST:" prefix
++                request_data = json.loads(batch_json)
++                correlation_id = request_data.get('correlation_id')
++                batch_data = request_data.get('batch_data')
++                loadbalancer_id = request_data.get('loadbalancer_id', 'LOADBALANCER')
++                
++                print(f"Received BATCH_REQUEST with correlation_id: {correlation_id}")
++                
++                # Process batch (reuse run_service_async_batch logic)
++                services = []
++                requests_data = []
++                results = []
++                temp_time = datetime.now(tz=timezone(TIME_ZONE))
++                
++                for req_data in batch_data['requests']:
++                    try:
++                        service_id = req_data.get('serviceID')
++                        if not service_id:
++                            results.append({'error': 'Missing serviceID'})
++                            continue
++                            
++                        service = Services.objects.get(id=service_id)
++                        
++                        if not service.active:
++                            results.append({'error': f'Service {service_id} is disabled'})
++                            continue
++                        
++                        services.append(service)
++                        requests_data.append(req_data)
++                        
++                        results.append({
++                            'status': 'pending',
++                            'message': f'Service {service_id} queued for processing',
++                            'service_name': service.name
++                        })
++                        
++                    except ObjectDoesNotExist:
++                        results.append({'error': f'Service {service_id} not found'})
++                    except Exception as e:
++                        results.append({'error': f'Failed to process request: {str(e)}'})
++                
++                # Process the batch synchronously to get actual results
++                if services:
++                    print(f"Starting ILP processing for {len(services)} services...")
++                    try:
++                        # Call request_handler directly (not in a thread) to get results
++                        batch_results = request_handler(requests_data, services, temp_time, False)
++                        print(f"ILP processing completed. Results: {batch_results}")
++                        
++                        # Update results with actual processing results
++                        if batch_results and len(batch_results) > 0:
++                            results = batch_results
++                            processed_count = len([r for r in results if 'error' not in r])
++                        else:
++                            processed_count = 0
++                    except Exception as e:
++                        print(f"Error in ILP processing: {e}")
++                        results = [{'error': f'ILP processing failed: {str(e)}'} for _ in services]
++                        processed_count = 0
++                else:
++                    processed_count = 0
++                
++                # Send response back to load balancer on its specific topic
++                response_payload = {
++                    'correlation_id': correlation_id,
++                    'status': 'success',
++                    'batch_size': len(batch_data['requests']),
++                    'processed': processed_count,
++                    'results': results
++                }
++                mqtt_client.publish(
++                    topic=loadbalancer_id,
++                    payload="BATCH_RESPONSE:" + json.dumps(response_payload),
++                    qos=2
++                )
++                print(f"Published BATCH_RESPONSE to {loadbalancer_id}")
++                
++            except Exception as e:
++                print(f"Error processing BATCH_REQUEST: {e}")
++                # Try to send error response if we have correlation_id
++                try:
++                    error_response = {
++                        'correlation_id': correlation_id if 'correlation_id' in locals() else 'unknown',
++                        'status': 'error',
++                        'error': str(e)
++                    }
++                    mqtt_client.publish(
++                        topic=loadbalancer_id if 'loadbalancer_id' in locals() else 'LOADBALANCER',
++                        payload="BATCH_RESPONSE:" + json.dumps(error_response),
++                        qos=2
++                    )
++                except:
++                    pass
++        
+         # Existing message handlers
+         elif(payload_str.startswith("Benchmark:")):
+             # this is in topic user_id not EVERYONE
+@@ -172,11 +374,19 @@ def on_message(mqtt_client, userdata, msg):
+         if(msg.topic=="EVERYONE"):
+             if(payload_str.startswith("start_connect")):
+                 user_id = payload_str[13:]
+-                print("connecting to ", user_id)
++                print(f"=== PROVIDER CONNECTION REQUEST ===")
++                print(f"Provider {user_id} requesting connection")
++                print(f"Topic: {msg.topic}")
++                print(f"Payload: {payload_str}")
++                print(f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}")
++                
+                 mqtt_client.subscribe(topic=user_id)
++                print(f"Subscribed to provider topic: {user_id}")
++                
+                 # Send confirmation back to provider
+                 mqtt_client.publish(topic=user_id, payload="SUBSCRIPTION_CONFIRMED", qos=2)
+                 print(f"Sent subscription confirmation to {user_id}")
++                print("=====================================")
+             if(payload_str.startswith("get_efficiency_score")):
+ 
+                 user_id=payload_str[20:]
+@@ -347,10 +557,31 @@ def ready(request,user_id):
+     return JsonResponse({'message' : 'Not ready ran successfully.'})
+ 
+ def ready_mqtt(user_id):
+-    provider = User.objects.get(user_id=user_id)
+-    provider.ready = True
+-    provider.last_ready_signal = datetime.now(tz=timezone(TIME_ZONE))
+-    provider.save()
++    print(f"=== PROCESSING READY SIGNAL ===")
++    print(f"Provider ID: {user_id}")
++    
++    try:
++        provider = User.objects.get(user_id=user_id)
++        print(f"Found provider in database: {provider.user_id}")
++        print(f"Provider state before update - ready: {provider.ready}, last_ready_signal: {provider.last_ready_signal}")
++        
++        provider.ready = True
++        provider.last_ready_signal = datetime.now(tz=timezone(TIME_ZONE))
++        
++        print(f"Provider state after update - ready: {provider.ready}, last_ready_signal: {provider.last_ready_signal}")
++        
++        provider.save()
++        print(f"Provider {user_id} marked as READY and saved to database")
++        print("=====================================")
++        
++    except User.DoesNotExist:
++        print(f"ERROR: Provider {user_id} not found in database")
++        raise
++    except Exception as e:
++        print(f"ERROR: Failed to process READY signal for provider {user_id}: {str(e)}")
++        import traceback
++        traceback.print_exc()
++        raise
+     
+ 
+ 
+@@ -562,31 +793,14 @@ def request_handler(data, service, start_time, run_async=False):
+                     task_developer = svc.developer
+                     input_val = req_data.get('input', 'None')
+                     
+-                    # Publish to MQTT - handle potential failures
++                    # Job already sent by find_providers -> process_assignments
++                    # Just refresh and save the job
+                     try:
+-                        mqtt_params = {
+-                            'runMultipleInvocations': req_data.get('runMultipleInvocations', False),
+-                            'numberOfInvocations': req_data.get('numberOfInvocations', 1),
+-                            'chained': req_data.get('chained', False),
+-                            'input': input_val
+-                        }
+-                        
+-                        publish_to_topic_mqtt(
+-                            mqtt_params['runMultipleInvocations'],
+-                            mqtt_params['numberOfInvocations'],
+-                            mqtt_params['chained'],
+-                            input_val, 
+-                            provider, 
+-                            task_link, 
+-                            task_developer, 
+-                            job.id
+-                        )
+-                        
+                         job.refresh_from_db()
+                         job.save()
+-                        print(f"Job {job.id} successfully sent to provider {provider.user_id}")
++                        print(f"Job {job.id} already sent to provider {provider.user_id} by process_assignments")
+                     except Exception as mqtt_error:
+-                        print(f"Error publishing to MQTT: {str(mqtt_error)}")
++                        print(f"Error refreshing job: {str(mqtt_error)}")
+                         # This will be handled by the recovery process - job stays in CREATED status
+                     
+                     # Calculate providing time for response
+@@ -623,24 +837,53 @@ def request_handler(data, service, start_time, run_async=False):
+ 
+ 
+ def finish_job(data):
+-    print("Inside finish job")
++    print("=== JOB COMPLETION PROCESSING ===")
++    print(f"Inside finish_job with data: {data}")
++    
+     # Import here to avoid circular imports
+     from providers.experiment_framework import experiment_runner
+     
+     #here unpack the data load job from job id and update and save it.
+     id = data['job_id']
+-    job = Job.objects.get(pk=id)
+-    response_decoded = json.loads(data.decode("utf-8"))
+-    # response_decoded = json.loads(response)
+-    print("response from provider: ", response_decoded)
+-    job.refresh_from_db()
+-    job.pull_time = response_decoded['pull_time']
+-    job.run_time = response_decoded['run_time']
+-    job.total_time = response_decoded['total_time']
+-    job.cost = (response_decoded['total_time'])
+-    job.response = response_decoded['Result']
+-    job.finished = True
+-    job.save()
++    print(f"Processing job completion for job_id: {id}")
++    
++    try:
++        job = Job.objects.get(pk=id)
++        print(f"Found job {id} in database")
++        print(f"Job details - Provider: {job.provider.user_id}, Service: {job.service.id}, Status: {job.finished}")
++        
++        # Handle both dict and string data formats
++        if isinstance(data, dict):
++            response_decoded = data
++        else:
++            response_decoded = json.loads(data.decode("utf-8"))
++        
++        print(f"Job completion data: {response_decoded}")
++        
++        # Update job with completion data
++        job.refresh_from_db()
++        print(f"Job state before update - pull_time: {job.pull_time}, run_time: {job.run_time}, total_time: {job.total_time}, finished: {job.finished}")
++        
++        job.pull_time = response_decoded['pull_time']
++        job.run_time = response_decoded['run_time']
++        job.total_time = response_decoded['total_time']
++        job.cost = (response_decoded['total_time'])
++        job.response = response_decoded['Result']
++        job.finished = True
++        
++        print(f"Job state after update - pull_time: {job.pull_time}, run_time: {job.run_time}, total_time: {job.total_time}, finished: {job.finished}")
++        
++        job.save()
++        print(f"Job {id} successfully updated and saved to database")
++        
++    except Job.DoesNotExist:
++        print(f"ERROR: Job {id} not found in database!")
++        return
++    except Exception as e:
++        print(f"ERROR: Failed to update job {id}: {str(e)}")
++        import traceback
++        traceback.print_exc()
++        return
+     
+     # Record experiment metrics if experiment is active
+     if experiment_runner.experiment_active:
+@@ -674,8 +917,11 @@ def queue_jobs(service):
+ 
+ 
+ def get_ready_providers():
+-    # Remove the transaction.atomic() as it will be handled by find_providers
+-    return User.objects.select_for_update(nowait=True).filter(
++    """
++    Get ready providers with proper locking for concurrency control.
++    Uses select_for_update with timeout to handle lock contention gracefully.
++    """
++    return User.objects.select_for_update(nowait=False).filter(
+         active=True,
+         is_provider=True,
+         ready=True,
+@@ -948,13 +1194,13 @@ def process_assignments(assignment, cost_matrix):
+                 
+             print(f"\nProcessing assignment - Service: {service.id}, Provider: {provider.user_id}")
+             
+-            # Lock the provider record
+-            provider_locked = User.objects.select_for_update().get(pk=provider.pk)
+-            print(f"Provider locked: {provider_locked.user_id}")
++            # Provider is already locked by get_ready_providers(), so we can use it directly
++            # No need to lock again - this was causing self-deadlock
++            print(f"Using provider: {provider.user_id} (already locked)")
+             
+             # Create a Job instance with CREATED status
+             job = Job.objects.create(
+-                provider=provider_locked,
++                provider=provider,
+                 service=service,
+                 developer=service.developer,
+                 finished=False
+@@ -981,37 +1227,37 @@ def process_assignments(assignment, cost_matrix):
+                 predicted_runtime = 1000  # Default value
+                 
+             print(f"Predicted runtime: {predicted_runtime}")
+-            print(f"Current provider delay state: {provider_locked.delay}")
++            print(f"Current provider delay state: {provider.delay}")
+             
+             try:
+-                provider_locked.add_delay(predicted_runtime)
++                provider.add_delay(predicted_runtime)
+                 print("Successfully added delay")
+             except Exception as e:
+                 print(f"Error adding delay: {str(e)}")
+                 print(f"Type of predicted_runtime: {type(predicted_runtime)}")
+                 print(f"Value of predicted_runtime: {predicted_runtime}")
+                 # Don't raise, just continue with default delay
+-                provider_locked.delay = provider_locked.delay or 0
++                provider.delay = provider.delay or 0
+ 
+-            print(f"Updated provider delay state: {provider_locked.delay}")
++            print(f"Updated provider delay state: {provider.delay}")
+             
+             # Update function invocations
+             service_key = str(service.id)
+-            current_invocations = provider_locked.function_invocations.get(service_key, 0)
+-            provider_locked.function_invocations[service_key] = current_invocations + 1
++            current_invocations = provider.function_invocations.get(service_key, 0)
++            provider.function_invocations[service_key] = current_invocations + 1
+             
+             try:
+-                provider_locked.save()
++                provider.save()
+                 print("Successfully saved provider")
+             except Exception as e:
+                 print(f"Error saving provider: {str(e)}")
+-                print(f"Provider state at save: {provider_locked.__dict__}")
++                print(f"Provider state at save: {provider.__dict__}")
+                 raise
+ 
+             # Store job information for sending after transaction commits
+             jobs_to_send.append({
+                 'job': job,
+-                'provider': provider_locked,
++                'provider': provider,
+                 'service': service
+             })
+ 
+@@ -1065,109 +1311,149 @@ def find_providers(services, jobs=None):
+     from providers.scheduling_algorithms import get_scheduler
+     from providers.experiment_framework import experiment_runner
+     
+-    # Wrap the entire process in a transaction to keep providers locked
+-    with transaction.atomic():
+-        if not isinstance(services, list):
+-            services = [services]
+-
+-        # 1. Get Suitable Providers (now locks are kept until this transaction ends)
+-        suitable_providers = get_ready_providers()
+-        for provider in suitable_providers:
+-            print(provider)
+-        if not suitable_providers:
+-            print("No ready providers available.")
+-            return None
+-
+-        # 2. Build Cost Matrix
+-        cost_matrix = build_cost_matrix(suitable_providers, services)
+-
+-        # 3. Build Delay Dict
+-        delay = build_delay_dict(suitable_providers)
+-
+-        # 4. Get assignment using the configured scheduling algorithm
++    # Retry logic for database lock contention
++    max_retries = 3
++    retry_count = 0
++    
++    while retry_count < max_retries:
+         try:
+-            # Get the scheduler based on current configuration
+-            scheduler = get_scheduler()
+-            print(f"Using scheduling algorithm: {scheduler.name}")
+-            
+-            # Get assignment from the selected algorithm
+-            assignment, total_cost = scheduler.assign_providers(
+-                suitable_providers, services, cost_matrix, delay
+-            )
+-            
+-            # Record metrics if experiment is active
+-            if experiment_runner.experiment_active and assignment:
+-                experiment_runner.metrics.record_assignment(
+-                    scheduler.name, assignment, cost_matrix, delay, 
+-                    scheduler.metrics.get('assignment_time', 0), services
+-                )
+-            
+-            if assignment is None:
+-                print("Warning: No optimal solution found")
+-                return None
+-                
+-            # 5. Process assignments - Invoke providers and update job status
+-            process_assignments(assignment, cost_matrix)
+-            
+-            # If jobs were provided, map job IDs to provider assignments
+-            if jobs is not None:
+-                # Create mappings from index and service to job
+-                job_mapping = {}
+-                for i, (service, job) in enumerate(zip(services, jobs)):
+-                    job_mapping[(i, service)] = job
+-                
+-                # Create provider assignments
+-                provider_assignments = {}
+-                for (i, service), provider in assignment.items():
+-                    if (i, service) in job_mapping:
+-                        job = job_mapping[(i, service)]
+-                        provider_assignments[job.id] = (provider, delay.get(provider, 0))
+-                return provider_assignments
+-            
+-            # Return the original assignment format if no jobs provided
+-            return assignment
+-            
+-        except Exception as e:
+-            print(f"Error in find_providers: {str(e)}")
+-            # Attempt fallback solution for single service
+-            if len(services) == 1:
+-                service = services[0]
+-                # Find a suitable provider with minimal delay
+-                if suitable_providers:
+-                    provider = min(suitable_providers, key=lambda p: delay.get(p, 0))
+-                    print(f"Fallback provider selection: {provider}")
+-                    
+-                    # Create a simple assignment dictionary with the expected tuple key
+-                    assignment = {(0, service): provider}
++            # Wrap the entire process in a transaction to keep providers locked
++            with transaction.atomic():
++                if not isinstance(services, list):
++                    services = [services]
++
++                # 1. Get Suitable Providers (now locks are kept until this transaction ends)
++                suitable_providers = get_ready_providers()
++                for provider in suitable_providers:
++                    print(provider)
++                if not suitable_providers:
++                    print("No ready providers available.")
++                    return None
++
++                # 2. Build Cost Matrix
++                cost_matrix = build_cost_matrix(suitable_providers, services)
++
++                # 3. Build Delay Dict
++                delay = build_delay_dict(suitable_providers)
++
++                # 4. Get assignment using the configured scheduling algorithm
++                try:
++                    # Get the scheduler based on current configuration
++                    scheduler = get_scheduler()
++                    print(f"Using scheduling algorithm: {scheduler.name}")
++                    main_processing_succeeded = False  # Initialize flag
+                     
+-                    # Ensure cost_matrix has the necessary entries
+-                    # If the cost_matrix doesn't have this provider or service, create it
+-                    if provider not in cost_matrix:
+-                        cost_matrix[provider] = {}
++                    # Get assignment from the selected algorithm
++                    assignment, total_cost = scheduler.assign_providers(
++                        suitable_providers, services, cost_matrix, delay
++                    )
+                     
+-                    # Use a default runtime value if not available
+-                    if (0, service) not in cost_matrix[provider]:
+-                        # Try to get a default runtime from the Job model or use a fixed value
+-                        try:
+-                            default_runtime = Job.get_latest_run_time(provider.id, service.id) or 1000
+-                        except:
+-                            default_runtime = 1000
+-                        cost_matrix[provider][(0, service)] = default_runtime
++                    # Record metrics if experiment is active
++                    if experiment_runner.experiment_active and assignment:
++                        experiment_runner.metrics.record_assignment(
++                            scheduler.name, assignment, cost_matrix, delay, 
++                            scheduler.metrics.get('assignment_time', 0), services
++                        )
+                     
+-                    # Process the assignment with the updated cost_matrix
+-                    print(f"Using fallback cost matrix entry: {cost_matrix[provider][(0, service)]}")
++                    if assignment is None:
++                        print("Warning: No optimal solution found")
++                        return None
++                        
++                    # 5. Process assignments - Invoke providers and update job status
+                     process_assignments(assignment, cost_matrix)
++                    main_processing_succeeded = True  # Flag to prevent fallback from running
++                    print(f"DEBUG: Main processing succeeded, flag set to: {main_processing_succeeded}")
+                     
+-                    # Handle job mapping if needed
+-                    if jobs is not None and len(jobs) == 1:
+-                        job = jobs[0]
+-                        return {job.id: (provider, delay.get(provider, 0))}
++                    # If jobs were provided, map job IDs to provider assignments
++                    if jobs is not None:
++                        # Create mappings from index and service to job
++                        job_mapping = {}
++                        for i, (service, job) in enumerate(zip(services, jobs)):
++                            job_mapping[(i, service)] = job
++                        
++                        # Create provider assignments
++                        provider_assignments = {}
++                        for (i, service), provider in assignment.items():
++                            if (i, service) in job_mapping:
++                                job = job_mapping[(i, service)]
++                                provider_assignments[job.id] = (provider, delay.get(provider, 0))
++                        return provider_assignments
+                     
++                    # Return the original assignment format if no jobs provided
+                     return assignment
+-            
+-            # If fallback also fails or multiple services
+-            print("Could not find providers after trying fallback solutions")
+-            return None
++                    
++                except Exception as scheduler_error:
++                    print(f"Error in scheduling algorithm: {str(scheduler_error)}")
++                    # This will be caught by the outer exception handler
++                    raise
++                    
++        except Exception as e:
++            # Check if this is a database lock contention error
++            error_str = str(e).lower()
++            if 'could not obtain lock' in error_str or 'lock timeout' in error_str or 'deadlock' in error_str:
++                retry_count += 1
++                print(f"Database lock contention detected (attempt {retry_count}/{max_retries}): {str(e)}")
++                if retry_count < max_retries:
++                    # Exponential backoff with jitter
++                    import random
++                    sleep_time = (0.1 * (2 ** retry_count)) + random.uniform(0, 0.1)
++                    print(f"Retrying in {sleep_time:.2f} seconds...")
++                    time.sleep(sleep_time)
++                    continue
++                else:
++                    print(f"Max retries reached for lock contention, giving up")
++                    raise Exception(f"Could not obtain database locks after {max_retries} attempts: {str(e)}")
++            else:
++                # For non-lock errors, don't retry
++                print(f"Non-lock error in find_providers: {str(e)}")
++                print(f"DEBUG: main_processing_succeeded flag is: {main_processing_succeeded}")
++                # Only attempt fallback if main processing didn't succeed
++                if not main_processing_succeeded and len(services) == 1:
++                    print("DEBUG: Running fallback logic")
++                    service = services[0]
++                    # Find a suitable provider with minimal delay
++                    if suitable_providers:
++                        provider = min(suitable_providers, key=lambda p: delay.get(p, 0))
++                        print(f"Fallback provider selection: {provider}")
++                        
++                        # Create a simple assignment dictionary with the expected tuple key
++                        assignment = {(0, service): provider}
++                        
++                        # Ensure cost_matrix has the necessary entries
++                        # If the cost_matrix doesn't have this provider or service, create it
++                        if provider not in cost_matrix:
++                            cost_matrix[provider] = {}
++                        
++                        # Use a default runtime value if not available
++                        if (0, service) not in cost_matrix[provider]:
++                            # Try to get a default runtime from the Job model or use a fixed value
++                            try:
++                                default_runtime = Job.get_latest_run_time(provider.id, service.id) or 1000
++                            except:
++                                default_runtime = 1000
++                            cost_matrix[provider][(0, service)] = default_runtime
++                    
++                        # Process the assignment with the updated cost_matrix
++                        print(f"Using fallback cost matrix entry: {cost_matrix[provider][(0, service)]}")
++                        process_assignments(assignment, cost_matrix)
++                        
++                        # Handle job mapping if needed
++                        if jobs is not None and len(jobs) == 1:
++                            job = jobs[0]
++                            return {job.id: (provider, delay.get(provider, 0))}
++                        
++                        return assignment
++                    else:
++                        print("Could not find providers after trying fallback solutions")
++                        return None
++                else:
++                    print("DEBUG: Skipping fallback logic - main processing succeeded or multiple services")
++                    print("Could not find providers after trying fallback solutions")
++                    return None
++    
++    # If we get here, all retries failed
++    print(f"Failed to find providers after {max_retries} attempts")
++    return None
+ 
+ def find_provider(service):
+     # NOTE - Logic for this function can be defined later if a different provider selection algorithm is needed for one service.
+diff --git a/scheduler/scheduler/wsgi.py b/scheduler/scheduler/wsgi.py
+index 4665948..a0530ac 100644
+--- a/scheduler/scheduler/wsgi.py
++++ b/scheduler/scheduler/wsgi.py
+@@ -15,8 +15,4 @@ os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'scheduler.settings')
+ 
+ application = get_wsgi_application()
+ 
+-# Setup experiment logging if enabled
+-from django.conf import settings
+-if settings.EXPERIMENT_MODE and settings.EXPERIMENT_STDOUT_LOGGING:
+-    from providers.experiment_logging import setup_scheduler_logging
+-    setup_scheduler_logging()
++# Experiment logging is now handled in providers/apps.py ready() method

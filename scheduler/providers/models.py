@@ -51,6 +51,10 @@ class Job(models.Model):
     )
     start_time = models.DateTimeField(auto_now_add=True)
     ack_time = models.DateTimeField(null=True, blank=True)  # Only set when job is acknowledged
+    # Request timing fields for tracking delays
+    lb_received_time = models.DateTimeField(null=True, blank=True, help_text='Timestamp when request was received at load balancer')
+    scheduler_received_time = models.DateTimeField(null=True, blank=True, help_text='Timestamp when request was received at scheduler')
+    assigned_to_provider_time = models.DateTimeField(null=True, blank=True, help_text='Timestamp when job was assigned to provider')
     pull_time = models.IntegerField(default=0)
     run_time = models.IntegerField(default=0)
     total_time = models.IntegerField(default=0)
