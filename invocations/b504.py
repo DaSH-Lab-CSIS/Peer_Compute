@@ -2,7 +2,12 @@ import glob, os
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from s3_utils import upload_to_s3
+try:
+    from invocations.s3_utils import upload_to_s3
+except ImportError as e:
+    # If boto3/s3_utils is not available, provide a dummy function that raises an informative error
+    def upload_to_s3(bucket_idx, key, filepath):
+        raise ImportError(f"S3 upload requires invocations.s3_utils: {e}")
 def buckets_count():
     return (1, 1)
 
