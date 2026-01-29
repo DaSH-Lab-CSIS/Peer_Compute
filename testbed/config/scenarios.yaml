@@ -1,0 +1,98 @@
+baseline:
+  # Dev-scale: 100 requests (default)
+  # Research-scale: 500 requests (use --research-mode or override)
+  total_requests: 100
+  # seed: null  # Optional: random seed for reproducibility (null = random each run)
+  services: [12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 24, 25, 26]
+  service_weights:
+    light: 0.4
+    medium: 0.4
+    heavy: 0.2
+  frequency:
+    type: uniform
+    min: 1.0
+    max: 5.0
+  invocations: 1
+  concurrency: 5
+  # ILP configuration
+  ilp_config:
+    expected_batch_size_min: 200  # Expected minimum jobs per ILP solve
+    expected_batch_size_max: 500  # Expected maximum jobs per ILP solve
+    max_solve_time: 1.0  # seconds (for timeout detection)
+    batch_timeout: 5.0  # seconds (for batch processing timeout)
+
+steady_load:
+  # Dev-scale: ~6,300 total requests (default)
+  # Research-scale: Already supports research scale (2,000-5,000 requests)
+  rps_levels: [1, 5, 10, 20, 30, 50]
+  duration_per_level: 300  # seconds
+  services: [11, 12, 16, 19]
+  interval: 1.0
+  invocations: 1
+  # ILP configuration
+  ilp_config:
+    expected_batch_size_min: 200
+    expected_batch_size_max: 500
+    max_solve_time: 1.0
+    batch_timeout: 5.0
+
+bursty_load:
+  # Dev-scale: 1,000 total requests (200 × 5, default)
+  # Research-scale: 2,000-5,000 total requests (400-500 per burst × 5-10 repeats)
+  burst_size: 200
+  burst_window: 10.0  # seconds
+  repeat_count: 5
+  services: [12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 24, 25, 26]
+  frequency_mean: 1.0
+  invocations: 1
+  idle_period: 30.0  # seconds between bursts
+  # ILP configuration
+  ilp_config:
+    expected_batch_size_min: 200
+    expected_batch_size_max: 500
+    max_solve_time: 1.0
+    batch_timeout: 5.0
+
+stress_soak:
+  # Dev-scale: Runs until max_duration or max_error_rate (default)
+  # Research-scale: Add min_requests: 5000 to ensure sufficient data
+  target_rps: 100
+  max_duration: 3600  # 1 hour
+  max_error_rate: 0.10  # 10%
+  min_requests: null  # Optional: minimum requests before stopping (research-scale: 5000)
+  services: [20, 21, 22, 24, 25]  # Heavy services
+  invocations: 1
+  chained: false
+  check_interval: 60.0  # Check error rate every minute
+  # ILP configuration
+  ilp_config:
+    expected_batch_size_min: 200
+    expected_batch_size_max: 500
+    max_solve_time: 1.0
+    batch_timeout: 5.0
+
+chaos_edge:
+  # Dev-scale: 200 requests (default)
+  # Research-scale: 500-2,000 requests (use --research-mode or override)
+  total_requests: 200
+  fault_rate: 0.20  # 20% faulty requests
+  services: [12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 24, 25, 26]
+  invalid_services: [9999, 9998, 9997]
+  chained: false
+  chained_services: []  # Services to use for chained requests
+  frequency_min: 0.1
+  frequency_max: 10.0
+  invocations: 1
+  fault_types:
+    - invalid_service
+    - malformed_input
+    - negative_invocations
+  # ILP configuration
+  ilp_config:
+    expected_batch_size_min: 200
+    expected_batch_size_max: 500
+    max_solve_time: 1.0
+    batch_timeout: 5.0
+
+
+

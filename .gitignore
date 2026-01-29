@@ -31,3 +31,8 @@ scheduler/developers/__pycache__/
 **/**/**/**/**/**/**/**/*.pyc
 **/**/**/**/**/**/**/**/**/*.pyc
 **/**/**/**/**/**/**/**/**/**/*.pyc
+cockroach/*
+*Credentials*.tsv
+*credentials*.tsv
+*Credentials*.csv
+*credentials*.csv

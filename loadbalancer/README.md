@@ -104,7 +104,7 @@ curl -X POST "http://localhost:9001/loadbalancer/run_service/" \
   -H "User-Agent: Thunder Client (https://www.thunderclient.com)" \
   -H "Content-Type: application/json" \
   -d '{
-    "serviceID": 12,
+    "serviceID": 13,
     "numberOfInvocations": 1,
     "chained": false,
     "input": "None",
