@@ -12,9 +12,12 @@ class HybridImageManager:
         self.disk_limit = disk_limit
         self.memory_cache = {}  # Dictionary to store images in memory
         self.docker_client = docker.from_env()
-        self.cache = diskcache.Cache("cache_dir")  # Create a DiskCache instance
+        # Create cache_dir directory with proper permissions before initializing diskcache
+        diskcache_dir = "cache_dir"
+        os.makedirs(diskcache_dir, mode=0o755, exist_ok=True)
+        self.cache = diskcache.Cache(diskcache_dir)  # Create a DiskCache instance
         self.cache_dir = 'cached_images'
-        os.makedirs(self.cache_dir, exist_ok=True)
+        os.makedirs(self.cache_dir, mode=0o755, exist_ok=True)
 
     def request_image(self, image_id):
         print(f"[request_image] Requesting image: {image_id}")

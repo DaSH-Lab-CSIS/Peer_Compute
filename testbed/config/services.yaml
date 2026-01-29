@@ -1,0 +1,56 @@
+# Service metadata and characteristics
+# This file can be extended with additional service information
+
+# Service categories based on avg_job_times.json analysis
+categories:
+  light:
+    description: "Services with average runtime < 5 seconds"
+    threshold_ms: 5000
+  medium:
+    description: "Services with average runtime 5-10 seconds"
+    threshold_ms: 10000
+  heavy:
+    description: "Services with average runtime > 10 seconds"
+    threshold_ms: null
+
+# Service selection weights for weighted random selection
+selection_weights:
+  default:
+    light: 0.4
+    medium: 0.4
+    heavy: 0.2
+  compute_heavy:
+    light: 0.2
+    medium: 0.3
+    heavy: 0.5
+  io_heavy:
+    light: 0.3
+    medium: 0.4
+    heavy: 0.3
+
+# Known service IDs (from avg_job_times.json)
+known_services:
+  - 12
+  - 13
+  - 14
+  - 16
+  - 17
+  - 18
+  - 19
+  - 20
+  - 21
+  - 22
+  - 24
+  - 25
+  - 26
+
+# Invalid service IDs for testing
+invalid_services:
+  - 9999
+  - 9998
+  - 9997
+  - 0
+  - -1
+
+
+

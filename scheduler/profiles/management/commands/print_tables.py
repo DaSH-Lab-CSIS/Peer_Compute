@@ -17,6 +17,11 @@ class Command(BaseCommand):
             type=str,
             help= 'Keyword "jobs" followed by a list of job IDs or ranges to print, e.g., "jobs 1", "jobs 1-3", "jobs 5,7-9". !! Do not enclose the job IDs in []'
         )
+        parser.add_argument(
+            '--services',
+            action='store_true',
+            help='Print services table'
+        )
 
     def parse_job_ids(self, job_args):
         job_ids = set()
@@ -40,10 +45,13 @@ class Command(BaseCommand):
         else:
             job_ids = self.parse_job_ids(job_args)
 
-        self.print_providers()
-        self.print_developers()
-        self.print_services()
-        self.print_jobs(job_ids)
+        if options.get('services'):
+            self.print_services()
+        else:
+            self.print_providers()
+            self.print_developers()
+            self.print_services()
+            self.print_jobs(job_ids)
 
     def print_providers(self):
         providers = User.objects.filter(is_provider=True)
@@ -58,30 +66,19 @@ class Command(BaseCommand):
             function_invocations = getattr(provider,'function_invocations', {})
             if function_invocations:
                 func_invocations_table = tabulate(
-<<<<<<< HEAD
                     [["Function ID", "Invocation Count"]]
                     + [
                         [func_id, count]
                         for func_id, count in provider.function_invocations.items()
                     ],
                     headers=[],  # Headers are included in the first row
-=======
-                    [["Function ID", "Invocation Count"]] +
-                    [[func_id, count] for func_id, count in function_invocations.items()],
-                    headers=[],
->>>>>>> cd1e618e05340cf4a4fdb9486854d7e0a53ca008
                     tablefmt="simple",
                     stralign="left",
                 )
-<<<<<<< HEAD
                 # Indent the sub-table for better readability
                 func_invocations = "\n" + "\n".join(
                     ["    " + line for line in func_invocations_table.split("\n")]
                 )
-=======
-
-                func_invocations = "\n" + "\n".join(["    " + line for line in func_invocations_table.split("\n")])
->>>>>>> cd1e618e05340cf4a4fdb9486854d7e0a53ca008
             else:
                 func_invocations = "    No invocations"
 
@@ -180,30 +177,16 @@ class Command(BaseCommand):
         # Prepare data for tabulation
         service_data = []
         for service in services:
-<<<<<<< HEAD
             service_data.append(
                 [
                     service.id,
                     service.name,
                     service.docker_container,
                     service.developer.user_id if service.developer else "None",
-                    service.provider.user_id if service.provider else "None",
                     service.active,
                     service.requirements,
                 ]
             )
-=======
-            service_data.append([
-                service.id,
-                service.name,
-                service.docker_container,
-                service.developer.user_id if service.developer else "None",
-                service.provider.user_id if service.provider else "None",
-                service.active,
-
-                service.requirements
-            ])
->>>>>>> cd1e618e05340cf4a4fdb9486854d7e0a53ca008
 
         # Define table headers
         headers = [
@@ -211,7 +194,6 @@ class Command(BaseCommand):
             "Service Name",
             "Docker Container",
             "Developer ID",
-            "Provider ID",
             "Active",
             "Requirements",
         ]

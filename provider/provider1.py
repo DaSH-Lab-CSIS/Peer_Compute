@@ -617,11 +617,26 @@ def run_and_invoke_docker(body, container_name) -> dict:
             # Fallback for simple task names like "hello-world"
             print(f"[DEBUG] Could not parse benchmark number from '{body}', using simple payload")
             payload = {"message": "Hello from simple task", "input": "test"}  # Simple payload for basic containers
+        except ImportError as import_err:
+            # Handle import errors with detailed information about the source
+            import traceback
+            error_trace = traceback.format_exc()
+            print(f"[DEBUG] ImportError in get_payload for benchmark {benchmark_no}:")
+            print(f"[DEBUG] Error: {str(import_err)}")
+            print(f"[DEBUG] Full traceback:")
+            for line in error_trace.split('\n'):
+                print(f"[DEBUG]   {line}")
+            # Extract the source file from the traceback
+            for line in error_trace.split('\n'):
+                if 'File "' in line and 'invocations' in line:
+                    print(f"[DEBUG] SOURCE OF ERROR: {line.strip()}")
+            raise  # Re-raise to be caught by outer exception handler
         # Temporarily override payload with a fixed value
         
         print(payload)
         response = None
         future=None
+        host_port = None  # Initialize host_port before try block
         try:
             print("container started running")
             print(f"[DEBUG] Creating container with name: {container_name}")
@@ -685,75 +700,80 @@ def run_and_invoke_docker(body, container_name) -> dict:
                 future = executor_for_cont_monitoring.submit(monitor_container, cont, start_run_time, timeout)
                 print("container monitored")
                 
-                # Get the appropriate host IP for container communication
-                host_ip = get_docker_host_ip()
-                print(f"Using host IP: {host_ip}")
-                
-                # Try localhost as fallback if the detected IP doesn't work
-                import socket
-                test_ips = [host_ip, "127.0.0.1", "localhost"]
-                working_ip = None
-                
-                for test_ip in test_ips:
+                # Only attempt HTTP request if container started successfully and host_port was assigned
+                if host_port is not None and cont is not None:
+                    # Get the appropriate host IP for container communication
+                    host_ip = get_docker_host_ip()
+                    print(f"Using host IP: {host_ip}")
+                    
+                    # Try localhost as fallback if the detected IP doesn't work
+                    import socket
+                    test_ips = [host_ip, "127.0.0.1", "localhost"]
+                    working_ip = None
+                    
+                    for test_ip in test_ips:
+                        try:
+                            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                            sock.settimeout(2)
+                            result = sock.connect_ex((test_ip, int(host_port)))
+                            sock.close()
+                            if result == 0:
+                                working_ip = test_ip
+                                print(f"[DEBUG] Found working IP: {test_ip}")
+                                break
+                            else:
+                                print(f"[DEBUG] IP {test_ip} not accessible")
+                        except Exception as e:
+                            print(f"[DEBUG] IP {test_ip} test failed: {e}")
+                    
+                    if working_ip:
+                        host_ip = working_ip
+                        print(f"[DEBUG] Using working IP: {host_ip}")
+                    else:
+                        print(f"[DEBUG] No working IP found, using original: {host_ip}")
+                    
+                    # Check container logs before making request
+                    try:
+                        logs = cont.logs(tail=10).decode('utf-8')
+                        print(f"[DEBUG] Container logs (last 10 lines): {logs}")
+                    except Exception as e:
+                        print(f"[DEBUG] Could not get container logs: {e}")
+                    
+                    # Test if port is accessible (using the working IP we found)
                     try:
                         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                        sock.settimeout(2)
-                        result = sock.connect_ex((test_ip, int(host_port)))
+                        sock.settimeout(5)
+                        result = sock.connect_ex((host_ip, int(host_port)))
                         sock.close()
                         if result == 0:
-                            working_ip = test_ip
-                            print(f"[DEBUG] Found working IP: {test_ip}")
-                            break
+                            print(f"[DEBUG] Port {host_port} is accessible on {host_ip}")
                         else:
-                            print(f"[DEBUG] IP {test_ip} not accessible")
+                            print(f"[DEBUG] Port {host_port} is NOT accessible on {host_ip} (connection failed)")
                     except Exception as e:
-                        print(f"[DEBUG] IP {test_ip} test failed: {e}")
-                
-                if working_ip:
-                    host_ip = working_ip
-                    print(f"[DEBUG] Using working IP: {host_ip}")
-                else:
-                    print(f"[DEBUG] No working IP found, using original: {host_ip}")
-                
-                # Check container logs before making request
-                try:
-                    logs = cont.logs(tail=10).decode('utf-8')
-                    print(f"[DEBUG] Container logs (last 10 lines): {logs}")
-                except Exception as e:
-                    print(f"[DEBUG] Could not get container logs: {e}")
-                
-                # Test if port is accessible (using the working IP we found)
-                try:
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    sock.settimeout(5)
-                    result = sock.connect_ex((host_ip, int(host_port)))
-                    sock.close()
-                    if result == 0:
-                        print(f"[DEBUG] Port {host_port} is accessible on {host_ip}")
-                    else:
-                        print(f"[DEBUG] Port {host_port} is NOT accessible on {host_ip} (connection failed)")
-                except Exception as e:
-                    print(f"[DEBUG] Port accessibility test failed: {e}")
-                
-                print(f"[DEBUG] Making POST request to http://{host_ip}:{host_port}")
-                print(f"[DEBUG] Request payload: {payload}")
-                try:
-                    response = requests.post(f'http://{host_ip}:{host_port}', 
-                                        json=payload,
-                                        headers={'Content-Type': 'application/json'},
-                                        timeout=30)  # Increased timeout to 5 minutes (300 seconds)
-                    print(f"[DEBUG] POST request completed with status: {response.status_code}")
-                    print("post request sent")
-                except requests.exceptions.RequestException as e:
-                    print(f"[DEBUG] POST request failed: {e}")
-                    # Try GET request as fallback
+                        print(f"[DEBUG] Port accessibility test failed: {e}")
+                    
+                    print(f"[DEBUG] Making POST request to http://{host_ip}:{host_port}")
+                    print(f"[DEBUG] Request payload: {payload}")
                     try:
-                        print(f"[DEBUG] Trying GET request as fallback...")
-                        response = requests.get(f'http://{host_ip}:{host_port}', timeout=10)
-                        print(f"[DEBUG] GET request completed with status: {response.status_code}")
-                    except requests.exceptions.RequestException as e2:
-                        print(f"[DEBUG] GET request also failed: {e2}")
-                        response = None
+                        response = requests.post(f'http://{host_ip}:{host_port}', 
+                                            json=payload,
+                                            headers={'Content-Type': 'application/json'},
+                                            timeout=30)  # Increased timeout to 5 minutes (300 seconds)
+                        print(f"[DEBUG] POST request completed with status: {response.status_code}")
+                        print("post request sent")
+                    except requests.exceptions.RequestException as e:
+                        print(f"[DEBUG] POST request failed: {e}")
+                        # Try GET request as fallback
+                        try:
+                            print(f"[DEBUG] Trying GET request as fallback...")
+                            response = requests.get(f'http://{host_ip}:{host_port}', timeout=10)
+                            print(f"[DEBUG] GET request completed with status: {response.status_code}")
+                        except requests.exceptions.RequestException as e2:
+                            print(f"[DEBUG] GET request also failed: {e2}")
+                            response = None
+                else:
+                    print(f"[DEBUG] Skipping HTTP request - container failed to start or host_port not assigned (host_port={host_port}, cont={cont})")
+                    response = None
 
             #result = "this is result" #remove this line uncomment below line
             #result = result.decode("utf-8") #this gives the Hello from Docker msg.
@@ -862,8 +882,23 @@ def run_and_invoke_docker(body, container_name) -> dict:
             print(f"[DEBUG] run_and_invoke_docker completed successfully for container: {container_name}")
             return result, pull_time, run_time, container_name
     except Exception as e:
-        print(f"[DEBUG] Exception in run_and_invoke_docker: {e}")
         import traceback
+        error_trace = traceback.format_exc()
+        print(f"[DEBUG] Exception in run_and_invoke_docker: {e}")
+        print(f"[DEBUG] Full traceback:")
+        for line in error_trace.split('\n'):
+            print(f"[DEBUG]   {line}")
+        
+        # Extract source information for import errors
+        if isinstance(e, ImportError) or "ModuleNotFoundError" in str(type(e)) or "No module named" in str(e):
+            print(f"[DEBUG] === IMPORT ERROR SOURCE ANALYSIS ===")
+            for line in error_trace.split('\n'):
+                if 'File "' in line and ('invocations' in line or 'import' in line.lower()):
+                    print(f"[DEBUG] SOURCE FILE: {line.strip()}")
+                if 'from ' in line or 'import ' in line:
+                    print(f"[DEBUG] FAILED IMPORT: {line.strip()}")
+            print(f"[DEBUG] =====================================")
+        
         traceback.print_exc()
         # Return default values to prevent the function from crashing
         return {"error": str(e)}, 0, 0, container_name
