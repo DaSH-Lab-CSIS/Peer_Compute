@@ -13,7 +13,7 @@ This command will:
 *   Setup Managed Nodes (install dependencies, register provider, start provider script).
 
 ```bash
-ansible-playbook -i inventory.ini setup.yml --tags setup
+ansible-playbook -i inventory.ini playbooks/setup.yml --tags setup
 ```
 
 ### 2. Run Experiments
