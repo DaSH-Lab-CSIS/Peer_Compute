@@ -1,0 +1,174 @@
+---
+- name: Setup Control Node
+  hosts: control
+  become: yes
+  tags: setup
+  vars:
+    repo_url: "https://github.com/aalhadsawane/Serverless_Scheduler"
+    project_dir: "/home/{{ ansible_user }}/Serverless_Scheduler"
+  tasks:
+    - name: Install dependencies
+      apt:
+        name:
+          - git
+          - python3-pip
+          - python3-venv
+        state: present
+        update_cache: yes
+
+    - name: Clone repository
+      git:
+        repo: "{{ repo_url }}"
+        dest: "{{ project_dir }}"
+        version: main
+        force: yes
+
+    - name: Install Python requirements
+      pip:
+        requirements: "{{ project_dir }}/requirements.txt"
+        virtualenv: "{{ project_dir }}/.venv"
+        virtualenv_command: python3 -m venv
+
+    - name: Check if Django Server is running
+      shell: "pgrep -f 'manage.py runserver' || true"
+      register: django_process
+
+    - name: Start Django Server
+      shell: |
+        source {{ project_dir }}/.venv/bin/activate
+        nohup python {{ project_dir }}/scheduler/manage.py runserver 0.0.0.0:8000 > {{ project_dir }}/django.log 2>&1 &
+      args:
+        executable: /bin/bash
+      async: 10
+      poll: 0
+      when: django_process.stdout == ""
+
+- name: Setup Managed Nodes
+  hosts: managed
+  become: yes
+  tags: setup
+  vars:
+    repo_url: "https://github.com/aalhadsawane/Serverless_Scheduler"
+    project_dir: "/home/{{ ansible_user }}/Serverless_Scheduler"
+    scheduler_host: "{{ hostvars[groups['control'][0]]['ansible_host'] | default(groups['control'][0]) }}"
+    scheduler_url: "http://{{ scheduler_host }}:8000"
+    service_ids: [3, 12, 13, 17, 18, 19, 20, 21, 22, 23, 24]
+    user_id_file: "{{ project_dir }}/provider_user_id.txt"
+  tasks:
+    - name: Install dependencies
+      apt:
+        name:
+          - git
+          - python3-pip
+          - python3-venv
+          - curl
+          - jq
+        state: present
+        update_cache: yes
+
+    - name: Clone repository
+      git:
+        repo: "{{ repo_url }}"
+        dest: "{{ project_dir }}"
+        version: main
+        force: yes
+
+    - name: Install Python requirements
+      pip:
+        requirements: "{{ project_dir }}/requirements.txt"
+        virtualenv: "{{ project_dir }}/.venv"
+        virtualenv_command: python3 -m venv
+
+    - name: Ensure Docker is running
+      service:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Wait for Control Node (Scheduler) to be ready
+      wait_for:
+        host: "{{ scheduler_host }}"
+        port: 8000
+        timeout: 300
+
+    - name: Check for existing User ID
+      stat:
+        path: "{{ user_id_file }}"
+      register: user_id_stat
+
+    - name: Register Provider (if not already registered)
+      uri:
+        url: "{{ scheduler_url }}/profiles/register_user/"
+        method: POST
+        body_format: json
+        body:
+          is_provider: true
+          is_developer: false
+          active: true
+          ready: true
+          location: "{{ ansible_hostname }}"
+          ram: 16
+          cpu: 8
+        return_content: yes
+      register: registration_response
+      when: not user_id_stat.stat.exists
+
+    - name: Save User ID to file
+      copy:
+        content: "{{ registration_response.json.user_id }}"
+        dest: "{{ user_id_file }}"
+      when: not user_id_stat.stat.exists
+
+    - name: Read User ID from file
+      slurp:
+        src: "{{ user_id_file }}"
+      register: slurp_user_id
+
+    - name: Set User ID fact
+      set_fact:
+        provider_user_id: "{{ slurp_user_id.content | b64decode | trim }}"
+
+    - name: Calculate Efficiency
+      uri:
+        url: "{{ scheduler_url }}/providers/calculate_efficiency/{{ provider_user_id }}"
+        method: GET
+      when: not user_id_stat.stat.exists  # Only calculate efficiency on first registration
+
+    - name: Check if Provider Script is running
+      shell: "pgrep -f 'provider1.py' || true"
+      register: provider_process
+
+    - name: Start Provider Script
+      shell: |
+        source {{ project_dir }}/.venv/bin/activate
+        nohup python {{ project_dir }}/provider/provider1.py {{ provider_user_id }} > {{ project_dir }}/provider.log 2>&1 &
+      args:
+        executable: /bin/bash
+      async: 10
+      poll: 0
+      when: provider_process.stdout == ""
+
+- name: Run Experiments
+  hosts: managed
+  become: yes
+  tags: experiment
+  vars:
+    scheduler_host: "{{ hostvars[groups['control'][0]]['ansible_host'] | default(groups['control'][0]) }}"
+    scheduler_url: "http://{{ scheduler_host }}:8000"
+    service_ids: [3, 12, 13, 17, 18, 19, 20, 21, 22, 23, 24]
+  tasks:
+    - name: Run Experiments
+      uri:
+        url: "{{ scheduler_url }}/developers/run_service_async/{{ item }}"
+        method: POST
+        body_format: json
+        body:
+          numberOfInvocations: 1
+          chained: false
+          input: "None"
+          runMultipleInvocations: false
+        headers:
+          Content-Type: "application/json"
+        status_code: [200, 201, 202]
+      loop: "{{ service_ids }}"
+      when: run_experiment is defined and run_experiment | bool
