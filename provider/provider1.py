@@ -205,6 +205,34 @@ def on_message(mqtt_client, userdata, msg):
             service_id = payload_str[19:]
             # Offload reference stats collection to a separate thread
             Thread(target=set_reference_stats_for_service, args=(service_id,)).start()
+        elif payload_str.startswith("PREDICT_REQUEST:"):
+            try:
+                rest = payload_str[len("PREDICT_REQUEST:"):]
+                parts = rest.split("|", 2)
+                if len(parts) >= 3:
+                    correlation_id, reply_topic, services_json = parts[0], parts[1], parts[2]
+                    services_payload = json.loads(services_json)
+                    Thread(target=handle_predict_request, args=(correlation_id, reply_topic, services_payload)).start()
+            except Exception as e:
+                print(f"[DEBUG] PREDICT_REQUEST parse error: {e}")
+
+def handle_predict_request(correlation_id, reply_topic, services_payload):
+    """Compute predicted runtimes for requested services and publish PREDICT_RESPONSE to scheduler."""
+    runtimes = {}
+    for item in services_payload:
+        service_id = item.get("service_id")
+        docker_container = item.get("docker_container")
+        if service_id is None or not docker_container:
+            continue
+        try:
+            pred_ms = trainAndPredict({"service": docker_container})
+            runtimes[str(service_id)] = int(pred_ms) if pred_ms and pred_ms > 0 else 1000
+        except Exception as e:
+            print(f"[DEBUG] trainAndPredict error for service_id {service_id}: {e}")
+            runtimes[str(service_id)] = 1000
+    payload = f"PREDICT_RESPONSE:{correlation_id}|{user_id}|{json.dumps(runtimes)}"
+    mclient.publish(topic=reply_topic, payload=payload.encode("utf-8"), qos=1)
+    print(f"[DEBUG] Published PREDICT_RESPONSE to {reply_topic} for correlation_id {correlation_id}")
 
 def on_subscribe(mqtt_client, userdata, mid, qos, properties=None):
     pass
