@@ -29,6 +29,10 @@ import sys
 import tempfile
 import socket
 import subprocess
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
+
+PROVIDER_HTTP_PORT = int(os.environ.get("PROVIDER_HTTP_PORT", "9002"))
 
 user_id = sys.argv[1]
 # Add the project root directory to Python's path
@@ -202,7 +206,6 @@ def on_message(mqtt_client, userdata, msg):
             # Offload reference stats collection to a separate thread
             Thread(target=set_reference_stats_for_service, args=(service_id,)).start()
 
-
 def on_subscribe(mqtt_client, userdata, mid, qos, properties=None):
     pass
 
@@ -260,9 +263,18 @@ def append_data_to_file(data, filename):
         file.write(json.dumps(data) + '\n')
 
 def load_data_from_file(filename):
+    data = []
+    decoder = json.JSONDecoder()
     with open(filename, 'r') as file:
-        data = [json.loads(line.strip()) for line in file]
-    
+        for line in file:
+            line = line.strip()
+            while line:
+                try:
+                    obj, idx = decoder.raw_decode(line)
+                    data.append(obj)
+                    line = line[idx:].strip()
+                except json.JSONDecodeError:
+                    break
     # Clean the data by removing entries with 'DID NOT RECIEVE' values
     cleaned_data = []
     for item in data:
@@ -1119,35 +1131,71 @@ def calc_benchmark_stats():
 
 
 def set_reference_stats_for_service(service_id):
-    container_name = service_id+"_reference_stats_"
+    # Docker container names only allow [a-zA-Z0-9][a-zA-Z0-9_.-]; sanitize / and :
+    safe_name = service_id.replace("/", "_").replace(":", "_")
+    container_name = safe_name + "_reference_stats_"
     print(container_name)
     img = imagePuller.request_image(service_id)
     global client
-    cont = client.containers.run(img, name=container_name)
-    start_run_time=time.time()
-    timeout = 500 # how long will this service run on reference in seconds
-    stack=[]
-    run_vars={}
-    runtime=timeout
-    while ((cont != None) and ((str(cont.status) == 'running') or (str(cont.status) == 'created'))):
-        if(time.time()-start_run_time > timeout):
-            print("timeout of 500 seconds reached in running service on the reference provider.")
-            cont.kill()
-            break
-        #elapsed_time += stop_time
-        s = cont.stats(decode=False, stream=False)
-        if(s['memory_stats'] != {}):
-            #stack.clear() #to get stats streamed throughout the process remove this line
-            stack.clear() #only to save time
-            stack.append(s)
-        else: break
-
-    run_time = int((time.time() - start_run_time)*1000)
-    run_vars['service']=service_id
-    run_vars['memory_usage'] = stack[0]['memory_stats']['usage']
-    run_vars['cpu_usage'] = stack[0]['cpu_stats']['cpu_usage']['total_usage']
-    run_vars['actual_runtime'] = run_time
-
+    # Remove any existing container with this name (e.g. from a previous run or crash) to avoid 409 Conflict
+    try:
+        old = client.containers.get(container_name)
+        old.remove(force=True)
+    except Exception:
+        pass
+    # detach=True so we get a container object to monitor; without it run() returns bytes (log output)
+    cont = client.containers.run(img, name=container_name, detach=True)
+    start_run_time = time.time()
+    timeout = 500  # how long will this service run on reference in seconds
+    stack = []
+    run_vars = {}
+    try:
+        while cont is not None:
+            cont.reload()  # refresh status so we see 'exited' when container finishes
+            if str(cont.status) not in ('running', 'created'):
+                break
+            if time.time() - start_run_time > timeout:
+                print("timeout of 500 seconds reached in running service on the reference provider.")
+                cont.kill()
+                break
+            try:
+                s = cont.stats(decode=False, stream=False)
+                if s.get('memory_stats'):
+                    stack.clear()
+                    stack.append(s)
+            except Exception as e:
+                print(f"[DEBUG] stats error: {e}")
+                break
+            time.sleep(0.5)  # avoid hammering Docker API; one stats sample every 0.5s is enough
+        run_time = int((time.time() - start_run_time) * 1000)
+        run_vars['service'] = service_id
+        run_vars['actual_runtime'] = run_time
+        if stack:
+            run_vars['memory_usage'] = stack[0]['memory_stats']['usage']
+            run_vars['cpu_usage'] = stack[0]['cpu_stats']['cpu_usage']['total_usage']
+        else:
+            # Short-lived container (e.g. hello-world) may exit before we get stats
+            try:
+                c = client.containers.get(container_name)
+                s = c.stats(decode=False, stream=False)
+                if s.get('memory_stats'):
+                    run_vars['memory_usage'] = s['memory_stats']['usage']
+                    run_vars['cpu_usage'] = s['cpu_stats']['cpu_usage']['total_usage']
+                else:
+                    run_vars['memory_usage'] = 0
+                    run_vars['cpu_usage'] = 0
+            except Exception as e:
+                print(f"[DEBUG] no stats for short-lived container: {e}")
+                run_vars['memory_usage'] = 0
+                run_vars['cpu_usage'] = 0
+    finally:
+        try:
+            cont.reload()
+            if str(cont.status) != 'exited':
+                cont.stop()
+            cont.remove()
+        except Exception as e:
+            print(f"[DEBUG] cleanup: {e}")
     append_data_to_file(run_vars, 'TrainingData/Reference_Provider_Data.txt')
     global mclient
     # !IMPORTANT here user_id should actually be reference_user_id 
@@ -1160,8 +1208,48 @@ def set_reference_stats_for_service(service_id):
 ## mqtt implementation
 
 
-#while(True):
-#    a=1
+def _run_predicted_runtime_http_server():
+    """HTTP server for predicted_runtime requests (scheduler -> provider)."""
+
+    class PredictedRuntimeHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            try:
+                parsed = urlparse(self.path)
+                if parsed.path == "/predicted_runtime":
+                    qs = parse_qs(parsed.query)
+                    service = (qs.get("service") or [None])[0]
+                    if service:
+                        pred_ms = trainAndPredict({"service": service})
+                        body = json.dumps({"value": pred_ms}).encode("utf-8")
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(body)
+                    else:
+                        self.send_response(400)
+                        self.end_headers()
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+            except Exception as e:
+                print(f"[DEBUG] PredictedRuntimeHandler error: {e}")
+                self.send_response(500)
+                self.end_headers()
+
+        def log_message(self, format, *args):
+            pass  # Suppress default logging
+
+    try:
+        httpd = HTTPServer(("0.0.0.0", PROVIDER_HTTP_PORT), PredictedRuntimeHandler)
+        t = Thread(target=httpd.serve_forever)
+        t.daemon = True
+        t.start()
+        print(f"Provider HTTP server listening on port {PROVIDER_HTTP_PORT} for /predicted_runtime")
+    except Exception as e:
+        print(f"Warning: Could not start provider HTTP server: {e}")
+
+
+_run_predicted_runtime_http_server()
 
 while True:
     if procedural_shutdown_event.is_set():

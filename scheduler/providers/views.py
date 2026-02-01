@@ -31,6 +31,8 @@ import random
 from providers.mincost import minimize_total_cost
 import threading
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 global procedural_shutdown_penalty
 procedural_shutdown_penalty = 0
 global non_procedural_shutdown_penalty
@@ -68,7 +70,7 @@ def get_scheduler_id():
         print("No scheduler user record found")
         return None # No scheduler user record found, return None
 # BROKER_ID = "10.8.1.18"
-reference_provider_id = '34933555-5cca-41fb-aded-4ab7900c48d5'
+reference_provider_id = 'ff898965-5c47-41af-b447-5b538a0c7847'
 file_path = "/home/user/Documents/Serverless_Scheduler/SchedInfo.csv"
 
 mclient = None
@@ -706,15 +708,21 @@ def providerStartup_mqtt(user_id):
 def set_reference_stats(request):
     # send msg to reference provider with service id. on_msg of provider will call a function to execute this service.
     # It will also add cpu_usage and memory_usage to a txt file.
+    # service_id can be numeric (DB Service id) or string (task link / docker_container); if numeric we resolve to docker_container.
     print("in set rstats (views/provider)")
     client=get_mclient()
-    #subscribe to EVERYONE in on_connect
     client.subscribe(topic=reference_provider_id)
-    service_id = json.loads(request.body.decode("utf-8"))['service_id']
-    print(type(service_id))
-    print(service_id)
-    # convert this service_id to task link before publishing. # Rn, we are actually directly passing in task link only.
-    client.publish(topic=reference_provider_id, payload="ref_run_service_id/"+service_id)
+    body = json.loads(request.body.decode("utf-8"))
+    service_id = body['service_id']
+    task_link = service_id
+    if isinstance(service_id, int) or (isinstance(service_id, str) and service_id.isdigit()):
+        try:
+            service = Services.objects.get(id=int(service_id))
+            task_link = service.docker_container
+            print(f"Resolved service id {service_id} -> {task_link}")
+        except (Services.DoesNotExist, ValueError) as e:
+            return JsonResponse({'State': f'Service not found: {service_id}', 'error': str(e)}, status=404)
+    client.publish(topic=reference_provider_id, payload="ref_run_service_id/"+str(task_link))
     return JsonResponse({'State':'Running service on the reference provider, stats will be printed on django server and added to files also'})
 
 @csrf_exempt
@@ -1092,32 +1100,107 @@ Args:
 Returns:
     A dictionary mapping each service to its predicted runtime. ( for ONE specific provider )
 """
+
+
+def _get_provider_http_base_url(provider):
+    """Get HTTP base URL for provider's predicted_runtime endpoint."""
+    from django.conf import settings
+    url_by_loc = getattr(settings, "PROVIDER_HTTP_URL_BY_LOCATION", {})
+    if provider.location and url_by_loc:
+        return url_by_loc.get(provider.location)
+    return getattr(settings, "PROVIDER_HTTP_BASE_URL", "http://localhost:9002")
+
+
+def _fetch_predicted_runtime_http(base_url, service_docker, timeout=5):
+    """Fetch predicted runtime from provider via HTTP. Returns value or None."""
+    try:
+        from urllib.parse import quote
+        url = f"{base_url.rstrip('/')}/predicted_runtime?service={quote(service_docker, safe='')}"
+        r = requests.get(url, timeout=timeout)
+        if r.status_code == 200:
+            data = r.json()
+            return data.get("value")
+    except Exception as e:
+        print(f"HTTP predicted_runtime fetch failed: {e}")
+    return None
+
+
+def _fetch_predicted_runtimes_parallel(provider, services_to_fetch, timeout=5):
+    """
+    Fetch predicted runtimes from provider via HTTP in parallel.
+    services_to_fetch: list of (service_id, service) where service has docker_container.
+    Returns: dict service_id -> predicted_runtime_ms or None
+    """
+    base_url = _get_provider_http_base_url(provider)
+    results = {}
+
+    def _fetch_one(item):
+        service_id, service = item
+        svc_obj = service[1] if isinstance(service, tuple) and len(service) == 2 else service
+        docker_container = getattr(svc_obj, "docker_container", None)
+        if not docker_container:
+            return (service_id, None)
+        val = _fetch_predicted_runtime_http(base_url, docker_container, timeout)
+        return (service_id, val)
+
+    with ThreadPoolExecutor(max_workers=min(len(services_to_fetch), 8)) as executor:
+        futures = {executor.submit(_fetch_one, item): item[0] for item in services_to_fetch}
+        for future in as_completed(futures, timeout=timeout + 2):
+            try:
+                service_id, val = future.result()
+                results[service_id] = val
+            except Exception as e:
+                print(f"Parallel fetch error: {e}")
+
+    return results
+
+
 def get_predicted_runtimes(provider, services):
     print("Entering get_predicted_runtimes")
     predicted_runtimes = {}
     DEFAULT_RUNTIME = 1000  # milliseconds, adjust this based on your typical service runtime
-    
+
+    # First pass: collect services needing provider prediction (no Job history)
+    services_needing_prediction = []
     for service in services:
         try:
-            # Get service ID safely, handling potential tuples or objects without ID
             service_id = None
             if hasattr(service, 'id'):
                 service_id = service.id
             elif isinstance(service, tuple) and len(service) == 2 and hasattr(service[1], 'id'):
                 service_id = service[1].id
-            
             if service_id is None:
-                print(f"Warning: Could not determine service ID from: {service}")
                 continue
-                
-            latest_run_time = Job.get_latest_run_time(provider.id, service_id)
-            if latest_run_time is None:
-                # Use a default value instead of infinity
-                predicted_runtimes[service_id] = DEFAULT_RUNTIME
-                print(f"No previous runtime found for provider {provider.id} and service {service_id}. Using default: {DEFAULT_RUNTIME}")
-            else:
+            try:
+                latest_run_time = Job.get_latest_run_time(provider.id, service_id)
                 predicted_runtimes[service_id] = latest_run_time
-            
+            except Job.DoesNotExist:
+                services_needing_prediction.append((service_id, service))
+        except Exception:
+            pass
+
+    # Fetch predicted runtimes from provider via HTTP in parallel (non-blocking batch)
+    if services_needing_prediction:
+        http_results = _fetch_predicted_runtimes_parallel(provider, services_needing_prediction)
+        for service_id, service in services_needing_prediction:
+            provider_predicted = http_results.get(service_id)
+            if provider_predicted is not None and provider_predicted > 0:
+                predicted_runtimes[service_id] = int(provider_predicted)
+                print(f"Got predicted runtime from provider {provider.id} for service {service_id}: {provider_predicted}ms")
+            else:
+                predicted_runtimes[service_id] = DEFAULT_RUNTIME
+                print(f"No previous runtime for provider {provider.id} and service {service_id}. Using default: {DEFAULT_RUNTIME}")
+
+    # Second pass: adjust for cache state
+    for service in services:
+        try:
+            service_id = None
+            if hasattr(service, 'id'):
+                service_id = service.id
+            elif isinstance(service, tuple) and len(service) == 2 and hasattr(service[1], 'id'):
+                service_id = service[1].id
+            if service_id is None or service_id not in predicted_runtimes:
+                continue
             # Check cache state to adjust predicted runtime
             if provider.is_service_cached(service_id):
                 cache_location = provider.get_cache_location(service_id)
