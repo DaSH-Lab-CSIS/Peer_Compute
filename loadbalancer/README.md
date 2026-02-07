@@ -57,7 +57,7 @@ source .venv/bin/activate  # On macOS/Linux
 # .venv\Scripts\activate  # On Windows
 
 # Start the server
-uvicorn loadbalancer:app --host 0.0.0.0 --port 9001 --reload
+uvicorn loadbalancer_with_logging:app --host 0.0.0.0 --port 9001 --reload
 ```
 
 This will start the load balancer on port 9001, accessible at http://localhost:9001.
