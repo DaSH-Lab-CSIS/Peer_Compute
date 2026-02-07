@@ -31,6 +31,8 @@ import random
 from providers.mincost import minimize_total_cost
 import threading
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 global procedural_shutdown_penalty
 procedural_shutdown_penalty = 0
 global non_procedural_shutdown_penalty
@@ -68,15 +70,24 @@ def get_scheduler_id():
         print("No scheduler user record found")
         return None # No scheduler user record found, return None
 # BROKER_ID = "10.8.1.18"
-reference_provider_id = '34933555-5cca-41fb-aded-4ab7900c48d5'
+reference_provider_id = 'ff898965-5c47-41af-b447-5b538a0c7847'
 file_path = "/home/user/Documents/Serverless_Scheduler/SchedInfo.csv"
 
 mclient = None
+# MQTT predicted runtimes: correlation_id -> { 'results': { provider_user_id: { service_id: runtime } }, 'expected_providers': set, 'event': Event }
+pending_predictions = {}
+pending_predictions_lock = threading.Lock()
+
 global service_id_array 
 global service_queue
 service_id_array = {}
 service_queue = queue.Queue()
 global requested_services
+
+
+def _get_predict_response_topic():
+    """Topic where scheduler receives PREDICT_RESPONSE from providers."""
+    return f"SCHEDULER_{os.environ.get('SCHEDULER_NAME', socket.gethostname())}/predict_response"
 
 # Helpers
 def load_data_as_dict(file_path):
@@ -154,6 +165,11 @@ def on_connect(mqtt_client, userdata, flags, rc, callback_api_version):
         mqtt_client.subscribe(scheduler_topic)
         print(f"Subscribed to scheduler-specific topic: {scheduler_topic}")
         
+        # Subscribe to predict_response topic for MQTT-based predicted runtimes
+        predict_response_topic = f"{scheduler_topic}/predict_response"
+        mqtt_client.subscribe(predict_response_topic)
+        print(f"Subscribed to predict_response topic: {predict_response_topic}")
+        
         # Subscribe to SCHEDULER_ANNOUNCEMENTS to receive other scheduler announcements
         mqtt_client.subscribe("SCHEDULER_ANNOUNCEMENTS")
         print("Subscribed to SCHEDULER_ANNOUNCEMENTS topic")
@@ -229,6 +245,25 @@ def on_message(mqtt_client, userdata, msg):
     try:
         print(msg.topic, msg.payload.decode("utf-8"))
         payload_str = msg.payload.decode("utf-8")
+        
+        # Handle PREDICT_RESPONSE (MQTT predicted runtimes from providers)
+        if msg.topic == _get_predict_response_topic() and payload_str.startswith("PREDICT_RESPONSE:"):
+            try:
+                rest = payload_str[len("PREDICT_RESPONSE:"):]
+                parts = rest.split("|", 2)
+                if len(parts) >= 3:
+                    correlation_id, provider_user_id, runtimes_json = parts[0], parts[1], parts[2]
+                    runtimes = json.loads(runtimes_json)
+                    with pending_predictions_lock:
+                        if correlation_id in pending_predictions:
+                            pending_predictions[correlation_id]["results"][provider_user_id] = runtimes
+                            pending_predictions[correlation_id]["expected_providers"].discard(provider_user_id)
+                            if not pending_predictions[correlation_id]["expected_providers"]:
+                                pending_predictions[correlation_id]["event"].set()
+                    print(f"PREDICT_RESPONSE received from {provider_user_id} for correlation_id {correlation_id}")
+            except Exception as e:
+                print(f"Error processing PREDICT_RESPONSE: {e}")
+            return
         
         # Handle new MQTT-based provider signals
         if payload_str == "STARTUP":
@@ -706,15 +741,21 @@ def providerStartup_mqtt(user_id):
 def set_reference_stats(request):
     # send msg to reference provider with service id. on_msg of provider will call a function to execute this service.
     # It will also add cpu_usage and memory_usage to a txt file.
+    # service_id can be numeric (DB Service id) or string (task link / docker_container); if numeric we resolve to docker_container.
     print("in set rstats (views/provider)")
     client=get_mclient()
-    #subscribe to EVERYONE in on_connect
     client.subscribe(topic=reference_provider_id)
-    service_id = json.loads(request.body.decode("utf-8"))['service_id']
-    print(type(service_id))
-    print(service_id)
-    # convert this service_id to task link before publishing. # Rn, we are actually directly passing in task link only.
-    client.publish(topic=reference_provider_id, payload="ref_run_service_id/"+service_id)
+    body = json.loads(request.body.decode("utf-8"))
+    service_id = body['service_id']
+    task_link = service_id
+    if isinstance(service_id, int) or (isinstance(service_id, str) and service_id.isdigit()):
+        try:
+            service = Services.objects.get(id=int(service_id))
+            task_link = service.docker_container
+            print(f"Resolved service id {service_id} -> {task_link}")
+        except (Services.DoesNotExist, ValueError) as e:
+            return JsonResponse({'State': f'Service not found: {service_id}', 'error': str(e)}, status=404)
+    client.publish(topic=reference_provider_id, payload="ref_run_service_id/"+str(task_link))
     return JsonResponse({'State':'Running service on the reference provider, stats will be printed on django server and added to files also'})
 
 @csrf_exempt
@@ -1092,72 +1133,189 @@ Args:
 Returns:
     A dictionary mapping each service to its predicted runtime. ( for ONE specific provider )
 """
-def get_predicted_runtimes(provider, services):
-    print("Entering get_predicted_runtimes")
+
+
+def _get_provider_http_base_url(provider):
+    """Get HTTP base URL for provider's predicted_runtime endpoint."""
+    from django.conf import settings
+    url_by_loc = getattr(settings, "PROVIDER_HTTP_URL_BY_LOCATION", {})
+    if provider.location and url_by_loc:
+        return url_by_loc.get(provider.location)
+    return getattr(settings, "PROVIDER_HTTP_BASE_URL", "http://localhost:9002")
+
+
+def _fetch_predicted_runtime_http(base_url, service_docker, timeout=5):
+    """Fetch predicted runtime from provider via HTTP. Returns value or None."""
+    try:
+        from urllib.parse import quote
+        url = f"{base_url.rstrip('/')}/predicted_runtime?service={quote(service_docker, safe='')}"
+        r = requests.get(url, timeout=timeout)
+        if r.status_code == 200:
+            data = r.json()
+            return data.get("value")
+    except Exception as e:
+        print(f"HTTP predicted_runtime fetch failed: {e}")
+    return None
+
+
+def _fetch_predicted_runtimes_parallel(provider, services_to_fetch, timeout=5):
+    """
+    [Legacy] Fetch predicted runtimes from provider via HTTP in parallel.
+    Replaced by MQTT-based _fetch_predicted_runtimes_mqtt_batch for build_cost_matrix.
+    """
+    base_url = _get_provider_http_base_url(provider)
+    results = {}
+
+    def _fetch_one(item):
+        service_id, service = item
+        svc_obj = service[1] if isinstance(service, tuple) and len(service) == 2 else service
+        docker_container = getattr(svc_obj, "docker_container", None)
+        if not docker_container:
+            return (service_id, None)
+        val = _fetch_predicted_runtime_http(base_url, docker_container, timeout)
+        return (service_id, val)
+
+    with ThreadPoolExecutor(max_workers=min(len(services_to_fetch), 8)) as executor:
+        futures = {executor.submit(_fetch_one, item): item[0] for item in services_to_fetch}
+        for future in as_completed(futures, timeout=timeout + 2):
+            try:
+                service_id, val = future.result()
+                results[service_id] = val
+            except Exception as e:
+                print(f"Parallel fetch error: {e}")
+
+    return results
+
+
+def _service_docker_container(service):
+    """Extract docker_container string from service (tuple (i, svc) or plain svc)."""
+    svc = service[1] if isinstance(service, tuple) and len(service) == 2 else service
+    return getattr(svc, "docker_container", None)
+
+
+def _fetch_predicted_runtimes_mqtt_batch(provider_services_map, timeout=7):
+    """
+    Fetch predicted runtimes from multiple providers via MQTT in parallel.
+    provider_services_map: dict provider -> list of (service_id, service) needing prediction.
+    Returns: dict provider_user_id -> dict service_id -> runtime_ms (int or None).
+    Fires all requests at once, then waits once for all PREDICT_RESPONSE messages.
+    """
+    if not provider_services_map:
+        return {}
+    correlation_id = str(uuid.uuid4())
+    reply_topic = _get_predict_response_topic()
+    client = get_mclient()
+    if client is None:
+        print("MQTT client unavailable for predicted runtimes batch")
+        return {}
+    expected = set()
+    for provider, services_to_fetch in provider_services_map.items():
+        services_payload = []
+        for service_id, service in services_to_fetch:
+            dc = _service_docker_container(service)
+            if dc:
+                services_payload.append({"service_id": service_id, "docker_container": dc})
+        if not services_payload:
+            continue
+        expected.add(str(provider.user_id))
+        payload = f"PREDICT_REQUEST:{correlation_id}|{reply_topic}|{json.dumps(services_payload)}"
+        client.publish(topic=str(provider.user_id), payload=payload.encode("utf-8"), qos=1)
+        print(f"Published PREDICT_REQUEST to {provider.user_id} for {len(services_payload)} services")
+    if not expected:
+        return {}
+    with pending_predictions_lock:
+        pending_predictions[correlation_id] = {
+            "results": {},
+            "expected_providers": expected,
+            "event": threading.Event(),
+        }
+    got_all = pending_predictions[correlation_id]["event"].wait(timeout=timeout)
+    with pending_predictions_lock:
+        entry = pending_predictions.pop(correlation_id, None)
+        results = dict(entry["results"]) if entry else {}
+    if not got_all:
+        print(f"PREDICT_RESPONSE timeout for correlation_id {correlation_id}; got {len(results)}/{len(expected)}")
+    return results
+
+
+def get_predicted_runtimes_db_pass(provider, services):
+    """
+    First pass: fill predicted_runtimes from Job history; collect services needing provider prediction.
+    Returns: (predicted_runtimes dict, services_needing_prediction list of (service_id, service)).
+    """
     predicted_runtimes = {}
-    DEFAULT_RUNTIME = 1000  # milliseconds, adjust this based on your typical service runtime
-    
+    services_needing_prediction = []
     for service in services:
         try:
-            # Get service ID safely, handling potential tuples or objects without ID
             service_id = None
-            if hasattr(service, 'id'):
+            if hasattr(service, "id"):
                 service_id = service.id
-            elif isinstance(service, tuple) and len(service) == 2 and hasattr(service[1], 'id'):
+            elif isinstance(service, tuple) and len(service) == 2 and hasattr(service[1], "id"):
                 service_id = service[1].id
-            
             if service_id is None:
-                print(f"Warning: Could not determine service ID from: {service}")
                 continue
-                
-            latest_run_time = Job.get_latest_run_time(provider.id, service_id)
-            if latest_run_time is None:
-                # Use a default value instead of infinity
-                predicted_runtimes[service_id] = DEFAULT_RUNTIME
-                print(f"No previous runtime found for provider {provider.id} and service {service_id}. Using default: {DEFAULT_RUNTIME}")
-            else:
+            try:
+                latest_run_time = Job.get_latest_run_time(provider.id, service_id)
                 predicted_runtimes[service_id] = latest_run_time
-            
-            # Check cache state to adjust predicted runtime
+            except Job.DoesNotExist:
+                services_needing_prediction.append((service_id, service))
+        except Exception:
+            pass
+    return predicted_runtimes, services_needing_prediction
+
+
+def get_predicted_runtimes_cache_pass(provider, services, predicted_runtimes, default_runtime=1000):
+    """
+    Second pass: adjust predicted_runtimes for cache state (pull time).
+    Mutates predicted_runtimes in place.
+    """
+    for service in services:
+        try:
+            service_id = None
+            if hasattr(service, "id"):
+                service_id = service.id
+            elif isinstance(service, tuple) and len(service) == 2 and hasattr(service[1], "id"):
+                service_id = service[1].id
+            if service_id is None or service_id not in predicted_runtimes:
+                continue
             if provider.is_service_cached(service_id):
                 cache_location = provider.get_cache_location(service_id)
-                print(f"Service {service_id} is cached on provider {provider.id} in {cache_location}")
-                
-                # If cached in memory, we can skip the pull time completely
-                if cache_location == 'memory':
-                    # In memory cache means fastest access, no pull time needed
-                    print(f"Service {service_id} is in memory cache, skipping pull time")
+                if cache_location == "memory":
                     continue
-                    
-                # If cached on disk, add a reduced pull time (faster than full pull)
-                elif cache_location == 'disk':
-                    # Disk cache is faster than pulling from remote, but slower than memory
-                    # Add a reduced pull time (e.g., 20% of normal pull time)
+                if cache_location == "disk":
                     try:
                         pull_time = Job.get_latest_pull_time(provider.id, service_id)
                         if pull_time:
-                            disk_pull_time = int(pull_time * 0.2)  # 20% of normal pull time
-                            predicted_runtimes[service_id] += disk_pull_time
-                            print(f"Service {service_id} is in disk cache, adding reduced pull time: {disk_pull_time}")
-                    except Exception as e:
-                        print(f"Error calculating disk pull time: {str(e)}")
+                            predicted_runtimes[service_id] += int(pull_time * 0.2)
+                    except Exception:
+                        pass
             else:
-                # Not cached, add full pull time
                 try:
                     pull_time = Job.get_latest_pull_time(provider.id, service_id)
                     if pull_time:
                         predicted_runtimes[service_id] += pull_time
-                        print(f"Service {service_id} is not cached, adding full pull time: {pull_time}")
-                except Exception as e:
-                    print(f"Error adding pull time: {str(e)}")
-        except Job.DoesNotExist:
-            print(f"Warning: No job found for provider {provider.id} and service {service_id if 'service_id' in locals() else 'unknown'}")
-            if 'service_id' in locals() and service_id is not None:
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    return predicted_runtimes
+
+
+def get_predicted_runtimes(provider, services):
+    """Get predicted runtimes for one provider via DB + MQTT batch + cache pass."""
+    DEFAULT_RUNTIME = 1000
+    print("Entering get_predicted_runtimes")
+    predicted_runtimes, services_needing_prediction = get_predicted_runtimes_db_pass(provider, services)
+    if services_needing_prediction:
+        mqtt_results = _fetch_predicted_runtimes_mqtt_batch({provider: services_needing_prediction})
+        provider_runtimes = mqtt_results.get(str(provider.user_id), {})
+        for service_id, _ in services_needing_prediction:
+            val = provider_runtimes.get(service_id) or provider_runtimes.get(str(service_id))
+            if val is not None and val > 0:
+                predicted_runtimes[service_id] = int(val)
+            else:
                 predicted_runtimes[service_id] = DEFAULT_RUNTIME
-        except Exception as e:
-            print(f"Error in get_predicted_runtimes: {str(e)}")
-            # Continue processing other services
-    
+    get_predicted_runtimes_cache_pass(provider, services, predicted_runtimes, DEFAULT_RUNTIME)
     print(f"Predicted runtimes: {predicted_runtimes}")
     print("Exiting get_predicted_runtimes")
     return predicted_runtimes
@@ -1215,32 +1373,47 @@ def print_cost_matrix(cost_matrix):
     print("Exiting print_cost_matrix")
 
 def build_cost_matrix(providers, services):
+    """Build cost matrix: one DB pass per provider, one MQTT batch for all providers, then merge + cache pass."""
+    DEFAULT_RUNTIME = 1000
     print("Entering build_cost_matrix")
     cost_matrix = {}
-
-    # Create list of enumerated services
     indexed_services = list(enumerate(services))
-    
+    compatible_services = services
+
+    # First pass: DB per provider and collect providers that need MQTT prediction
+    per_provider_runtimes = {}
+    provider_services_map = {}
     for provider in providers:
-        # Filter services compatible with the provider
-        # NOTE This is only for testing. Actual implementation would require a service to have requirements 
-        compatible_services = services
+        predicted_runtimes, services_needing_prediction = get_predicted_runtimes_db_pass(provider, compatible_services)
+        per_provider_runtimes[provider] = predicted_runtimes
+        if services_needing_prediction:
+            provider_services_map[provider] = services_needing_prediction
 
-        # Fetch predicted runtimes in a batch
-        predicted_runtimes = get_predicted_runtimes(provider, compatible_services)
+    # One MQTT batch: fire all provider requests at once, wait once for all PREDICT_RESPONSE
+    mqtt_results = _fetch_predicted_runtimes_mqtt_batch(provider_services_map) if provider_services_map else {}
 
-        # Create the cost subdict for this provider
+    # Merge MQTT results and run cache pass per provider
+    for provider in providers:
+        predicted_runtimes = per_provider_runtimes[provider]
+        if provider in provider_services_map:
+            provider_runtimes = mqtt_results.get(str(provider.user_id), {})
+            for service_id, _ in provider_services_map[provider]:
+                val = provider_runtimes.get(service_id) or provider_runtimes.get(str(service_id))
+                if val is not None and val > 0:
+                    predicted_runtimes[service_id] = int(val)
+                else:
+                    predicted_runtimes[service_id] = DEFAULT_RUNTIME
+        get_predicted_runtimes_cache_pass(provider, compatible_services, predicted_runtimes, DEFAULT_RUNTIME)
+
         subdict = {}
         for i, svc in indexed_services:
-            # Ensure we're accessing the service ID correctly
-            service_id = getattr(svc, 'id', None)
+            service_id = getattr(svc, "id", None)
             if service_id is not None:
-                runtime = predicted_runtimes.get(service_id, float('inf'))
+                runtime = predicted_runtimes.get(service_id, float("inf"))
                 subdict[(i, svc)] = runtime
             else:
                 print(f"Warning: Could not get ID from service object: {svc}")
-                subdict[(i, svc)] = float('inf')
-
+                subdict[(i, svc)] = float("inf")
         cost_matrix[provider] = subdict
 
     print_cost_matrix(cost_matrix)
