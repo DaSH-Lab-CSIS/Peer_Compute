@@ -5,7 +5,7 @@
   tags: setup
   vars:
     repo_url: "https://github.com/parasmittal099/Serverless_Scheduler"
-    project_dir: "/home/{{ ansible_user }}/Serverless_Scheduler"
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
   tasks:
     - name: Install dependencies
       apt:
@@ -15,7 +15,13 @@
           - python3-venv
         state: present
         update_cache: yes
-
+    - name: Ensuring deployment directory exists
+      file:
+        path: "{{ project_dir }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0755"
     - name: Clone repository
       git:
         repo: "{{ repo_url }}"
@@ -49,7 +55,7 @@
   tags: setup
   vars:
     repo_url: "https://github.com/parasmittal099/Serverless_Scheduler"
-    project_dir: "/home/{{ ansible_user }}/Serverless_Scheduler"
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
     scheduler_host: "{{ hostvars[groups['control'][0]]['ansible_host'] | default(groups['control'][0]) }}"
     scheduler_url: "http://{{ scheduler_host }}:8000"
     service_ids: [3, 12, 13, 17, 18, 19, 20, 21, 22, 23, 24]
@@ -65,7 +71,13 @@
           - jq
         state: present
         update_cache: yes
-
+    - name: Ensure deployment directory exists
+      file:
+        path: "{{ project_dir }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0755"
     - name: Clone repository
       git:
         repo: "{{ repo_url }}"
