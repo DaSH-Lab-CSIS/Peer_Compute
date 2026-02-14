@@ -22,6 +22,10 @@ class Services(models.Model):
     # JSON field to represent service requirements
     requirements = models.JSONField(default=dict, blank=True)
 
+    # Reference provider stats for runtime prediction: { "memory_usage", "cpu_usage", "actual_runtime" }
+    # Populated when a reference run is done (ref_run_service_id/ MQTT). Null if not yet benchmarked.
+    reference_stats = models.JSONField(default=dict, blank=True, null=True)
+
     class Meta:
         # Each developer can only have one service with a specific name
         unique_together = ['name', 'developer']
