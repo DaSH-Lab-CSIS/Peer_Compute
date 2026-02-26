@@ -9,13 +9,6 @@
     repo_url: "https://{{ github_pat }}@github.com/aalhadsawane/Serverless_Scheduler"
     project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
   tasks:
-    - name: Bootstrap Python for apt module (Raspberry Pi fix)
-      raw: |
-        if ! command -v python3.11 >/dev/null 2>&1; then
-          sudo apt-get update
-          sudo apt-get install -y python3.11 python3.11-venv python3.11-distutils python3-apt
-        fi
-      changed_when: false
     - name: Bootstrap python3-apt
       raw: sudo apt-get update && sudo apt-get install -y python3-apt
       changed_when: false
@@ -75,13 +68,6 @@
     service_ids: [3, 12, 13, 17, 18, 19, 20, 21, 22, 23, 24]
     user_id_file: "{{ project_dir }}/provider_user_id.txt"
   tasks:
-    - name: Bootstrap Python for apt module (Raspberry Pi fix)
-      raw: |
-        if ! command -v python3.11 >/dev/null 2>&1; then
-          sudo apt-get update
-          sudo apt-get install -y python3.11 python3.11-venv python3.11-distutils python3-apt
-        fi
-      changed_when: false
     - name: Bootstrap python3-apt
       raw: sudo apt-get update && sudo apt-get install -y python3-apt
       changed_when: false
