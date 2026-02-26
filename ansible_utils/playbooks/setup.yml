@@ -3,8 +3,10 @@
   hosts: control
   become: yes
   tags: setup
+  vars_files:
+    - secrets.yml 
   vars:
-    repo_url: "https://github.com/parasmittal099/Serverless_Scheduler"
+    repo_url: "https://{{ github.pat }}@github.com/parasmittal099/Serverless_Scheduler"
     project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
   tasks:
     - name: Install dependencies
@@ -53,8 +55,10 @@
   hosts: managed
   become: yes
   tags: setup
+  vars_files:
+    - secrets.yml
   vars:
-    repo_url: "https://github.com/parasmittal099/Serverless_Scheduler"
+    repo_url: "https://{{ github.pat }}@github.com/parasmittal099/Serverless_Scheduler"
     project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
     scheduler_host: "{{ hostvars[groups['control'][0]]['ansible_host'] | default(groups['control'][0]) }}"
     scheduler_url: "http://{{ scheduler_host }}:8000"
