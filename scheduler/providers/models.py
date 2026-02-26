@@ -63,6 +63,12 @@ class Job(models.Model):
     corr_id = models.UUIDField(default=0, db_index=True)
     response = models.TextField(default="")
 
+    # Efficiency/training stats from provider (same shape as eff_score_data.txt); null if not reported
+    memory_usage = models.BigIntegerField(null=True, blank=True, help_text="Container memory usage in bytes")
+    cpu_usage = models.BigIntegerField(null=True, blank=True, help_text="Container CPU usage (total_usage)")
+    cpu_efficiency_score = models.DecimalField(null=True, blank=True, max_digits=30, decimal_places=15)
+    memory_efficiency_score = models.DecimalField(null=True, blank=True, max_digits=30, decimal_places=15)
+
     # Return the run_time of the latest invocation of this service (job) for a certain provider
     def get_latest_run_time(provider_id, service_id):
         latest_job = Job.objects.filter(

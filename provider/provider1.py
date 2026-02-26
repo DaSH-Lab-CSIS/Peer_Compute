@@ -920,7 +920,7 @@ def run_and_invoke_docker(body, container_name) -> dict:
                 print(f"[DEBUG] Exception stopping/removing container: {e}")
             
             print(f"[DEBUG] run_and_invoke_docker completed successfully for container: {container_name}")
-            return result, pull_time, run_time, container_name
+            return result, pull_time, run_time, container_name, run_vars
     except Exception as e:
         import traceback
         error_trace = traceback.format_exc()
@@ -941,7 +941,7 @@ def run_and_invoke_docker(body, container_name) -> dict:
         
         traceback.print_exc()
         # Return default values to prevent the function from crashing
-        return {"error": str(e)}, 0, 0, container_name
+        return {"error": str(e)}, 0, 0, container_name, None
 
 def delete_container_and_image(body, container_name):
     print(f"[DEBUG] delete_container_and_image called with body: {body}, container_name: {container_name}")
@@ -996,7 +996,7 @@ def on_request(json_data) :
 
     print("[on_request] in provider1.py")
     try:
-        r, pull_time, run_time, container_name = run_and_invoke_docker(json_data['task_link'], str(str(json_data['job_id'])+"_container_")) #TODO
+        r, pull_time, run_time, container_name, run_vars = run_and_invoke_docker(json_data['task_link'], str(str(json_data['job_id'])+"_container_")) #TODO
         total_time = math.ceil(((pull_time + run_time)/100.0))*100 
         print(f"[DEBUG] pull_time: {pull_time}, run_time: {run_time}, total_time: {total_time}")
     except Exception as e:
@@ -1007,6 +1007,7 @@ def on_request(json_data) :
         run_time = 0
         container_name = f"{json_data['job_id']}_container_"
         total_time = 0
+        run_vars = None
     # HF_set_time(str(json_data['job_id']), total_time)
     # HF_invoke_balance_transfer(str(json_data['provider_id']), str(json_data['task_developer']))
 
@@ -1028,7 +1029,11 @@ def on_request(json_data) :
     print(f"[DEBUG] delete_container_and_image completed for container: {container_name}")
     
     print(f"[DEBUG] Creating response object for job_id: {json_data['job_id']}")
-    response = {'stage':"dockerrun", 'Result': r, 'pull_time': pull_time, 'run_time': run_time, 'total_time': total_time, 'job_id': json_data['job_id']}
+    response = {'stage': "dockerrun", 'Result': r, 'pull_time': pull_time, 'run_time': run_time, 'total_time': total_time, 'job_id': json_data['job_id']}
+    if run_vars:
+        for key in ('memory_usage', 'cpu_usage', 'cpu_efficiency_score', 'memory_efficiency_score'):
+            if key in run_vars:
+                response[key] = run_vars[key]
     print(f"[DEBUG] Response object created: {response}")
     
     print(f"[DEBUG] About to send job result for job_id: {json_data['job_id']}")

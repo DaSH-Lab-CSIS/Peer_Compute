@@ -437,7 +437,25 @@ def on_message(mqtt_client, userdata, msg):
             user_id = list(benchmark.keys())[0]
             get_benchmarks_for(user_id=user_id, benchmark=benchmark) #this will also update models.
         elif(payload_str.startswith("Stats for Reference Provider: ")):
-            print("Stats added to TrainingData/Reference_Provider_Data.txt")
+            try:
+                ref_stats_json = payload_str[len("Stats for Reference Provider: "):]
+                run_vars = json.loads(ref_stats_json)
+                service_id_str = run_vars.get("service")
+                if service_id_str:
+                    from developers.models import Services
+                    reference_stats = {
+                        "memory_usage": run_vars.get("memory_usage"),
+                        "cpu_usage": run_vars.get("cpu_usage"),
+                        "actual_runtime": run_vars.get("actual_runtime"),
+                    }
+                    updated = Services.objects.filter(docker_container=service_id_str).update(reference_stats=reference_stats)
+                    print(f"Reference stats saved to DB for service {service_id_str}: {updated} row(s) updated")
+                else:
+                    print("Stats for Reference Provider: missing 'service' in payload")
+            except Exception as e:
+                print(f"Error saving reference stats to DB: {e}")
+                import traceback
+                traceback.print_exc()
         elif(payload_str.startswith("offline_non-procedurally")):    
             penalise(msg.topic, 1)
             print(msg.topic + "was disconnected non-procedurally")
@@ -1019,6 +1037,16 @@ def finish_job(data):
         job.run_time = response_decoded['run_time']
         job.total_time = response_decoded['total_time']
         job.cost = (response_decoded['total_time'])
+
+        # Optional: efficiency/training stats (eff_score_data shape) when provider sends them
+        if 'memory_usage' in response_decoded:
+            job.memory_usage = response_decoded['memory_usage']
+        if 'cpu_usage' in response_decoded:
+            job.cpu_usage = response_decoded['cpu_usage']
+        if 'cpu_efficiency_score' in response_decoded:
+            job.cpu_efficiency_score = response_decoded['cpu_efficiency_score']
+        if 'memory_efficiency_score' in response_decoded:
+            job.memory_efficiency_score = response_decoded['memory_efficiency_score']
         
         # Convert Result to JSON string if it's a dict/list, otherwise convert to string
         result = response_decoded.get('Result', {})
