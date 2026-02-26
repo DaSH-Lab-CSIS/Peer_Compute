@@ -14,7 +14,15 @@ This repository contains the setup files to automate tasks across **18 Cortalim 
     
     Use ```keygen_to_all.sh hosts.txt``` on control node for this. (replace hosts.txt with txt file containing user@IP for each managed node).
 2. Modify `inventory.ini` as per needed. `ansible managed -i inventory.ini -m ping` for ping check.
-3. Run playbooks with `ansible-playbook -i inventory.ini playbooks/setup.yml`. This will only run when your pwd is `ansible_utils` or wherever you have your conf and ini files.
+3. Run playbooks with `ansible-playbook -i inventory.ini playbooks/setup.yml --ask-vault-pass`. This will only run when your pwd is `ansible_utils` or wherever you have your conf and ini files. the password for vault is `peercompute`.
+4. To avoid python mismatch with the supposed to be distro python do this:
 
+```python
+ansible managed -m raw -a "sudo mv /usr/local/lib/python3.11 /usr/local/lib/python3.11.bak 2>/dev/null || true && sudo mv /usr/local/lib/python3.13 /usr/local/lib/python3.13.bak 2>/dev/null || true && sudo apt-get update -y && sudo apt-get install --reinstall -y python3-minimal python3" -i inventory.ini
+```
+verification:
+```python
+ansible managed -m shell -a "python3 -c 'import apt; print(\"OK\")'" -i inventory.ini
+```
 For further help, refer to the Ansible documentation or contact the team.
 
