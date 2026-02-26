@@ -33,14 +33,22 @@
         dest: "{{ project_dir }}"
         version: main
         force: yes
-
+    - name: Remove broken venv
+      file:
+        path: "{{ project_dir }}/.venv"
+        state: absent
+    - name: Create virtualenv
+      command: python3 -m venv {{ project_dir }}/.venv
+      args:
+        creates: "{{ project_dir }}/.venv"
+    - name: Ensure pip exists in venv
+      command: "{{ project_dir }}/.venv/bin/python -m ensurepip --upgrade"
     - name: Install Python requirements
       pip:
         requirements: "{{ project_dir }}/requirements.txt"
         virtualenv: "{{ project_dir }}/.venv"
         virtualenv_command: python3 -m venv
         extra_args: "--index-url https://pypi.org/simple"
-        executable: "{{ project_dir }}/.venv/bin/pip"
 
     - name: Check if Django Server is running
       shell: "pgrep -f 'manage.py runserver' || true"
@@ -95,14 +103,22 @@
         dest: "{{ project_dir }}"
         version: main
         force: yes
-
+    - name: Remove broken venv
+      file:
+        path: "{{ project_dir }}/.venv"
+        state: absent
+    - name: Create virtualenv
+      command: python3 -m venv {{ project_dir }}/.venv
+      args:
+        creates: "{{ project_dir }}/.venv"
+    - name: Ensure pip exists in venv
+      command: "{{ project_dir }}/.venv/bin/python -m ensurepip --upgrade"
     - name: Install Python requirements
       pip:
         requirements: "{{ project_dir }}/requirements.txt"
         virtualenv: "{{ project_dir }}/.venv"
         virtualenv_command: python3 -m venv
         extra_args: "--index-url https://pypi.org/simple"
-        executable: "{{ project_dir }}/.venv/bin/pip"
 
     - name: Ensure Docker is running
       service:
