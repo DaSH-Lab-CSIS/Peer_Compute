@@ -38,12 +38,12 @@ If you only want to update the managed nodes or just the control node, use the `
 
 **Control Node only:**
 ```bash
-ansible-playbook -i inventory.ini setup.yml --limit control --tags setup
+ansible-playbook -i inventory.ini setup.yml --limit control --tags setup --ask-vault-pass
 ```
 
 **Managed Nodes only:**
 ```bash
-ansible-playbook -i inventory.ini setup.yml --limit managed --tags setup
+ansible-playbook -i inventory.ini setup.yml --limit managed --tags setup --ask-vault-pass
 ```
 
 ## Idempotency and State
@@ -57,5 +57,7 @@ ansible-playbook -i inventory.ini setup.yml --limit managed --tags setup
 *   **Race Conditions**: The managed nodes will wait for the Control Node (port 8000) to be ready. If this times out (default 300s), ensure the Control Node is starting correctly and there are no firewall rules blocking port 8000.
 *   **Permissions**: The playbook uses `become: yes` to execute commands as root (sudo). Ensure your user has sudo privileges without a password or provide the sudo password via `-K` flag:
     ```bash
-    ansible-playbook -i inventory.ini setup.yml -K
+    ansible-playbook -i inventory.ini setup.yml -K --ask-vault-pass
     ```
+
+    the ansible vault password is `peercompute`.
