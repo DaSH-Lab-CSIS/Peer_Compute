@@ -14,7 +14,7 @@ This repository contains the setup files to automate tasks across **18 Cortalim 
     
     Use ```keygen_to_all.sh hosts.txt``` on control node for this. (replace hosts.txt with txt file containing user@IP for each managed node).
 2. Modify `inventory.ini` as per needed. `ansible managed -i inventory.ini -m ping` for ping check.
-3. Run playbooks with `ansible-playbook -i inventory.ini playbooks/setup.yml -K --ask-vault-pass`. This will only run when your pwd is `ansible_utils` or wherever you have your conf and ini files. the password for vault is `peercompute`.
+3. Run playbooks with `ansible-playbook -i inventory.ini playbooks/setup.yml --ask-vault-pass`. This will only run when your pwd is `ansible_utils` or wherever you have your conf and ini files. the password for vault is `peercompute`.
 
 For further help, refer to the Ansible documentation or contact the team.
 
