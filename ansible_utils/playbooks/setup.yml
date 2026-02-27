@@ -48,7 +48,7 @@
         requirements: "{{ project_dir }}/requirements.txt"
         virtualenv: "{{ project_dir }}/.venv"
         virtualenv_command: python3 -m venv
-        extra_args: "--index-url https://pypi.org/simple"
+        extra_args: "--no-input --index-url https://pypi.org/simple"
 
     - name: Check if Django Server is running
       shell: "pgrep -f 'manage.py runserver' || true"
@@ -118,7 +118,7 @@
         requirements: "{{ project_dir }}/requirements.txt"
         virtualenv: "{{ project_dir }}/.venv"
         virtualenv_command: python3 -m venv
-        extra_args: "--index-url https://pypi.org/simple"
+        extra_args: "--no-input --index-url https://pypi.org/simple"
 
     - name: Ensure Docker is running
       service:
