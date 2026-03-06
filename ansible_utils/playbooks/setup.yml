@@ -72,6 +72,7 @@
   vars:
     repo_url: "https://{{ github_pat }}@github.com/aalhadsawane/Serverless_Scheduler"
     project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+    miniforge_path: "/home/{{ ansible_user }}/miniforge3"
     scheduler_host: "{{ hostvars[groups['control'][0]]['ansible_host'] | default(groups['control'][0]) }}"
     scheduler_url: "http://{{ scheduler_host }}:8000"
     service_ids: [3, 12, 13, 17, 18, 19, 20, 21, 22, 23, 24]
@@ -107,18 +108,32 @@
       file:
         path: "{{ project_dir }}/.venv"
         state: absent
-    - name: Create virtualenv
-      command: python3 -m venv {{ project_dir }}/.venv
+    - name: Check if Miniforge is installed
+      stat:
+        path: "{{ miniforge_path }}/bin/conda"
+      register: miniforge_installed
+    - name: Download Miniforge installer
+      get_url:
+        url: "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-{{ ansible_system }}-{{ ansible_machine }}.sh"
+        dest: "/tmp/Miniforge3-{{ ansible_system }}-{{ ansible_machine }}.sh"
+        mode: "0755"
+      when: not miniforge_installed.stat.exists
+    - name: Install Miniforge
+      command: bash /tmp/Miniforge3-{{ ansible_system }}-{{ ansible_machine }}.sh -b -p {{ miniforge_path }}
+      become_user: "{{ ansible_user }}"
+      when: not miniforge_installed.stat.exists
+    - name: Create virtualenv with conda (managed node)
+      command: "{{ miniforge_path }}/bin/conda create -p {{ project_dir }}/.venv python=3.13 -y"
       args:
-        creates: "{{ project_dir }}/.venv"
-    - name: Ensure pip exists in venv
-      command: "{{ project_dir }}/.venv/bin/python -m ensurepip --upgrade"
+        creates: "{{ project_dir }}/.venv/bin/python"
+      become_user: "{{ ansible_user }}"
     - name: Install Python requirements
       pip:
         requirements: "{{ project_dir }}/requirements.txt"
         virtualenv: "{{ project_dir }}/.venv"
         virtualenv_command: python3 -m venv
         extra_args: "--no-input --index-url https://pypi.org/simple"
+      become_user: "{{ ansible_user }}"
 
     - name: Ensure Docker is running
       service:
