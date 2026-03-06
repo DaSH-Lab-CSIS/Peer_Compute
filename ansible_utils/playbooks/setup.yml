@@ -87,6 +87,7 @@
           - git
           - python3-pip
           - python3-venv
+          - python3-packaging
           - curl
           - jq
         state: present
@@ -127,13 +128,14 @@
       args:
         creates: "{{ project_dir }}/.venv/bin/python"
       become_user: "{{ ansible_user }}"
-    - name: Install Python requirements
-      pip:
-        requirements: "{{ project_dir }}/requirements.txt"
-        virtualenv: "{{ project_dir }}/.venv"
-        virtualenv_command: python3 -m venv
-        extra_args: "--no-input --index-url https://pypi.org/simple"
+    - name: Install numpy, scipy, pandas, pillow via conda (avoids long/broken pip build on aarch64)
+      command: "{{ miniforge_path }}/bin/conda install -p {{ project_dir }}/.venv numpy scipy pandas pillow -y"
       become_user: "{{ ansible_user }}"
+    - name: Install Python requirements
+      command: "{{ project_dir }}/.venv/bin/pip install -r {{ project_dir }}/requirements.txt --no-input --index-url https://pypi.org/simple"
+      become_user: "{{ ansible_user }}"
+      async: 1200
+      poll: 15
 
     - name: Ensure Docker is running
       service:
