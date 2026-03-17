@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/4.2/ref/settings/
 """
 
 from pathlib import Path
+import os
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -98,34 +99,55 @@ WSGI_APPLICATION = 'scheduler.wsgi.application'
 #     }
 # }
 
-# # Local db 
-# DATABASES = {
-#     "default": {
-#         "ENGINE": "django.db.backends.postgresql",
-#         "NAME": "peercompute_local_sn34kyp3t3",
-#         "USER": "postgres",
-#         "PASSWORD": "user123",
-#         "HOST": "localhost",
-#         "PORT": "5432",
-#     }
-# }
-
-
-# SUPABASE
+# Local db on colva3
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
-        "NAME": "postgres",
-        "USER": "postgres.uufnsxmqnwegackubear",
-        "PASSWORD": "16G6MNonNa7ny9pG",
-        "HOST": "aws-0-ap-south-1.pooler.supabase.com",
+        "NAME": "supabase_local",
+        "USER": "postgres",
+        "PASSWORD": "postgres",
+        "HOST": "10.1.19.77",
         "PORT": "5432",
-        "OPTIONS": {
-            "options": "-c pool_mode=session"
-        },
     }
 }
 
+
+# # SUPABASE
+# # When USE_SUPABASE_REST=true (e.g. college WiFi), connect via HTTPS (port 443) instead of Postgres port 5432.
+# SUPABASE_REST_URL = os.environ.get("SUPABASE_URL", "https://uufnsxmqnwegackubear.supabase.co")
+# SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV1Zm5zeG1xbndlZ2Fja3ViZWFyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Mzk0Mzk2NjcsImV4cCI6MjA1NTAxNTY2N30.6HKN271GdBBhmNjfSI9vS2g-wEpJ9r2Uf-_xvUBCEfA")
+# USE_SUPABASE_REST = os.environ.get("USE_SUPABASE_REST", "").lower() in ("1", "true", "yes")
+#
+# if USE_SUPABASE_REST and SUPABASE_ANON_KEY:
+#     DATABASES = {
+#         "default": {
+#             "ENGINE": "scheduler.db.supabase",
+#             "NAME": "postgres",
+#             "OPTIONS": {
+#                 "SUPABASE_REST_URL": SUPABASE_REST_URL,
+#                 "SUPABASE_ANON_KEY": SUPABASE_ANON_KEY,
+#             },
+#             "CONN_MAX_AGE": 0,
+#             "CONN_HEALTH_CHECKS": False,
+#             "AUTOCOMMIT": True,
+#             "TIME_ZONE": None,
+#         }
+#     }
+# else:
+#     DATABASES = {
+#         "default": {
+#             "ENGINE": "django.db.backends.postgresql",
+#             "NAME": "postgres",
+#             "USER": "postgres.uufnsxmqnwegackubear",
+#             "PASSWORD": "16G6MNonNa7ny9pG",
+#             "HOST": "aws-0-ap-south-1.pooler.supabase.com",
+#             "PORT": "5432",
+#             "OPTIONS": {
+#                 "options": "-c pool_mode=session"
+#             },
+#         }
+#     }
+#
 
 # Password validation
 # https://docs.djangoproject.com/en/4.2/ref/settings/#auth-password-validators
