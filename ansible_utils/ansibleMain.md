@@ -4,9 +4,13 @@ This guide describes how to use the provided Ansible playbook (`setup.yml`) to d
 
 Ensure your `pwd` is ansible_utils before running this.
 
+**Logging:** Playbook output is written to `ansible_utils/logs/`. By default, `ansible.cfg` appends to `logs/ansible.log`. For a separate log file per run (timestamped), use the wrapper: `./run_playbook.sh ...` (see below).
+
 ## Running the Playbook
 
 ### 1. Basic Setup (Deployment)
+
+For a timestamped log per run use: `./run_playbook.sh -i inventory.ini playbooks/setup.yml --tags setup`. Otherwise output appends to `logs/ansible.log`.
 
 This command will:
 *   Setup the Control Node (start Django Scheduler).
