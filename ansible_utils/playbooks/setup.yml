@@ -196,6 +196,10 @@
         method: GET
       when: not user_id_stat.stat.exists  # Only calculate efficiency on first registration
 
+    - name: Install python-dotenv
+      command: "{{ project_dir }}/.venv/bin/pip install python-dotenv --no-input --index-url https://pypi.org/simple"
+      become_user: "{{ ansible_user }}"
+
     - name: Check if Provider Script is running
       shell: "pgrep -f 'provider1.py' || true"
       register: provider_process
