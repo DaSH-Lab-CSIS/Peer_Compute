@@ -45,7 +45,9 @@ import scheduler.settings as settings
 import os
 # Create your views here.
 data_dict = None
-BROKER_ID = "broker.hivemq.com"
+# BROKER_ID = "broker.hivemq.com"
+BROKER_ID = os.environ.get('MQTT_BROKER')
+BROKER_PORT = int(os.environ.get('MQTT_PORT'))
 
 def get_scheduler_id():
     """Get scheduler identifier from database User record"""
@@ -63,7 +65,7 @@ def get_scheduler_id():
         ).order_by('-last_ready_signal').first()
         
         if scheduler_user:
-            return str(scheduler_user.user_id)
+            return str(scheduler_user.user_136)
         else:
             return None
     except User.DoesNotExist:
@@ -498,24 +500,51 @@ def on_message(mqtt_client, userdata, msg):
 def on_subscribe(mqtt_client, userdata, mid, qos, properties=None):
     print("on_subscribe userdata is "+ str(mqtt_client))
 
-def get_mclient():
+# Connect timeout (seconds) so startup does not block when broker is unreachable
+MQTT_CONNECT_TIMEOUT = 5
+
+def _do_mqtt_connect(timed_out_flag):
+    """Run MQTT connect in a thread; set global mclient on success or DISCONNECTED on failure."""
     global mclient
-    if(mclient == None):
-        try:
-            mclient = mqtt.Client(callback_api_version= mqtt.CallbackAPIVersion.VERSION2)
-            mclient.on_connect = on_connect
-            mclient.on_message = on_message
-            mclient.on_subscribe= on_subscribe
-            mclient.connect(host=BROKER_ID,port=1883)
-            mclient.subscribe("ROTATION")  # Subscribe to ROTATION topic
-            mclient.loop_start()
-            print(f"✅ MQTT client connected to {BROKER_ID}:1883")
-        except Exception as e:
-            print(f"⚠️  Warning: Failed to connect to MQTT broker {BROKER_ID}:1883 - {e}")
+    try:
+        client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
+
+        # Configure optional authentication if provided via environment
+        mqtt_username = os.environ.get("MQTT_USERNAME")
+        mqtt_password = os.environ.get("MQTT_PASSWORD")
+        if mqtt_username:
+            client.username_pw_set(mqtt_username, mqtt_password)
+
+        client.on_connect = on_connect
+        client.on_message = on_message
+        client.on_subscribe = on_subscribe
+        # client.connect(host=BROKER_ID, port=1883)
+        client.connect(host=BROKER_ID, port=BROKER_PORT)
+        if timed_out_flag[0]:
+            return
+        client.subscribe("ROTATION")
+        client.loop_start()
+        mclient = client
+        print(f"✅ MQTT client connected to {BROKER_ID}:{BROKER_PORT}")
+    except Exception as e:
+        if not timed_out_flag[0]:
+            print(f"⚠️  Warning: Failed to connect to MQTT broker {BROKER_ID}:{BROKER_PORT} - {e}")
             print("   MQTT functionality will be unavailable. Server will continue running.")
             print("   This may be due to network connectivity issues.")
-            # Set mclient to a sentinel value to prevent repeated connection attempts
+        mclient = "DISCONNECTED"
+
+def get_mclient():
+    global mclient
+    if mclient is None:
+        timed_out_flag = [False]
+        conn_thread = threading.Thread(target=_do_mqtt_connect, args=(timed_out_flag,), daemon=True)
+        conn_thread.start()
+        conn_thread.join(timeout=MQTT_CONNECT_TIMEOUT)
+        if conn_thread.is_alive():
+            timed_out_flag[0] = True
             mclient = "DISCONNECTED"
+            print(f"⚠️  Warning: MQTT connection to {BROKER_ID}:{BROKER_PORT} timed out after {MQTT_CONNECT_TIMEOUT}s.")
+            print("   MQTT functionality will be unavailable. Server will continue running.")
             return None
     if mclient == "DISCONNECTED":
         return None
