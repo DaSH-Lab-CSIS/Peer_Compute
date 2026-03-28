@@ -196,6 +196,21 @@
         method: GET
       when: not user_id_stat.stat.exists  # Only calculate efficiency on first registration
 
+    - name: Ensure MQTT settings in project .env
+      blockinfile:
+        path: "{{ project_dir }}/.env"
+        marker: "# {mark} ANSIBLE MANAGED MQTT"
+        block: |
+          export MQTT_BROKER=10.1.19.136
+          export MQTT_PORT=1884
+          export MQTT_USERNAME=peercompute
+          export MQTT_PASSWORD=peercompute
+        create: true
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0600"
+      become_user: "{{ ansible_user }}"
+
     - name: Install python-dotenv
       command: "{{ project_dir }}/.venv/bin/pip install python-dotenv --no-input --index-url https://pypi.org/simple"
       become_user: "{{ ansible_user }}"
