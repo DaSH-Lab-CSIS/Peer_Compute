@@ -1,0 +1,29 @@
+# Dependencies for provider/provider1.py and provider modules it uses
+# (hybridcaching.py, HFRequests.py)
+
+# Env (repo-root .env for MQTT_BROKER, etc.)
+python-dotenv
+
+# MQTT
+paho-mqtt
+
+# Messaging
+pyzmq
+
+# HTTP
+requests
+
+# Docker
+docker
+
+# Caching (used by hybridcaching.py)
+diskcache
+
+# Data & ML (linear regression, predictions)
+numpy
+pandas
+scikit-learn
+joblib
+
+# Plotting (used for predictions / debugging)
+matplotlib
