@@ -43,11 +43,57 @@ global prediction_deviation_points
 global prediction_deviation_points_multiplier
 import scheduler.settings as settings
 import os
+import logging
+
+_mqtt_log = logging.getLogger(__name__)
+
 # Create your views here.
 data_dict = None
 # BROKER_ID = "broker.hivemq.com"
 BROKER_ID = os.environ.get('MQTT_BROKER')
-BROKER_PORT = int(os.environ.get('MQTT_PORT'))
+print("BROKER_ID: ", BROKER_ID)
+BROKER_PORT = int(os.environ.get('MQTT_PORT', '1884'))
+print("BROKER_PORT: ", BROKER_PORT)
+
+
+def _mqtt_env_truthy(name):
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _mqtt_format_connack(reason_code, properties):
+    """Human-readable CONNACK diagnostics (paho v2 ReasonCode + optional MQTTv5 properties)."""
+    parts = [mqtt.connack_string(reason_code)]
+    try:
+        val = getattr(reason_code, "value", None)
+        if val is not None:
+            parts.append(f"reason_value={val}")
+        if getattr(reason_code, "is_failure", False):
+            parts.append("is_failure=True")
+    except Exception:
+        pass
+    if properties is not None:
+        parts.append(f"properties={properties!r}")
+    return " | ".join(parts)
+
+
+def _mqtt_log_connect_context(client):
+    """Log safe broker/auth context (no passwords)."""
+    try:
+        cid = getattr(client, "_client_id", b"") or b""
+        if isinstance(cid, bytes):
+            cid = cid.decode("utf-8", errors="replace")
+    except Exception:
+        cid = "?"
+    user_set = bool(os.environ.get("MQTT_USERNAME"))
+    pw_set = bool(os.environ.get("MQTT_PASSWORD"))
+    _mqtt_log.info(
+        "[MQTT] connect context: host=%s port=%s client_id=%r auth_username_env_set=%s auth_password_env_set=%s",
+        BROKER_ID,
+        BROKER_PORT,
+        cid,
+        user_set,
+        pw_set,
+    )
 
 def get_scheduler_id():
     """Get scheduler identifier from database User record"""
@@ -149,8 +195,14 @@ def send_heartbeat(mqtt_client, scheduler_name):
             print(f"Error sending heartbeat: {e}")
             time.sleep(5)
 
-def on_connect(mqtt_client, userdata, flags, rc, callback_api_version):
-    if rc == 0:
+def on_connect(mqtt_client, userdata, flags, reason_code, properties):
+    # paho CallbackAPIVersion.VERSION2: (client, userdata, flags, reason_code, properties)
+    if reason_code == 0:
+        _mqtt_log.info(
+            "[MQTT] on_connect OK: flags=%r properties=%r",
+            flags,
+            properties,
+        )
         print("=== SCHEDULER MQTT CONNECTION ESTABLISHED ===")
         
         # Subscribe to core topics
@@ -207,7 +259,44 @@ def on_connect(mqtt_client, userdata, flags, rc, callback_api_version):
         heartbeat_thread.start()
         print("Started heartbeat thread")
     else:
-        print(f"Bad connection to mqtt from views.py/providers. Code: {rc}")
+        detail = _mqtt_format_connack(reason_code, properties)
+        _mqtt_log.warning("[MQTT] on_connect refused: %s", detail)
+        print(f"Bad connection to mqtt from views.py/providers. {detail}")
+
+
+def on_connect_fail(mqtt_client, userdata):
+    """Fired when TCP/TLS fails before a CONNACK (no broker MQTT response)."""
+    sock_err = None
+    try:
+        sock = getattr(mqtt_client, "socket", None)
+        if sock is not None:
+            sock_err = getattr(sock, "error", None)
+    except Exception:
+        sock_err = "unavailable"
+    _mqtt_log.warning(
+        "[MQTT] on_connect_fail: could not complete connect to %s:%s (socket_error=%r). "
+        "Check host/port, firewall, TLS vs plain, and that the broker is listening.",
+        BROKER_ID,
+        BROKER_PORT,
+        sock_err,
+    )
+    print(
+        f"[MQTT] connect_fail before CONNACK to {BROKER_ID}:{BROKER_PORT} "
+        f"(see Django logs for details; set MQTT_DEBUG=1 for paho wire logs)"
+    )
+
+
+def on_disconnect(mqtt_client, userdata, disconnect_flags, reason_code, properties):
+    detail = f"flags={disconnect_flags!r}"
+    try:
+        detail += f" | reason={reason_code!r}"
+        if getattr(reason_code, "value", None) is not None:
+            detail += f" | reason_value={reason_code.value}"
+    except Exception:
+        pass
+    if properties is not None:
+        detail += f" | properties={properties!r}"
+    _mqtt_log.warning("[MQTT] on_disconnect: %s", detail)
 
 def on_message(mqtt_client, userdata, msg):
     print('from views.py/providers ')
@@ -515,7 +604,16 @@ def _do_mqtt_connect(timed_out_flag):
         if mqtt_username:
             client.username_pw_set(mqtt_username, mqtt_password)
 
+        if _mqtt_env_truthy("MQTT_DEBUG"):
+            ph_logger = logging.getLogger("paho.mqtt.client")
+            ph_logger.setLevel(logging.DEBUG)
+            client.enable_logger(ph_logger)
+
+        _mqtt_log_connect_context(client)
+
         client.on_connect = on_connect
+        client.on_connect_fail = on_connect_fail
+        client.on_disconnect = on_disconnect
         client.on_message = on_message
         client.on_subscribe = on_subscribe
         # client.connect(host=BROKER_ID, port=1883)
@@ -525,9 +623,22 @@ def _do_mqtt_connect(timed_out_flag):
         client.subscribe("ROTATION")
         client.loop_start()
         mclient = client
-        print(f"✅ MQTT client connected to {BROKER_ID}:{BROKER_PORT}")
+        _mqtt_log.info(
+            "[MQTT] connect() returned and loop_start() running; broker CONNACK is asynchronous "
+            "(success prints in on_connect when reason_code==0)."
+        )
+        print(
+            f"[MQTT] client started toward {BROKER_ID}:{BROKER_PORT} "
+            f"(wait for on_connect / check logs; not yet authenticated)"
+        )
     except Exception as e:
         if not timed_out_flag[0]:
+            _mqtt_log.exception(
+                "[MQTT] connect exception host=%s port=%s: %s",
+                BROKER_ID,
+                BROKER_PORT,
+                e,
+            )
             print(f"⚠️  Warning: Failed to connect to MQTT broker {BROKER_ID}:{BROKER_PORT} - {e}")
             print("   MQTT functionality will be unavailable. Server will continue running.")
             print("   This may be due to network connectivity issues.")
