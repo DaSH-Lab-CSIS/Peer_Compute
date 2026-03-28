@@ -25,6 +25,7 @@ import numpy as np
 from hybridcaching import HybridImageManager
 import os
 import signal
+import logging
 import sys
 import tempfile
 import socket
@@ -38,6 +39,14 @@ user_id = sys.argv[1]
 # Add the project root directory to Python's path
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(project_root)
+
+# Load repo-root .env so MQTT_BROKER / MQTT_* match Django when you run without `source .env`
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(os.path.join(project_root, ".env"))
+except ImportError:
+    pass
 
 # --- Experiment Logging Setup ---
 try:
@@ -65,9 +74,21 @@ from invocations.invoker import get_payload
 from scheduler.scheduler.settings import HOST
 controller_ip = HOST
 controller_port = "8000"
-# BROKER_ID = "10.8.1.18"
-BROKER_ID="broker.hivemq.com"
-#uncomment requests.get ACK READY NOT READY
+
+# Match scheduler/providers/views.py: same env vars and default port
+BROKER_ID = os.environ.get("MQTT_BROKER")
+BROKER_PORT = int(os.environ.get("MQTT_PORT", "1884"))
+print("BROKER_ID: ", BROKER_ID)
+print("BROKER_PORT: ", BROKER_PORT)
+
+_mqtt_log = logging.getLogger(__name__)
+
+
+def _mqtt_env_truthy(name):
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+# uncomment requests.get ACK READY NOT READY
 channelName = "mychannel"
 chaincodeName = "monitoring"
 token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE2OTQxMjk2MzcsInVzZXJuYW1lIjoiY29udHJvbGxlciIsIm9yZ05hbWUiOiJPcmcxIiwiaWF0IjoxNjk0MDkzNjM3fQ.DNJZ4kB11PbDB4UO2HaMjwlqxgTbJ8b7JK3WsRzaePY"
@@ -114,13 +135,34 @@ imagePuller = HybridImageManager(memory_limit=MEMORY_LIMIT, disk_limit=DISK_LIMI
 # Add a flag to track subscription confirmation
 subscription_confirmed = False
 
-def on_connect(mqtt_client, userdata, flags, rc, callback_api_version):
-    if rc == 0:
-        print('Connected successfully')
+def on_connect(mqtt_client, userdata, flags, reason_code, properties):
+    # paho CallbackAPIVersion.VERSION2: (client, userdata, flags, reason_code, properties)
+    if reason_code == 0:
+        print("Connected successfully")
         mqtt_client.subscribe(user_id)
         mqtt_client.subscribe("EVERYONE")
     else:
-        print('Bad connection. Code:', rc)
+        print("Bad connection. reason_code:", reason_code)
+
+
+def on_connect_fail(mqtt_client, userdata):
+    sock_err = None
+    try:
+        sock = getattr(mqtt_client, "socket", None)
+        if sock is not None:
+            sock_err = getattr(sock, "error", None)
+    except Exception:
+        sock_err = "unavailable"
+    _mqtt_log.warning(
+        "[MQTT] on_connect_fail: could not complete connect to %s:%s (socket_error=%r).",
+        BROKER_ID,
+        BROKER_PORT,
+        sock_err,
+    )
+    print(
+        f"[MQTT] connect_fail before CONNACK to {BROKER_ID}:{BROKER_PORT} "
+        f"(set MQTT_DEBUG=1 for paho wire logs)"
+    )
 
 def process_dockernotrun_request(data):
     global pending_jobs
@@ -241,19 +283,46 @@ def on_subscribe(mqtt_client, userdata, mid, qos, properties=None):
 # requests.get("http://"+controller_ip+":"+controller_port+"/providers/startup/"+user_id)
 
 
-mclient = mqtt.Client(callback_api_version= mqtt.CallbackAPIVersion.VERSION2)
+if not BROKER_ID:
+    print("Error: MQTT_BROKER is not set. Set it to the same broker host as the scheduler (see views.py).")
+    sys.exit(1)
+
+mclient = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
 # sets up LWT for non-procedural disconnections
 LWT_TOPIC = f"{user_id}"
 LWT_MESSAGE = "offline_non-procedurally"
-mclient.will_set(topic=LWT_TOPIC, payload=LWT_MESSAGE, qos=2, retain=False) 
-# make a socket bind to tcp and make a dealer
-mclient.on_connect = on_connect
-mclient.on_message = on_message
-mclient.on_subscribe= on_subscribe
+mclient.will_set(topic=LWT_TOPIC, payload=LWT_MESSAGE, qos=2, retain=False)
 
-mclient.connect(host=BROKER_ID,port=1883, keepalive=100)
-#client subscribe is in on_connect
-mclient.loop_start() #different thread
+mqtt_username = os.environ.get("MQTT_USERNAME")
+mqtt_password = os.environ.get("MQTT_PASSWORD")
+if mqtt_username:
+    mclient.username_pw_set(mqtt_username, mqtt_password)
+
+if _mqtt_env_truthy("MQTT_DEBUG"):
+    ph_logger = logging.getLogger("paho.mqtt.client")
+    ph_logger.setLevel(logging.DEBUG)
+    mclient.enable_logger(ph_logger)
+
+print(
+    f"[MQTT] connecting to {BROKER_ID}:{BROKER_PORT} "
+    f"(auth_username_env_set={bool(mqtt_username)}; CONNACK is async, see on_connect)"
+)
+
+mclient.on_connect = on_connect
+mclient.on_connect_fail = on_connect_fail
+mclient.on_message = on_message
+mclient.on_subscribe = on_subscribe
+
+try:
+    mclient.connect(host=BROKER_ID, port=BROKER_PORT, keepalive=100)
+except Exception as e:
+    print(
+        f"Error: Failed to connect to MQTT broker {BROKER_ID}:{BROKER_PORT} - {e}"
+    )
+    sys.exit(1)
+
+# client subscribe is in on_connect
+mclient.loop_start()
 
 mclient.publish(topic="EVERYONE", payload="start_connect"+user_id, qos=2)
 mclient.publish(topic="EVERYONE", payload="get_efficiency_score"+user_id, qos=2)
