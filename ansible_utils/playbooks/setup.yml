@@ -64,25 +64,24 @@
       poll: 0
       when: django_process.stdout == ""
 
-- name: Setup Managed Nodes
+# Separate play so --start-at-task on any task in "Setup Managed Nodes" still runs a full git sync
+# first (Ansible only skips tasks before the match within the play that contains that task).
+- name: Setup Managed Nodes - sync git workspace
   hosts: managed
   become: yes
-  tags: setup
+  tags:
+    - setup
+    - managed_git_sync
   vars_files:
     - secrets.yml
   vars:
     repo_url: "https://{{ github_pat }}@github.com/aalhadsawane/Serverless_Scheduler"
     project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
-    miniforge_path: "/home/{{ ansible_user }}/miniforge3"
-    # scheduler_host / scheduler_url: from -e, or discovered via tasks/resolve_scheduler.yml
-    scheduler_probe_timeout: 120
-    service_ids: [3, 12, 13, 17, 18, 19, 20, 21, 22, 23, 24]
-    user_id_file: "{{ project_dir }}/provider_user_id.txt"
   tasks:
     - name: Bootstrap python3-apt
       raw: sudo apt-get update && sudo apt-get install -y python3-apt
       changed_when: false
-    - name: Install dependencies
+    - name: Install dependencies (git and base packages for clone)
       apt:
         name:
           - git
@@ -100,12 +99,28 @@
         owner: "{{ ansible_user }}"
         group: "{{ ansible_user }}"
         mode: "0755"
-    - name: Clone repository
+    - name: Clone repository on managed nodes
       git:
         repo: "{{ repo_url }}"
         dest: "{{ project_dir }}"
         version: main
         force: yes
+
+- name: Setup Managed Nodes
+  hosts: managed
+  become: yes
+  tags: setup
+  vars_files:
+    - secrets.yml
+  vars:
+    repo_url: "https://{{ github_pat }}@github.com/aalhadsawane/Serverless_Scheduler"
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+    miniforge_path: "/home/{{ ansible_user }}/miniforge3"
+    # scheduler_host / scheduler_url: from -e, or discovered via tasks/resolve_scheduler.yml
+    scheduler_probe_timeout: 120
+    service_ids: [3, 12, 13, 17, 18, 19, 20, 21, 22, 23, 24]
+    user_id_file: "{{ project_dir }}/provider_user_id.txt"
+  tasks:
     - name: Remove broken venv
       file:
         path: "{{ project_dir }}/.venv"
