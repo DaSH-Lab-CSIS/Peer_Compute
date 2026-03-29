@@ -226,8 +226,17 @@
         mode: "0600"
       become_user: "{{ ansible_user }}"
 
-    - name: Install python-dotenv
-      command: "{{ project_dir }}/.venv/bin/pip install python-dotenv --no-input --index-url https://pypi.org/simple"
+    # Same effect as: sudo usermod -aG docker $USER
+    # New SSH sessions get the docker group automatically. For an already-open shell without
+    # logging out, run: newgrp docker (Ansible cannot attach that to your interactive session.)
+    - name: Grant ansible user access to Docker socket
+      user:
+        name: "{{ ansible_user }}"
+        groups: docker
+        append: yes
+
+    - name: Install provider pip requirements
+      command: "{{ project_dir }}/.venv/bin/pip install -r {{ project_dir }}/provider/requirements.txt --no-input --index-url https://pypi.org/simple"
       become_user: "{{ ansible_user }}"
 
     - name: Check if Provider Script is running
