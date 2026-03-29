@@ -75,12 +75,6 @@ from scheduler.scheduler.settings import HOST
 controller_ip = HOST
 controller_port = "8000"
 
-# Match scheduler/providers/views.py: same env vars and default port
-BROKER_ID = os.environ.get("MQTT_BROKER")
-BROKER_PORT = int(os.environ.get("MQTT_PORT", "1884"))
-print("BROKER_ID: ", BROKER_ID)
-print("BROKER_PORT: ", BROKER_PORT)
-
 _mqtt_log = logging.getLogger(__name__)
 
 
@@ -100,7 +94,19 @@ pid = os.getpid()
 # Print the PID
 print(f"PID: {pid}")
 
-client = docker.from_env()
+try:
+    client = docker.from_env()
+except docker.errors.DockerException as e:
+    chain = " ".join(
+        str(x) for x in (e, e.__cause__, getattr(e.__cause__, "__cause__", None)) if x
+    )
+    if "Permission denied" in chain or "Errno 13" in chain:
+        print(
+            "Docker socket permission denied: add this user to the docker group, then "
+            "log out and back in (or run: newgrp docker). Example: sudo usermod -aG docker $USER",
+            file=sys.stderr,
+        )
+    raise
 procedural_shutdown_event = Event()
 pending_jobs = 0  #despite the name, this is flag indicating whether something is running or not. 
 pending_jobs_lock = Lock()
@@ -282,6 +288,14 @@ def on_subscribe(mqtt_client, userdata, mid, qos, properties=None):
 # tell scheduler that this provider has started. waits for the request to get then proceeds.
 # requests.get("http://"+controller_ip+":"+controller_port+"/providers/startup/"+user_id)
 
+# Match scheduler/providers/views.py; define next to MQTT client so edits to this block stay consistent.
+BROKER_ID = os.environ.get("MQTT_BROKER")
+try:
+    BROKER_PORT = int(os.environ.get("MQTT_PORT", "1884"))
+except ValueError:
+    BROKER_PORT = 1884
+print("BROKER_ID: ", BROKER_ID)
+print("BROKER_PORT: ", BROKER_PORT)
 
 if not BROKER_ID:
     print("Error: MQTT_BROKER is not set. Set it to the same broker host as the scheduler (see views.py).")
@@ -316,8 +330,14 @@ mclient.on_subscribe = on_subscribe
 try:
     mclient.connect(host=BROKER_ID, port=BROKER_PORT, keepalive=100)
 except Exception as e:
+    hint = ""
+    if isinstance(e, OSError) and e.errno == 101:
+        hint = (
+            " No route to broker: confirm MQTT_BROKER in .env, ping that host from this machine, "
+            "and check ip route / WiFi or VLAN."
+        )
     print(
-        f"Error: Failed to connect to MQTT broker {BROKER_ID}:{BROKER_PORT} - {e}"
+        f"Error: Failed to connect to MQTT broker {BROKER_ID}:{BROKER_PORT} - {e}.{hint}"
     )
     sys.exit(1)
 
