@@ -22,6 +22,11 @@ from utils.logger import setup_logger
 from analysis.report_generator import ReportGenerator
 from analysis.visualizer import MetricsVisualizer
 
+# Paths relative to this file so `python main.py` works from repo root or from testbed/
+_TESTBED_DIR = Path(__file__).resolve().parent
+_DEFAULT_CONFIG_DIR = str(_TESTBED_DIR / "config")
+_DEFAULT_RESULTS_DIR = str(_TESTBED_DIR / "results")
+
 
 SCENARIO_CLASSES = {
     'baseline': BaselineScenario,
@@ -90,9 +95,9 @@ def apply_research_scaling(config: Dict[str, Any], scenario_name: str) -> Dict[s
 
 async def run_scenario(
     scenario_name: str,
-    config_dir: str = "testbed/config",
+    config_dir: Optional[str] = None,
     load_balancer_url: str = "http://localhost:9001",
-    output_dir: str = "testbed/results",
+    output_dir: Optional[str] = None,
     run_id: str = None,
     iterations: int = 1,
     research_mode: bool = False,
@@ -115,6 +120,10 @@ async def run_scenario(
     Returns:
         MetricsCollector from the last iteration
     """
+    if config_dir is None:
+        config_dir = _DEFAULT_CONFIG_DIR
+    if output_dir is None:
+        output_dir = _DEFAULT_RESULTS_DIR
     logger = setup_logger("main")
     
     if scenario_name not in SCENARIO_CLASSES:
@@ -208,15 +217,19 @@ async def run_scenario(
 
 
 async def run_all_scenarios(
-    config_dir: str = "testbed/config",
+    config_dir: Optional[str] = None,
     load_balancer_url: str = "http://localhost:9001",
-    output_dir: str = "testbed/results",
+    output_dir: Optional[str] = None,
     iterations: int = 1,
     research_mode: bool = False,
     seed: Optional[int] = None,
     save_requests: bool = False
 ):
     """Run all scenarios sequentially."""
+    if config_dir is None:
+        config_dir = _DEFAULT_CONFIG_DIR
+    if output_dir is None:
+        output_dir = _DEFAULT_RESULTS_DIR
     logger = setup_logger("main")
     
     for scenario_name in SCENARIO_CLASSES.keys():
@@ -237,8 +250,10 @@ async def run_all_scenarios(
             continue
 
 
-def analyze_results(run_id: str, output_dir: str = "testbed/results"):
+def analyze_results(run_id: str, output_dir: Optional[str] = None):
     """Analyze results from a test run."""
+    if output_dir is None:
+        output_dir = _DEFAULT_RESULTS_DIR
     logger = setup_logger("main")
     
     logger.info(f"Analyzing results for run: {run_id}")
@@ -296,13 +311,13 @@ Examples:
     )
     parser.add_argument(
         '--config',
-        default='testbed/config',
-        help='Configuration directory (default: testbed/config)'
+        default=_DEFAULT_CONFIG_DIR,
+        help='Configuration directory (default: config/ next to main.py)'
     )
     parser.add_argument(
         '--output-dir',
-        default='testbed/results',
-        help='Output directory for results (default: testbed/results)'
+        default=_DEFAULT_RESULTS_DIR,
+        help='Output directory for results (default: results/ next to main.py)'
     )
     parser.add_argument(
         '--iterations',
