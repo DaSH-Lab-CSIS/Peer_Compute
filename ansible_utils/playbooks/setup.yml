@@ -9,6 +9,10 @@
     repo_url: "https://{{ github_pat }}@github.com/parasmittal099/Serverless_Scheduler"
     project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
   tasks:
+    - name: Give execute permission to login.sh
+      file:
+        path: ~/wifi_login/login.sh
+        mode: '0755'
     - name: Run WiFi login script
       command: ./login.sh
       args:
@@ -82,6 +86,10 @@
     repo_url: "https://{{ github_pat }}@github.com/parasmittal099/Serverless_Scheduler"
     project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
   tasks:
+    - name: Give execute permission to login.sh
+      file:
+        path: ~/wifi_login/login.sh
+        mode: '0755'
     - name: Run WiFi login script
       command: ./login.sh
       args:
