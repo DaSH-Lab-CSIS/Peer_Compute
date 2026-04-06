@@ -11,12 +11,12 @@
   tasks:
     - name: Give execute permission to login.sh
       file:
-        path: ~/wifi_login/login.sh
+        path: /home/{{ ansible_user }}/wifi_login/login.sh
         mode: '0755'
     - name: Run WiFi login script
       command: ./login.sh
       args:
-        chdir: ~/wifi_login
+        chdir: /home/{{ ansible_user }}/wifi_login
     - name: Bootstrap python3-apt
       raw: sudo apt-get update && sudo apt-get install -y python3-apt
       changed_when: false
@@ -88,12 +88,12 @@
   tasks:
     - name: Give execute permission to login.sh
       file:
-        path: ~/wifi_login/login.sh
+        path: /home/{{ ansible_user }}/wifi_login/login.sh
         mode: '0755'
     - name: Run WiFi login script
       command: ./login.sh
       args:
-        chdir: ~/wifi_login
+        chdir: /home/{{ ansible_user }}/wifi_login
     - name: Bootstrap python3-apt
       raw: sudo apt-get update && sudo apt-get install -y python3-apt
       changed_when: false
