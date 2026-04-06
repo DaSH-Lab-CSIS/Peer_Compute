@@ -17,8 +17,10 @@ This command will:
 *   Setup Managed Nodes (install dependencies, register provider, start provider script).
 
 ```bash
-ansible-playbook -i inventory.ini playbooks/setup.yml --tags setup
+ansible-playbook -i inventory.ini playbooks/setup.yml -K --ask-vault-pass --tags=setup
 ```
+
+password is `peercompute`
 
 ### 2. Run Experiments
 
