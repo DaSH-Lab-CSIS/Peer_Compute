@@ -36,3 +36,6 @@ cockroach/*
 *credentials*.tsv
 *Credentials*.csv
 *credentials*.csv
+
+ansible_utils/logs/*
+ansible_utils/cockroach*
