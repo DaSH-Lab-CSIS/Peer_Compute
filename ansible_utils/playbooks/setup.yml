@@ -6,7 +6,7 @@
   vars_files:
     - secrets.yml 
   vars:
-    repo_url: "https://{{ github_pat }}@github.com/parasmittal099/Serverless_Scheduler"
+    repo_url: "https://{{ github_pat }}@github.com/aalhadsawane/Serverless_Scheduler"
     project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
   tasks:
     - name: Give execute permission to login.sh
@@ -84,7 +84,7 @@
   vars_files:
     - secrets.yml
   vars:
-    repo_url: "https://{{ github_pat }}@github.com/parasmittal099/Serverless_Scheduler"
+    repo_url: "https://{{ github_pat }}@github.com/aalhadsawane/Serverless_Scheduler"
     project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
   tasks:
     - name: Give execute permission to login.sh
