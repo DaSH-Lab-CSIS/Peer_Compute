@@ -17,6 +17,7 @@
       command: ./login.sh
       args:
         chdir: /home/{{ ansible_user }}/wifi_login
+      become: false
     - name: Bootstrap python3-apt
       raw: sudo apt-get update && sudo apt-get install -y python3-apt
       changed_when: false
@@ -94,6 +95,7 @@
       command: ./login.sh
       args:
         chdir: /home/{{ ansible_user }}/wifi_login
+      become: false
     - name: Bootstrap python3-apt
       raw: sudo apt-get update && sudo apt-get install -y python3-apt
       changed_when: false
