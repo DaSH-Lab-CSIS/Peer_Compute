@@ -6,9 +6,13 @@
   vars_files:
     - secrets.yml 
   vars:
-    repo_url: "https://{{ github_pat }}@github.com/aalhadsawane/Serverless_Scheduler"
+    repo_url: "https://{{ github_pat }}@github.com/parasmittal099/Serverless_Scheduler"
     project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
   tasks:
+    - name: Run WiFi login script
+      command: ./login.sh
+      args:
+        chdir: wifi_login
     - name: Bootstrap python3-apt
       raw: sudo apt-get update && sudo apt-get install -y python3-apt
       changed_when: false
@@ -75,7 +79,7 @@
   vars_files:
     - secrets.yml
   vars:
-    repo_url: "https://{{ github_pat }}@github.com/aalhadsawane/Serverless_Scheduler"
+    repo_url: "https://{{ github_pat }}@github.com/parasmittal099/Serverless_Scheduler"
     project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
   tasks:
     - name: Run WiFi login script
@@ -117,7 +121,7 @@
   vars_files:
     - secrets.yml
   vars:
-    repo_url: "https://{{ github_pat }}@github.com/aalhadsawane/Serverless_Scheduler"
+    repo_url: "https://{{ github_pat }}@github.com/parasmittal099/Serverless_Scheduler"
     project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
     miniforge_path: "/home/{{ ansible_user }}/miniforge3"
     # scheduler_host / scheduler_url: from -e, or discovered via tasks/resolve_scheduler.yml
