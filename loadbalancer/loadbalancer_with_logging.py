@@ -32,6 +32,14 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+# Load repo-root .env so MQTT_BROKER / MQTT_* match Django when you run without `source .env`
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(os.path.join(project_root, ".env"))
+except ImportError:
+    pass
+
 # Removed get_scheduler_endpoints import - using dynamic MQTT discovery instead
 
 # UDP Log Handler for sending logs to viewer
@@ -318,25 +326,73 @@ batch_state = BatchState()
 # Track processed batches for historical data (use deque for efficient FIFO)
 processed_batches = deque(maxlen=100)  # Keep last 100 batches
 
-# MQTT Configuration
-BROKER_ID = "broker.hivemq.com"
-# Add any other MQTT-related constants here
+# MQTT Configuration (match scheduler/providers/views.py and provider/provider1.py)
+BROKER_ID = os.environ.get("MQTT_BROKER")
+try:
+    BROKER_PORT = int(os.environ.get("MQTT_PORT", "1884"))
+except ValueError:
+    BROKER_PORT = 1884
+
+
+def _mqtt_env_truthy(name):
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _mqtt_format_connack(reason_code, properties):
+    """Human-readable CONNACK diagnostics (paho v2 ReasonCode + optional MQTTv5 properties)."""
+    parts = [mqtt.connack_string(reason_code)]
+    try:
+        val = getattr(reason_code, "value", None)
+        if val is not None:
+            parts.append(f"reason_value={val}")
+        if getattr(reason_code, "is_failure", False):
+            parts.append("is_failure=True")
+    except Exception:
+        pass
+    if properties is not None:
+        parts.append(f"properties={properties!r}")
+    return " | ".join(parts)
+
 
 # MQTT Client callbacks
-def on_connect(mqtt_client, userdata, flags, rc, callback_api_version):
-    if rc == 0:
-        logger.info('Connected successfully to MQTT broker')
-        
+def on_connect(mqtt_client, userdata, flags, reason_code, properties):
+    # paho CallbackAPIVersion.VERSION2: (client, userdata, flags, reason_code, properties)
+    if reason_code == 0:
+        logger.info("[MQTT] on_connect OK: flags=%r properties=%r", flags, properties)
+        logger.info("Connected successfully to MQTT broker")
+
         # Subscribe to load balancer's own topic for responses
         lb_id = get_loadbalancer_id()
         mqtt_client.subscribe(lb_id)
         mqtt_client.subscribe("ROTATION")
         mqtt_client.subscribe("EVERYONE")  # For scheduler heartbeats
         mqtt_client.subscribe("SCHEDULER_ANNOUNCEMENTS")  # For scheduler discovery
-        
-        logger.info(f'Subscribed to {lb_id}, ROTATION, EVERYONE, and SCHEDULER_ANNOUNCEMENTS topics')
+
+        logger.info(
+            "Subscribed to %s, ROTATION, EVERYONE, and SCHEDULER_ANNOUNCEMENTS topics",
+            lb_id,
+        )
     else:
-        logger.error(f'Bad connection to MQTT broker. Code: {rc}')
+        detail = _mqtt_format_connack(reason_code, properties)
+        logger.warning("[MQTT] on_connect refused: %s", detail)
+
+
+def on_connect_fail(mqtt_client, userdata):
+    """Fired when TCP/TLS fails before a CONNACK (no broker MQTT response)."""
+    sock_err = None
+    try:
+        sock = getattr(mqtt_client, "socket", None)
+        if sock is not None:
+            sock_err = getattr(sock, "error", None)
+    except Exception:
+        sock_err = "unavailable"
+    logger.warning(
+        "[MQTT] on_connect_fail: could not complete connect to %s:%s (socket_error=%r). "
+        "Check host/port, firewall, TLS vs plain, and that the broker is listening.",
+        BROKER_ID,
+        BROKER_PORT,
+        sock_err,
+    )
 
 def on_message(mqtt_client, userdata, msg):
     logger.info(f'Received message on topic: {msg.topic} with payload: {msg.payload}')
@@ -441,7 +497,16 @@ def on_subscribe(mqtt_client, userdata, mid, qos, properties=None):
 
 # Initialize MQTT Client
 mclient = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
+mqtt_username = os.environ.get("MQTT_USERNAME")
+mqtt_password = os.environ.get("MQTT_PASSWORD")
+if mqtt_username:
+    mclient.username_pw_set(mqtt_username, mqtt_password)
+if _mqtt_env_truthy("MQTT_DEBUG"):
+    ph_logger = logging.getLogger("paho.mqtt.client")
+    ph_logger.setLevel(logging.DEBUG)
+    mclient.enable_logger(ph_logger)
 mclient.on_connect = on_connect
+mclient.on_connect_fail = on_connect_fail
 mclient.on_message = on_message
 mclient.on_subscribe = on_subscribe
 
@@ -712,13 +777,34 @@ async def startup_event():
     # Start the batch timeout checker
     asyncio.create_task(check_timeout_task())
     
-    # Connect to MQTT broker
+    # Connect to MQTT broker (same env as scheduler/providers/views.py)
+    if not BROKER_ID:
+        logger.error(
+            "MQTT_BROKER is not set. Set it to the same broker host as the scheduler (see views.py)."
+        )
+        return
     try:
-        mclient.connect(host=BROKER_ID, port=1883, keepalive=100)
+        logger.info(
+            "[MQTT] connecting to %s:%s (auth_username_env_set=%s; CONNACK is async, see on_connect)",
+            BROKER_ID,
+            BROKER_PORT,
+            bool(mqtt_username),
+        )
+        mclient.connect(host=BROKER_ID, port=BROKER_PORT, keepalive=100)
         mclient.loop_start()  # Start MQTT loop in separate thread
         logger.info("MQTT client started successfully")
     except Exception as e:
-        logger.error(f"Failed to start MQTT client: {e}")
+        hint = ""
+        if isinstance(e, OSError) and e.errno == 101:
+            hint = (
+                " No route to broker: confirm MQTT_BROKER in .env, ping that host from this machine, "
+                "and check ip route / WiFi or VLAN."
+            )
+        logger.error(
+            "Failed to start MQTT client: %s%s",
+            e,
+            hint,
+        )
 
 @app.on_event("shutdown")
 async def shutdown_event():
