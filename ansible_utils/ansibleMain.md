@@ -10,7 +10,7 @@ Ensure your `pwd` is ansible_utils before running this.
 
 ### 1. Basic Setup (Deployment)
 
-For a timestamped log per run use: `./run_playbook.sh -i inventory.ini playbooks/setup.yml --tags setup`. Otherwise output appends to `logs/ansible.log`.
+For a timestamped log per run use: `./run_playbook.sh -i inventory.ini playbooks/setup.yml -K --ask-vault-pass --tags setup`. Otherwise output appends to `logs/ansible.log`.
 
 This command will:
 *   Setup the Control Node (start Django Scheduler).
