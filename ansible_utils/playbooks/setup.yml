@@ -92,7 +92,7 @@
         path: /home/{{ ansible_user }}/wifi_login/login.sh
         mode: '0755'
     - name: Run WiFi login script
-      command: ./login.sh
+      shell: bash -lc "./login.sh"
       args:
         chdir: /home/{{ ansible_user }}/wifi_login
       become: false
