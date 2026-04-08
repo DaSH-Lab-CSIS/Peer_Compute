@@ -97,7 +97,7 @@
         chdir: /home/{{ ansible_user }}/wifi_login
       become: false
     - name: Bootstrap python3-apt
-      raw: sudo apt-get update && sudo apt-get install -y python3-apt
+      raw: apt-get update && apt-get install -y python3-apt
       changed_when: false
     - name: Install dependencies (git and base packages for clone)
       apt:
