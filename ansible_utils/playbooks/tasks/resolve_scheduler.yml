@@ -3,7 +3,7 @@
 # Requires groups['control'] and hostvars[item].ansible_host (or inventory hostname).
 - name: Probe control nodes for scheduler API (inventory order, first success wins)
   wait_for:
-    host: "{{ hostvars[item]['ansible_host'] | default(item) }}"
+    host: "{{ hostvars[item].get('ansible_host', item) }}"
     port: 8000
     timeout: "{{ scheduler_probe_timeout | default(120) | int }}"
   loop: "{{ groups['control'] }}"
@@ -22,7 +22,7 @@
 
 - name: Set scheduler_host and scheduler_url from first reachable control node
   set_fact:
-    scheduler_host: "{{ hostvars[_sched_inv]['ansible_host'] | default(_sched_inv) }}"
-    scheduler_url: "http://{{ hostvars[_sched_inv]['ansible_host'] | default(_sched_inv) }}:8000"
+    scheduler_host: "{{ hostvars[_sched_inv].get('ansible_host', _sched_inv) }}"
+    scheduler_url: "http://{{ hostvars[_sched_inv].get('ansible_host', _sched_inv) }}:8000"
   vars:
     _sched_inv: "{{ (scheduler_probe.results | selectattr('failed', 'equalto', false) | list | first).item }}"
