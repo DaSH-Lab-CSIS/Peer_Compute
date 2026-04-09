@@ -39,3 +39,5 @@ cockroach/*
 
 ansible_utils/logs/*
 ansible_utils/cockroach*
+ansible_utils/playbooks/setupResolverCortalims.yml
+ansible_utils/playbooks/setupResolverPalolems.yml

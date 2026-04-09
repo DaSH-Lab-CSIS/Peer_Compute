@@ -44,16 +44,20 @@
         version: main
         force: yes
     - name: Remove broken venv
+      tags: debug
       file:
         path: "{{ project_dir }}/.venv"
         state: absent
     - name: Create virtualenv
+      tags: debug
       command: python3 -m venv {{ project_dir }}/.venv
       args:
         creates: "{{ project_dir }}/.venv"
     - name: Ensure pip exists in venv
+      tags: debug
       command: "{{ project_dir }}/.venv/bin/python -m ensurepip --upgrade"
     - name: Install Python requirements
+      tags: debug
       pip:
         requirements: "{{ project_dir }}/requirements.txt"
         virtualenv: "{{ project_dir }}/.venv"
@@ -61,10 +65,12 @@
         extra_args: "--no-input --index-url https://pypi.org/simple"
 
     - name: Check if Django Server is running
+      tags: debug
       shell: "pgrep -f 'manage.py runserver' || true"
       register: django_process
 
     - name: Start Django Server
+      tags: debug
       shell: |
         nohup {{ project_dir }}/.venv/bin/python {{ project_dir }}/scheduler/manage.py runserver 0.0.0.0:8000 > {{ project_dir }}/django.log 2>&1 &
       args:
@@ -172,17 +178,20 @@
       poll: 15
 
     - name: Ensure Docker is running
+      tags: debug
       service:
         name: docker
         state: started
         enabled: yes
 
     - name: Default scheduler_url from scheduler_host (-e override)
+      tags: debug
       set_fact:
         scheduler_url: "http://{{ scheduler_host }}:8000"
       when: scheduler_host is defined and scheduler_url is not defined
 
     - name: Discover scheduler on control group (try each [control] host in order)
+      tags: debug
       include_tasks: tasks/resolve_scheduler.yml
       when: scheduler_host is not defined and scheduler_url is not defined
 
