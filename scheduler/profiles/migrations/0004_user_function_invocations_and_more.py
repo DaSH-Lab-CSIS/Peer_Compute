@@ -17,6 +17,6 @@ class Migration(migrations.Migration):
         ),
         migrations.AddConstraint(
             model_name='user',
-            constraint=models.CheckConstraint(check=models.Q(('is_provider', True), ('function_invocations__len', 0), _connector='OR'), name='function_invocation_only_if_provider'),
+            constraint=models.CheckConstraint(condition=models.Q(('is_provider', True), ('function_invocations__len', 0), _connector='OR'), name='function_invocation_only_if_provider'),
         ),
     ]
