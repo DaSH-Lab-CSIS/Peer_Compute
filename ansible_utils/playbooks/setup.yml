@@ -30,6 +30,9 @@
           - git
           - python3-pip
           - python3-venv
+          - python3-packaging
+          - curl
+          - jq
         state: present
         update_cache: yes
     - name: Ensuring deployment directory exists
@@ -47,6 +50,11 @@
         dest: "{{ project_dir }}"
         version: main
         force: yes
+
+    - name: Remove broken venv (control node)
+      file:
+        path: "{{ project_dir }}/.venv"
+        state: absent
 
 
     - name: Check if Miniforge is installed (control node)
@@ -80,6 +88,15 @@
       tags: debug
       command: "{{ project_dir }}/.venv/bin/pip install -r {{ project_dir }}/requirements.txt --no-input --index-url https://pypi.org/simple"
       become_user: "{{ ansible_user }}"
+      async: 1200
+      poll: 15
+
+    - name: Install provider pip requirements (control node)
+      tags: debug
+      command: "{{ project_dir }}/.venv/bin/pip install -r {{ project_dir }}/provider/requirements.txt --no-input --index-url https://pypi.org/simple"
+      become_user: "{{ ansible_user }}"
+      async: 1200
+      poll: 15
 
 
     - name: Kill any existing Django server
