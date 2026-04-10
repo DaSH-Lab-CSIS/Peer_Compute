@@ -98,6 +98,10 @@
       async: 1200
       poll: 15
 
+    - name: Install psycopg2-binary (venv)
+      tags: [debug, debug-django]
+      command: "{{ project_dir }}/.venv/bin/pip install psycopg2-binary --no-input --index-url https://pypi.org/simple"
+      become_user: "{{ ansible_user }}"
 
     - name: Kill any existing Django server
       tags: [debug, debug-django]
