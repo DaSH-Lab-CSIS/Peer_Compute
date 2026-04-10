@@ -8,6 +8,7 @@
   vars:
     repo_url: "https://{{ github_pat }}@github.com/aalhadsawane/Serverless_Scheduler"
     project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+    miniforge_path: "/home/{{ ansible_user }}/miniforge3"
     venv_python: "{{ project_dir }}/.venv/bin/python"
   tasks:
     # NOTE: this is commented as it was old way of connecting to wifi.
@@ -29,6 +30,9 @@
           - git
           - python3-pip
           - python3-venv
+          - python3-packaging
+          - curl
+          - jq
         state: present
         update_cache: yes
     - name: Ensuring deployment directory exists
@@ -47,20 +51,52 @@
         version: main
         force: yes
 
+    - name: Remove broken venv (control node)
+      file:
+        path: "{{ project_dir }}/.venv"
+        state: absent
 
-    - name: Ensure virtualenv exists
+
+    - name: Check if Miniforge is installed (control node)
       tags: debug
-      command: python3 -m venv {{ project_dir }}/.venv
+      stat:
+        path: "{{ miniforge_path }}/bin/conda"
+      register: miniforge_installed_control
+    - name: Download Miniforge installer (control node)
+      tags: debug
+      get_url:
+        url: "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-{{ ansible_system }}-{{ ansible_machine }}.sh"
+        dest: "/tmp/Miniforge3-{{ ansible_system }}-{{ ansible_machine }}.sh"
+        mode: "0755"
+      when: not miniforge_installed_control.stat.exists
+    - name: Install Miniforge (control node)
+      tags: debug
+      command: bash /tmp/Miniforge3-{{ ansible_system }}-{{ ansible_machine }}.sh -b -p {{ miniforge_path }}
+      become_user: "{{ ansible_user }}"
+      when: not miniforge_installed_control.stat.exists
+    - name: Create virtualenv with conda (control node)
+      tags: debug
+      command: "{{ miniforge_path }}/bin/conda create -p {{ project_dir }}/.venv python=3.13 -y"
       args:
-        creates: "{{ project_dir }}/.venv"
-
-
-    - name: Install Python requirements
+        creates: "{{ project_dir }}/.venv/bin/python"
+      become_user: "{{ ansible_user }}"
+    - name: Install numpy, scipy, pandas, pillow via conda (control node)
       tags: debug
-      pip:
-        requirements: "{{ project_dir }}/requirements.txt"
-        virtualenv: "{{ project_dir }}/.venv"
-        extra_args: "--no-input --prefer-binary"
+      command: "{{ miniforge_path }}/bin/conda install -p {{ project_dir }}/.venv numpy scipy pandas pillow -y"
+      become_user: "{{ ansible_user }}"
+    - name: Install Python requirements (control node)
+      tags: debug
+      command: "{{ project_dir }}/.venv/bin/pip install -r {{ project_dir }}/requirements.txt --no-input --index-url https://pypi.org/simple"
+      become_user: "{{ ansible_user }}"
+      async: 1200
+      poll: 15
+
+    - name: Install provider pip requirements (control node)
+      tags: debug
+      command: "{{ project_dir }}/.venv/bin/pip install -r {{ project_dir }}/provider/requirements.txt --no-input --index-url https://pypi.org/simple"
+      become_user: "{{ ansible_user }}"
+      async: 1200
+      poll: 15
 
 
     - name: Kill any existing Django server
