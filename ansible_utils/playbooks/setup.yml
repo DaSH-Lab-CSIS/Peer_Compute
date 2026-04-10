@@ -291,7 +291,7 @@
         path: "{{ project_dir }}/.env"
         marker: "# {mark} ANSIBLE MANAGED MQTT"
         block: |
-          export MQTT_BROKER=10.1.19.136
+          export MQTT_BROKER=utorda2.dashlab.in
           export MQTT_PORT=1884
           export MQTT_USERNAME=peercompute
           export MQTT_PASSWORD=peercompute

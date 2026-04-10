@@ -17,14 +17,14 @@ class Migration(migrations.Migration):
         ),
         migrations.AddConstraint(
             model_name='user',
-            constraint=models.CheckConstraint(check=models.Q(('is_provider', True), ('delay', {}), _connector='OR'), name='delay_only_if_provider'),
+            constraint=models.CheckConstraint(condition=models.Q(('is_provider', True), ('delay', {}), _connector='OR'), name='delay_only_if_provider'),
         ),
         migrations.AddConstraint(
             model_name='user',
-            constraint=models.CheckConstraint(check=models.Q(('is_provider', True), ('time_of_last_startjob__isnull', True), _connector='OR'), name='time_of_last_startjob_only_if_provider'),
+            constraint=models.CheckConstraint(condition=models.Q(('is_provider', True), ('time_of_last_startjob__isnull', True), _connector='OR'), name='time_of_last_startjob_only_if_provider'),
         ),
         migrations.AddConstraint(
             model_name='user',
-            constraint=models.CheckConstraint(check=models.Q(('is_provider', True), ('inflight_jobs__len', 0), _connector='OR'), name='inflight_jobs_only_if_provider'),
+            constraint=models.CheckConstraint(condition=models.Q(('is_provider', True), ('inflight_jobs__len', 0), _connector='OR'), name='inflight_jobs_only_if_provider'),
         ),
     ]
