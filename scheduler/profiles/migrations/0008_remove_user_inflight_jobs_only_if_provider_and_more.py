@@ -22,6 +22,6 @@ class Migration(migrations.Migration):
         ),
         migrations.AddConstraint(
             model_name='user',
-            constraint=models.CheckConstraint(check=models.Q(('is_provider', True), ('cached_images', {}), _connector='OR'), name='cached_images_only_if_provider'),
+            constraint=models.CheckConstraint(condition=models.Q(('is_provider', True), ('cached_images', {}), _connector='OR'), name='cached_images_only_if_provider'),
         ),
     ]
