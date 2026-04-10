@@ -50,16 +50,16 @@ class User(models.Model):
     class Meta:
         constraints = [
             models.CheckConstraint(
-                check=models.Q(is_provider=True)
+                condition=models.Q(is_provider=True)
                 | models.Q(function_invocations__len=0),
                 name="function_invocation_only_if_provider",
             ),
             models.CheckConstraint(
-                check=models.Q(is_provider=True) | models.Q(delay={}),
+                condition=models.Q(is_provider=True) | models.Q(delay={}),
                 name="delay_only_if_provider",
             ),
             models.CheckConstraint(
-                check=models.Q(is_provider=True) | models.Q(cached_images={}),
+                condition=models.Q(is_provider=True) | models.Q(cached_images={}),
                 name="cached_images_only_if_provider",
             ),
         ]

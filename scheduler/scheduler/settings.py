@@ -106,7 +106,8 @@ DATABASES = {
         "NAME": "supabase_local",
         "USER": "postgres",
         "PASSWORD": "postgres",
-        "HOST": "10.1.19.77",
+        # "HOST": "10.1.19.77",
+        "HOST": "colva3.dashlab.in",
         "PORT": "5432",
     }
 }
