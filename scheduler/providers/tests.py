@@ -9,6 +9,7 @@ from providers.models import Job
 from providers.prediction import PredictionInput, ServicePredInput
 from providers.prediction.cpi_strategy import CPIStrategy
 from providers.prediction.registry import reset_cache as reset_strategy_cache
+from providers.prediction.scaling_strategy import ScalingFactorStrategy
 
 
 class CPIStrategyUnitTests(TestCase):
@@ -187,3 +188,207 @@ class BuildCostMatrixIntegrationTests(TestCase):
         pred_row = cm[self.predict_provider]
         self.assertEqual(list(fast_row.values())[0], 500)
         self.assertEqual(list(pred_row.values())[0], 1000)
+
+
+class ScalingFactorStrategyUnitTests(TestCase):
+    """Strategy-level unit tests for the scaling-factor predictor. No DB."""
+
+    def _provider(self, **kwargs):
+        defaults = dict(
+            provider_id=1,
+            r_cpu=1.0,
+            r_mem=1.0,
+            r_disk=1.0,
+            r_net=1.0,
+            s_disk_mbps=500.0,
+            s_net_mbps=100.0,
+        )
+        defaults.update(kwargs)
+        return PredictionInput(**defaults)
+
+    def _service(self, service_id=1, **kwargs):
+        defaults = dict(
+            service_id=service_id,
+            ref_runtime_ms=100.0,
+            w_cpu=1.0,
+            w_mem=0.0,
+            w_disk=0.0,
+            w_net=0.0,
+            cache_state="memory",
+        )
+        defaults.update(kwargs)
+        return ServicePredInput(**defaults)
+
+    def test_pure_cpu_bound_cold_start(self):
+        # w_cpu=1, r_cpu=2, t_ref=100 -> sigma=2 -> 200ms; memory cache -> +0.
+        pi = self._provider(r_cpu=2.0)
+        pi.services = [self._service()]
+        out = ScalingFactorStrategy().predict(pi)
+        self.assertEqual(out.runtimes_ms[1], 200)
+
+    def test_equal_weights_cold_start(self):
+        # Four equal weights over ratios (2, 1, 1, 1) -> sigma = 1.25 -> 62 ms.
+        pi = self._provider(r_cpu=2.0, r_mem=1.0, r_disk=1.0, r_net=1.0)
+        pi.services = [
+            self._service(
+                ref_runtime_ms=50.0,
+                w_cpu=0.25,
+                w_mem=0.25,
+                w_disk=0.25,
+                w_net=0.25,
+            )
+        ]
+        out = ScalingFactorStrategy().predict(pi)
+        # 50 * 1.25 = 62.5 -> round to 62 (banker's) or 63. Python round() uses
+        # banker's rounding -> 62.
+        self.assertEqual(out.runtimes_ms[1], round(62.5))
+
+    def test_blend_half_and_half(self):
+        # n=5, kappa=5 -> 50/50; ema=200, t_cold=100 -> 150.
+        pi = self._provider()
+        pi.services = [
+            self._service(
+                ref_runtime_ms=100.0,
+                ema_runtime_ms=200.0,
+                observation_count=5,
+            )
+        ]
+        out = ScalingFactorStrategy().predict(pi)
+        self.assertEqual(out.runtimes_ms[1], 150)
+
+    def test_blend_history_dominates(self):
+        # n=45, kappa=5 -> 90% EMA, 10% t_cold. ema=200, t_cold=100 -> 190.
+        pi = self._provider()
+        pi.services = [
+            self._service(
+                ref_runtime_ms=100.0,
+                ema_runtime_ms=200.0,
+                observation_count=45,
+            )
+        ]
+        out = ScalingFactorStrategy().predict(pi)
+        self.assertEqual(out.runtimes_ms[1], 190)
+
+    def test_missing_weights_fall_back_to_equal(self):
+        # No weights set at all -> equal 0.25 weights over ratios (2,1,1,1)
+        # -> sigma = 1.25 -> 125ms.
+        pi = self._provider(r_cpu=2.0)
+        pi.services = [
+            self._service(
+                ref_runtime_ms=100.0,
+                w_cpu=None,
+                w_mem=None,
+                w_disk=None,
+                w_net=None,
+            )
+        ]
+        out = ScalingFactorStrategy().predict(pi)
+        self.assertEqual(out.runtimes_ms[1], 125)
+
+    def test_missing_ratios_default_to_one(self):
+        # Only r_cpu provided; others -> 1.0. Equal weights -> sigma = 1.25.
+        pi = PredictionInput(provider_id=1, r_cpu=2.0)
+        pi.services = [
+            self._service(
+                ref_runtime_ms=100.0,
+                w_cpu=0.25,
+                w_mem=0.25,
+                w_disk=0.25,
+                w_net=0.25,
+            )
+        ]
+        out = ScalingFactorStrategy().predict(pi)
+        self.assertEqual(out.runtimes_ms[1], 125)
+
+    def test_partial_weights_renormalize(self):
+        # w_cpu=0.5, w_mem=0.5 provided; disk/net missing -> zero-fill.
+        # Renormalized: (0.5, 0.5, 0, 0). Ratios (2, 4, 99, 99) -> sigma=3
+        # -> 100*3 = 300.
+        pi = self._provider(r_cpu=2.0, r_mem=4.0, r_disk=99.0, r_net=99.0)
+        pi.services = [
+            self._service(
+                ref_runtime_ms=100.0,
+                w_cpu=0.5,
+                w_mem=0.5,
+                w_disk=None,
+                w_net=None,
+            )
+        ]
+        out = ScalingFactorStrategy().predict(pi)
+        self.assertEqual(out.runtimes_ms[1], 300)
+
+    def test_missing_t_ref_returns_none(self):
+        pi = self._provider()
+        pi.services = [self._service(ref_runtime_ms=None)]
+        out = ScalingFactorStrategy().predict(pi)
+        self.assertIsNone(out.runtimes_ms[1])
+
+    def test_pull_time_memory_zero(self):
+        # In-memory cache contributes 0 pull time regardless of image size.
+        pi = self._provider()
+        pi.services = [
+            self._service(
+                ref_runtime_ms=100.0,
+                image_size_mb=1_000.0,
+                cache_state="memory",
+            )
+        ]
+        out = ScalingFactorStrategy().predict(pi)
+        self.assertEqual(out.runtimes_ms[1], 100)
+
+    def test_pull_time_disk_uses_s_disk(self):
+        # V=500 MB / 500 MB/s = 1 s = 1000 ms. Plus t_cold=100 -> 1100.
+        pi = self._provider(s_disk_mbps=500.0)
+        pi.services = [
+            self._service(
+                ref_runtime_ms=100.0,
+                image_size_mb=500.0,
+                cache_state="disk",
+            )
+        ]
+        out = ScalingFactorStrategy().predict(pi)
+        self.assertEqual(out.runtimes_ms[1], 1100)
+
+    def test_pull_time_cold_uses_s_net(self):
+        # V=100 MB / 100 MB/s = 1 s = 1000 ms. Plus t_cold=100 -> 1100.
+        pi = self._provider(s_net_mbps=100.0)
+        pi.services = [
+            self._service(
+                ref_runtime_ms=100.0,
+                image_size_mb=100.0,
+                cache_state="cold",
+            )
+        ]
+        out = ScalingFactorStrategy().predict(pi)
+        self.assertEqual(out.runtimes_ms[1], 1100)
+
+    def test_pull_time_missing_throughput_adds_zero(self):
+        # Disk cache, image_size set, but s_disk_mbps missing -> pull time 0.
+        pi = self._provider(s_disk_mbps=None)
+        pi.services = [
+            self._service(
+                ref_runtime_ms=100.0,
+                image_size_mb=500.0,
+                cache_state="disk",
+            )
+        ]
+        out = ScalingFactorStrategy().predict(pi)
+        self.assertEqual(out.runtimes_ms[1], 100)
+
+    def test_mixed_batch_partial_population(self):
+        # Two services in one batch: one fully populated, one missing t_ref.
+        pi = self._provider(r_cpu=2.0)
+        pi.services = [
+            self._service(service_id=10),
+            self._service(service_id=20, ref_runtime_ms=None),
+        ]
+        out = ScalingFactorStrategy().predict(pi)
+        self.assertEqual(out.runtimes_ms[10], 200)
+        self.assertIsNone(out.runtimes_ms[20])
+
+    def test_cache_state_none_treated_as_cold(self):
+        # No cache_state provided -> "cold"; with no image_size, pull time 0.
+        pi = self._provider()
+        pi.services = [self._service(ref_runtime_ms=100.0, cache_state=None)]
+        out = ScalingFactorStrategy().predict(pi)
+        self.assertEqual(out.runtimes_ms[1], 100)

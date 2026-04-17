@@ -27,6 +27,18 @@ class ServicePredInput:
     memory_bytes_per_second: Optional[int] = None
     reference_stats: Optional[dict] = None
 
+    # Scaling-factor strategy inputs (see docs/runtime_prediction.tex).
+    # All Optional; the CPIStrategy ignores them entirely.
+    ref_runtime_ms: Optional[float] = None  # t_ref(f): median BEM runtime
+    w_cpu: Optional[float] = None
+    w_mem: Optional[float] = None
+    w_disk: Optional[float] = None
+    w_net: Optional[float] = None
+    image_size_mb: Optional[float] = None  # V(f)
+    ema_runtime_ms: Optional[float] = None #current EMA runtime for this provider-service pair
+    observation_count: int = 0 #number of times this provider-service pair has been observed
+    cache_state: Optional[str] = None  # "memory" | "disk" | "cold"
+
 
 @dataclass
 class PredictionInput:
@@ -39,6 +51,16 @@ class PredictionInput:
     cpu_efficiency_score: Optional[Decimal] = None
     memory_efficiency_score: Optional[Decimal] = None
     services: List[ServicePredInput] = field(default_factory=list)
+
+    # Scaling-factor strategy inputs: per-machine performance ratios
+    # r_i(m) = S_i(m_0) / S_i(m), plus absolute disk/network throughput
+    # needed for the pull-time piecewise formula.
+    r_cpu: Optional[float] = None
+    r_mem: Optional[float] = None
+    r_disk: Optional[float] = None
+    r_net: Optional[float] = None
+    s_disk_mbps: Optional[float] = None
+    s_net_mbps: Optional[float] = None
 
 
 @dataclass
