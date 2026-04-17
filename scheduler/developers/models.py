@@ -26,6 +26,13 @@ class Services(models.Model):
     # Populated when a reference run is done (ref_run_service_id/ MQTT). Null if not yet benchmarked.
     reference_stats = models.JSONField(default=dict, blank=True, null=True)
 
+    # Per-image benchmark fields used by the CPI-based runtime prediction strategy.
+    # Populated by a one-time per-image benchmarking script; nullable so the system
+    # keeps running before benchmarks have been collected.
+    cpu_cycles_required = models.BigIntegerField(null=True, blank=True)
+    memory_footprint = models.BigIntegerField(null=True, blank=True)
+    memory_bytes_per_second = models.BigIntegerField(null=True, blank=True)
+
     class Meta:
         # Each developer can only have one service with a specific name
         unique_together = ['name', 'developer']

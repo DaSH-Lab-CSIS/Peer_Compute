@@ -10,8 +10,21 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.RemoveConstraint(
-            model_name='user',
-            name='inflight_jobs_only_if_provider',
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunSQL(
+                    sql=(
+                        'ALTER TABLE "profiles_user" '
+                        'DROP CONSTRAINT IF EXISTS "inflight_jobs_only_if_provider";'
+                    ),
+                    reverse_sql=migrations.RunSQL.noop,
+                ),
+            ],
+            state_operations=[
+                migrations.RemoveConstraint(
+                    model_name='user',
+                    name='inflight_jobs_only_if_provider',
+                ),
+            ],
         ),
     ]

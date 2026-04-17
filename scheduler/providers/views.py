@@ -29,6 +29,12 @@ import fabric.views as fabric
 import csv
 import random
 from providers.mincost import minimize_total_cost
+from providers.prediction import (
+    PredictionInput,
+    ServicePredInput,
+    predict as predict_runtimes,
+)
+from developers.models import Services
 import threading
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -122,6 +128,9 @@ reference_provider_id = 'ff898965-5c47-41af-b447-5b538a0c7847'
 file_path = "/home/user/Documents/Serverless_Scheduler/SchedInfo.csv"
 
 mclient = None
+# DEPRECATED - see providers/prediction/. Runtime prediction no longer uses MQTT;
+# these structures are only kept so legacy PREDICT_RESPONSE messages don't crash
+# the subscriber while the provider-side code is still around.
 # MQTT predicted runtimes: correlation_id -> { 'results': { provider_user_id: { service_id: runtime } }, 'expected_providers': set, 'event': Event }
 pending_predictions = {}
 pending_predictions_lock = threading.Lock()
@@ -134,7 +143,11 @@ global requested_services
 
 
 def _get_predict_response_topic():
-    """Topic where scheduler receives PREDICT_RESPONSE from providers."""
+    """DEPRECATED - see providers/prediction/.
+
+    Topic where scheduler receives PREDICT_RESPONSE from providers. No longer
+    used by the prediction path; kept for the MQTT subscriber fallback.
+    """
     return f"SCHEDULER_{os.environ.get('SCHEDULER_NAME', socket.gethostname())}/predict_response"
 
 # Helpers
@@ -1303,8 +1316,12 @@ Returns:
 """
 
 
+# DEPRECATED - see providers/prediction/. The HTTP and MQTT prediction helpers
+# below are no longer called from get_predicted_runtimes / build_cost_matrix.
+# They are kept in place so existing provider-side endpoints keep working while
+# the new path is validated; remove them in a follow-up PR.
 def _get_provider_http_base_url(provider):
-    """Get HTTP base URL for provider's predicted_runtime endpoint."""
+    """DEPRECATED - see providers/prediction/. Get HTTP base URL for provider's predicted_runtime endpoint."""
     from django.conf import settings
     url_by_loc = getattr(settings, "PROVIDER_HTTP_URL_BY_LOCATION", {})
     if provider.location and url_by_loc:
@@ -1313,7 +1330,7 @@ def _get_provider_http_base_url(provider):
 
 
 def _fetch_predicted_runtime_http(base_url, service_docker, timeout=5):
-    """Fetch predicted runtime from provider via HTTP. Returns value or None."""
+    """DEPRECATED - see providers/prediction/. Fetch predicted runtime from provider via HTTP. Returns value or None."""
     try:
         from urllib.parse import quote
         url = f"{base_url.rstrip('/')}/predicted_runtime?service={quote(service_docker, safe='')}"
@@ -1327,7 +1344,8 @@ def _fetch_predicted_runtime_http(base_url, service_docker, timeout=5):
 
 
 def _fetch_predicted_runtimes_parallel(provider, services_to_fetch, timeout=5):
-    """
+    """DEPRECATED - see providers/prediction/.
+
     [Legacy] Fetch predicted runtimes from provider via HTTP in parallel.
     Replaced by MQTT-based _fetch_predicted_runtimes_mqtt_batch for build_cost_matrix.
     """
@@ -1362,7 +1380,8 @@ def _service_docker_container(service):
 
 
 def _fetch_predicted_runtimes_mqtt_batch(provider_services_map, timeout=7):
-    """
+    """DEPRECATED - see providers/prediction/. Scheduler now runs predictions locally.
+
     Fetch predicted runtimes from multiple providers via MQTT in parallel.
     provider_services_map: dict provider -> list of (service_id, service) needing prediction.
     Returns: dict provider_user_id -> dict service_id -> runtime_ms (int or None).
@@ -1469,16 +1488,70 @@ def get_predicted_runtimes_cache_pass(provider, services, predicted_runtimes, de
     return predicted_runtimes
 
 
+def _build_prediction_input(provider, services_needing_prediction, service_rows_by_id=None):
+    """Build a PredictionInput for one provider from already-loaded DB rows.
+
+    ``services_needing_prediction`` is a list of ``(service_id, service)`` tuples
+    as produced by :func:`get_predicted_runtimes_db_pass`. If ``service_rows_by_id``
+    is not supplied the rows are fetched in one query by id.
+    """
+    service_ids = [sid for sid, _ in services_needing_prediction if sid is not None]
+    if service_rows_by_id is None:
+        service_rows_by_id = {
+            s.id: s
+            for s in Services.objects.filter(id__in=service_ids).only(
+                "id",
+                "cpu_cycles_required",
+                "memory_footprint",
+                "memory_bytes_per_second",
+                "reference_stats",
+            )
+        }
+    svc_inputs = []
+    for sid in service_ids:
+        row = service_rows_by_id.get(sid)
+        if row is None:
+            svc_inputs.append(ServicePredInput(service_id=sid))
+            continue
+        svc_inputs.append(
+            ServicePredInput(
+                service_id=sid,
+                cpu_cycles_required=row.cpu_cycles_required,
+                memory_footprint=row.memory_footprint,
+                memory_bytes_per_second=row.memory_bytes_per_second,
+                reference_stats=row.reference_stats,
+            )
+        )
+    return PredictionInput(
+        provider_id=provider.id,
+        cpi=getattr(provider, "cpi", None),
+        memory_bandwidth=getattr(provider, "memory_bandwidth", None),
+        clock_hz=getattr(provider, "clock_hz", None),
+        cpu_efficiency_score=getattr(provider, "cpu_efficiency_score", None),
+        memory_efficiency_score=getattr(provider, "memory_efficiency_score", None),
+        services=svc_inputs,
+    )
+
+
 def get_predicted_runtimes(provider, services):
-    """Get predicted runtimes for one provider via DB + MQTT batch + cache pass."""
+    """Get predicted runtimes for one provider via DB fast-path + pluggable predictor + cache pass.
+
+    Replaces the legacy MQTT round-trip: we now pull all features the strategy
+    needs from Postgres and call :func:`providers.prediction.predict` locally.
+    """
     DEFAULT_RUNTIME = 1000
     print("Entering get_predicted_runtimes")
     predicted_runtimes, services_needing_prediction = get_predicted_runtimes_db_pass(provider, services)
     if services_needing_prediction:
-        mqtt_results = _fetch_predicted_runtimes_mqtt_batch({provider: services_needing_prediction})
-        provider_runtimes = mqtt_results.get(str(provider.user_id), {})
+        pred_input = _build_prediction_input(provider, services_needing_prediction)
+        try:
+            output = predict_runtimes(pred_input)
+            runtimes = output.runtimes_ms
+        except Exception as e:
+            print(f"[predict] strategy raised {e}; falling back to default")
+            runtimes = {}
         for service_id, _ in services_needing_prediction:
-            val = provider_runtimes.get(service_id) or provider_runtimes.get(str(service_id))
+            val = runtimes.get(service_id)
             if val is not None and val > 0:
                 predicted_runtimes[service_id] = int(val)
             else:
@@ -1541,14 +1614,19 @@ def print_cost_matrix(cost_matrix):
     print("Exiting print_cost_matrix")
 
 def build_cost_matrix(providers, services):
-    """Build cost matrix: one DB pass per provider, one MQTT batch for all providers, then merge + cache pass."""
+    """Build cost matrix: DB fast-path per provider, then one local predict() per provider, then cache pass.
+
+    The MQTT batch round-trip has been removed; all prediction features live in
+    Postgres and are consumed by the currently-configured strategy in
+    :mod:`providers.prediction`.
+    """
     DEFAULT_RUNTIME = 1000
     print("Entering build_cost_matrix")
     cost_matrix = {}
     indexed_services = list(enumerate(services))
     compatible_services = services
 
-    # First pass: DB per provider and collect providers that need MQTT prediction
+    # First pass: DB per provider and collect providers that need a prediction
     per_provider_runtimes = {}
     provider_services_map = {}
     for provider in providers:
@@ -1557,16 +1635,42 @@ def build_cost_matrix(providers, services):
         if services_needing_prediction:
             provider_services_map[provider] = services_needing_prediction
 
-    # One MQTT batch: fire all provider requests at once, wait once for all PREDICT_RESPONSE
-    mqtt_results = _fetch_predicted_runtimes_mqtt_batch(provider_services_map) if provider_services_map else {}
+    # Pre-fetch all Services rows once for the union of ids needing prediction
+    service_rows_by_id = {}
+    if provider_services_map:
+        all_ids = {
+            sid
+            for pairs in provider_services_map.values()
+            for sid, _ in pairs
+            if sid is not None
+        }
+        if all_ids:
+            service_rows_by_id = {
+                s.id: s
+                for s in Services.objects.filter(id__in=all_ids).only(
+                    "id",
+                    "cpu_cycles_required",
+                    "memory_footprint",
+                    "memory_bytes_per_second",
+                    "reference_stats",
+                )
+            }
 
-    # Merge MQTT results and run cache pass per provider
+    # Run the strategy once per provider using the pre-fetched rows
     for provider in providers:
         predicted_runtimes = per_provider_runtimes[provider]
         if provider in provider_services_map:
-            provider_runtimes = mqtt_results.get(str(provider.user_id), {})
+            pred_input = _build_prediction_input(
+                provider, provider_services_map[provider], service_rows_by_id
+            )
+            try:
+                output = predict_runtimes(pred_input)
+                runtimes = output.runtimes_ms
+            except Exception as e:
+                print(f"[predict] strategy raised {e}; falling back to default")
+                runtimes = {}
             for service_id, _ in provider_services_map[provider]:
-                val = provider_runtimes.get(service_id) or provider_runtimes.get(str(service_id))
+                val = runtimes.get(service_id)
                 if val is not None and val > 0:
                     predicted_runtimes[service_id] = int(val)
                 else:
