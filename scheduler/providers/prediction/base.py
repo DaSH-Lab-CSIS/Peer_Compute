@@ -3,6 +3,10 @@
 ``PredictionInput`` / ``ServicePredInput`` are intentionally plain dataclasses
 of primitives (no Django model references) so that strategies stay free of
 ORM coupling and can be unit tested without a database.
+
+Note that the arguments received by predict() will be PredictionInput, which is Per-Provider stats + a list of ServicePredInput.
+Essentially, when predict() is called, it must return a PredictionOutput (dict of service=>runtime).
+Note that if you create a _predict(Machine, Service) it should be called on all service to get the expected PredictionOutput (which has runtimes for all benchmark services for a given provider)
 """
 
 from __future__ import annotations
