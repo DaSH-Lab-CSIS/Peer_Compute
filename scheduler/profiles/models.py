@@ -24,6 +24,12 @@ class User(models.Model):
     cpu = models.IntegerField(default=0)
     cpu_efficiency_score = models.DecimalField(null=True, max_digits=30, decimal_places=15)
     memory_efficiency_score = models.DecimalField(null=True, max_digits=30, decimal_places=15)
+    # Machine benchmark fields used by the CPI-based runtime prediction strategy.
+    # Populated by a one-time machine benchmarking script; nullable so the system
+    # keeps running before benchmarks have been collected.
+    cpi = models.DecimalField(null=True, blank=True, max_digits=10, decimal_places=4)
+    memory_bandwidth = models.DecimalField(null=True, blank=True, max_digits=20, decimal_places=4)
+    clock_hz = models.BigIntegerField(null=True, blank=True)
     # network_bandwidth = models.DecimalField(null=True, max_digits=30, decimal_places=15)
     # gpu_available = models.BooleanField(default=False)
 
