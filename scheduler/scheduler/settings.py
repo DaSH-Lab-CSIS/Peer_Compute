@@ -61,6 +61,10 @@ ROOT_URLCONF = 'scheduler.urls'
 USE_FABRIC = False
 CONTROLLER_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE2OTM5NzE5NTMsInVzZXJuYW1lIjoidGVtcCIsIm9yZ05hbWUiOiJPcmcxIiwiaWF0IjoxNjkzOTM1OTUzfQ.x06zMn-c0_e7_phfc3thS30R1H284V8x6xMda6rl6Ak"
 
+# Name of the strategy resolved by ``providers.prediction.registry.get_strategy``.
+# See ``providers/prediction/__init__.py`` for the plug-and-play contract.
+RUNTIME_PREDICTION_STRATEGY = os.environ.get("RUNTIME_PREDICTION_STRATEGY", "cpi")
+
 CORS_ORIGIN_ALLOW_ALL = True
 
 # Host configuration for provider connections
