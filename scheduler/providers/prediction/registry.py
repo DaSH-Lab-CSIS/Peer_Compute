@@ -12,9 +12,11 @@ from typing import Dict, Optional, Type
 
 from .base import PredictionStrategy
 from .cpi_strategy import CPIStrategy
+from .scaling_strategy import ScalingFactorStrategy
 
 _STRATEGIES: Dict[str, Type[PredictionStrategy]] = {
     "cpi": CPIStrategy,
+    "scaling": ScalingFactorStrategy,
 }
 
 _instance_lock = Lock()

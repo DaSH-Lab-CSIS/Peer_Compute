@@ -1,0 +1,885 @@
+\documentclass[11pt, a4paper]{article}
+
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{geometry}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{tcolorbox}
+
+% Readable blue for highlighted sections (subsections 4.2, 5.1; sections 6, 8--11)
+\newcommand{\bluecontentbegin}{\begingroup\color{blue!70!black}}
+\newcommand{\bluecontentend}{\endgroup}
+
+\geometry{margin=1in}
+
+\newtheorem{definition}{Definition}
+\newtheorem{remark}{Remark}
+
+\title{Runtime Prediction for Heterogeneous Serverless Scheduling:\\
+    From Benchmark-Derived Scaling Factors to Adaptive Prediction}
+\author{Serverless Scheduler Project}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+We present a runtime prediction model for scheduling fixed-workload serverless
+functions across a cluster of heterogeneous machines. The model requires no
+historical data for a given (function, machine) pair: it derives predictions
+from offline benchmarks of functions and machines independently. As historical
+observations accumulate, the model smoothly transitions to an exponential
+moving average of observed runtimes. We describe the mathematical framework,
+the benchmarking methodology, and the complete prediction algorithm.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% =============================================================================
+\section{Problem Setting}
+% =============================================================================
+
+We have a fixed set of serverless functions $\mathcal{F} = \{f_1, \ldots, f_N\}$
+and a heterogeneous cluster of machines $\mathcal{M} = \{m_1, \ldots, m_K\}$.
+A scheduler receives batches of function invocation requests and must assign
+each invocation to a machine so as to minimize total batch completion time.
+The quality of this assignment depends critically on the accuracy of the
+predicted runtime $\hat{t}(f, m)$ for every (function, machine) pair.
+
+\subsection{Key Assumptions}
+
+\begin{enumerate}[label=(\roman*)]
+    \item \textbf{Fixed workload.} Each function performs the same computation
+          on every invocation. Input size does not vary. Therefore, the runtime
+          of function $f$ on machine $m$ is essentially deterministic, subject
+          only to system noise (OS scheduling jitter, cache state, background
+          load).
+    \item \textbf{Sparse history.} Most $(f, m)$ combinations will not have
+          been observed before. With $N$ functions and $K$ machines, the space
+          of pairs is $N \times K$, but only a small fraction will have
+          historical data at any point.
+    \item \textbf{Benchmarking is affordable.} We can afford to run each
+          function multiple times on a dedicated Benchmarking Environment
+          Machine (BEM), and to run standardized hardware benchmarks on each
+          cluster machine.
+\end{enumerate}
+
+\subsection{Notation}
+
+\begin{center}
+\begin{tabular}{cl}
+    \toprule
+    Symbol & Meaning \\
+    \midrule
+    $f \in \mathcal{F}$ & A serverless function \\
+    $m \in \mathcal{M}$ & A cluster machine (provider) \\
+    $m_0$ & The Benchmarking Environment Machine (BEM) \\
+    $t_{\mathrm{ref}}(f)$ & Reference runtime of $f$ on BEM \\
+    $\hat{t}(f, m)$ & Predicted runtime of $f$ on $m$ \\
+    $S_i(m)$ & Score of $m$ on resource dimension $i$ \\
+    $w_i(f)$ & Sensitivity weight of $f$ to dimension $i$ \\
+    $r_i(m)$ & Performance ratio $S_i(m_0) / S_i(m)$ \\
+    $n(f, m)$ & Number of historical observations for the pair \\
+    $\mathrm{EMA}(f, m)$ & Exponential moving average of observed runtimes \\
+    \bottomrule
+\end{tabular}
+\end{center}
+
+% =============================================================================
+\section{Current Implementation and Its Limitations}
+\label{sec:current}
+% =============================================================================
+
+Before presenting the proposed model, we document how runtime prediction
+currently works end-to-end, and where it breaks.
+
+\subsection{End-to-End Prediction Flow (Status Quo)}
+
+When the scheduler receives a batch of function invocations, it builds a cost
+matrix $C[m][f]$ of predicted runtimes for every (provider, service) pair.
+This proceeds in three passes:
+
+\paragraph{Pass 1: Historical lookup
+(\texttt{get\_predicted\_runtimes\_db\_pass}).}
+For each $(f, m)$, query the \texttt{Job} table for the single most recent
+completed job with that \texttt{(provider\_id, service\_id)} pair and return
+its \texttt{run\_time}. If no such row exists, mark the service as
+``needing prediction.''
+
+\paragraph{Pass 2: MQTT prediction request
+(\texttt{\_fetch\_predicted\_runtimes\_mqtt\_batch}).}
+For every service that had no historical data, the scheduler publishes a
+\texttt{PREDICT\_REQUEST} message over MQTT to the relevant provider. The
+provider receives this, calls \texttt{trainAndPredict}, and replies with
+\texttt{PREDICT\_RESPONSE} containing predicted milliseconds. The scheduler
+blocks (up to a 5\,s timeout) waiting for all responses.
+
+On the provider side, \texttt{trainAndPredict} works as follows:
+\begin{enumerate}[nosep]
+    \item Load \emph{all} past training rows from
+          \texttt{TrainingData/eff\_score\_data.txt} --- these are not
+          function-specific; every function's runs are mixed together.
+    \item Build features $X = [\texttt{cpu\_usage} \times
+          \texttt{cpu\_eff},\; \texttt{mem\_usage} \times
+          \texttt{mem\_eff}]$ and target $y = \texttt{actual\_runtime}$.
+    \item Fit a fresh \texttt{sklearn.linear\_model.LinearRegression}
+          from scratch.
+    \item For the requested service, load its reference CPU/memory from
+          \texttt{Reference\_Provider\_Data.txt}, multiply by the
+          provider's global efficiency scores, and call
+          \texttt{model.predict}.
+\end{enumerate}
+
+\paragraph{Pass 3: Pull time adjustment
+(\texttt{get\_predicted\_runtimes\_cache\_pass}).}
+Adjust every predicted runtime based on container image cache state: if
+not cached, add the full last observed \texttt{pull\_time}; if cached on
+disk, add $0.2 \times \texttt{pull\_time}$; if in memory, add nothing.
+If anything fails at any point, fall back to a hard-coded default of
+1000\,ms.
+
+The specific deficiencies of this pipeline are enumerated in
+Appendix~\ref{app:broken}.
+
+% =============================================================================
+\section{Resource Dimensions}
+\label{sec:resources}
+% =============================================================================
+
+We model runtime as being influenced by four resource dimensions:
+
+\begin{definition}[Resource Dimensions]
+\[
+    \mathcal{R} = \{\, \texttt{cpu},\; \texttt{mem},\; \texttt{disk},\; \texttt{net} \,\}
+\]
+\begin{enumerate}[label=(\alph*)]
+    \item \textbf{CPU} --- processor compute throughput (cycles/second, or a
+          composite score from a standardized benchmark such as \texttt{sysbench}).
+    \item \textbf{Memory} --- memory bandwidth (MB/s, as measured by a STREAM
+          or equivalent benchmark).
+    \item \textbf{Disk I/O} --- sequential read/write throughput (MB/s, as
+          measured by \texttt{fio} or equivalent).
+    \item \textbf{Network I/O} --- network bandwidth (Mbps, as measured by
+          \texttt{iperf3} to a fixed reference endpoint).
+\end{enumerate}
+\end{definition}
+
+\begin{remark}
+The current codebase tracks only CPU and memory efficiency scores
+(\texttt{cpu\_efficiency\_score}, \texttt{memory\_efficiency\_score} in the
+\texttt{User} model). Disk and network dimensions are proposed additions.
+\end{remark}
+
+% =============================================================================
+\section{Benchmarking Methodology}
+\label{sec:benchmarking}
+% =============================================================================
+
+% -----------------------------------------------------------------------------
+\subsection{Machine Benchmarking}
+\label{sec:machine-bench}
+% -----------------------------------------------------------------------------
+
+For each machine $m \in \mathcal{M} \cup \{m_0\}$, we run standardized
+benchmarks to obtain absolute performance scores:
+
+\[
+    S_{\texttt{cpu}}(m), \quad S_{\texttt{mem}}(m), \quad
+    S_{\texttt{disk}}(m), \quad S_{\texttt{net}}(m)
+\]
+
+These are hardware-intrinsic and need only be measured once per machine (or
+re-measured if hardware changes). From these, we compute the
+\emph{performance ratio} of each machine relative to the BEM:
+
+\begin{equation}
+\label{eq:ratio}
+    r_i(m) = \frac{S_i(m_0)}{S_i(m)}, \qquad i \in \mathcal{R}
+\end{equation}
+
+\begin{itemize}
+    \item $r_i(m) = 1$ when $m$ matches the BEM on dimension $i$.
+    \item $r_i(m) > 1$ when $m$ is \emph{slower} than the BEM (runtime scales up).
+    \item $r_i(m) < 1$ when $m$ is \emph{faster} than the BEM (runtime scales down).
+\end{itemize}
+
+For the BEM itself, $r_i(m_0) = 1$ for all $i$, serving as the identity anchor.
+
+% -----------------------------------------------------------------------------
+\subsection{Function Benchmarking on BEM}
+\label{sec:func-bench}
+% -----------------------------------------------------------------------------
+
+For each function $f \in \mathcal{F}$, we perform two stages of benchmarking
+on the BEM.
+
+\subsubsection{Stage 1: Reference Runtime}
+
+Run function $f$ on $m_0$ a total of $B$ times (we recommend $B \geq 5$)
+under normal (unthrottled) conditions. Record the runtimes
+$\{t_1, \ldots, t_B\}$ and take the median:
+
+\begin{equation}
+\label{eq:tref}
+    t_{\mathrm{ref}}(f) = \mathrm{median}(t_1, \ldots, t_B)
+\end{equation}
+
+The median is preferred over the mean for robustness to outliers (cold-start
+effects, GC pauses, etc.).
+
+\subsubsection{Stage 2: Resource Sensitivity via Throttling}
+\label{sec:throttling}
+
+To determine how sensitive function $f$ is to each resource dimension, we
+throttle one resource at a time on the BEM and measure the resulting slowdown.
+
+For each resource $i \in \mathcal{R}$, throttle resource $i$ to a fraction
+$\theta$ of its full capacity (e.g., $\theta = 0.5$) while leaving all other
+resources unthrottled. Run $f$ a total of $B'$ times ($B' \geq 3$) and
+record the median throttled runtime $t_i^{\mathrm{thr}}(f)$.
+
+\begin{remark}[Throttling Mechanisms]
+Practical throttling on the BEM can be achieved via:
+\begin{itemize}
+    \item \textbf{CPU:} Docker \texttt{--cpus} flag or \texttt{cgroup} CPU quota.
+    \item \textbf{Memory bandwidth:} Synthetic memory pressure via
+          \texttt{stress-ng --vm}, or \texttt{cgroup} memory bandwidth limits
+          where supported.
+    \item \textbf{Disk I/O:} Docker \texttt{--device-read-bps} /
+          \texttt{--device-write-bps} or \texttt{cgroup} \texttt{blkio} limits.
+    \item \textbf{Network:} Linux \texttt{tc} (traffic control) with
+          \texttt{netem} or \texttt{tbf} queueing disciplines.
+\end{itemize}
+\end{remark}
+
+\begin{remark}[Choosing the Throttle Fraction $\theta$]
+\label{rem:theta}
+The throttle fraction should reflect the performance range of the actual
+cluster. If the weakest machine has $0.3\times$ the CPU throughput of the BEM,
+throttling to $\theta = 0.3$ during weight discovery produces deviations that
+are calibrated to the actual prediction range. A uniform $\theta = 0.5$ across
+all resources is a reasonable default.
+\end{remark}
+
+Compute the \emph{relative deviation} for each resource:
+
+\begin{equation}
+\label{eq:deviation}
+    d_i(f) = \frac{t_i^{\mathrm{thr}}(f) - t_{\mathrm{ref}}(f)}{t_{\mathrm{ref}}(f)},
+    \qquad i \in \mathcal{R}
+\end{equation}
+
+This measures what fraction of additional runtime is attributable to degrading
+resource $i$. A CPU-bound function will exhibit large $d_{\texttt{cpu}}$ and
+small $d_{\texttt{mem}}$, $d_{\texttt{disk}}$, $d_{\texttt{net}}$.
+
+\paragraph{Clamping.}
+In rare cases, throttling a resource may not slow down the function (or may
+even speed it up due to second-order effects such as altered garbage collection
+behavior). We clamp:
+
+\begin{equation}
+\label{eq:clamp}
+    d_i(f) \leftarrow \max\bigl(0,\; d_i(f)\bigr)
+\end{equation}
+
+\paragraph{Normalization to Weights.}
+
+\begin{equation}
+\label{eq:weights}
+    w_i(f) = \frac{d_i(f)}{\displaystyle\sum_{j \in \mathcal{R}} d_j(f)},
+    \qquad \text{so that} \quad \sum_{i \in \mathcal{R}} w_i(f) = 1
+\end{equation}
+
+\paragraph{Fallback for fast functions.}
+If $\sum_j d_j(f) < \epsilon$ (the function is too fast for throttling to
+produce measurable deviations), assign equal weights:
+$w_i(f) = 1/|\mathcal{R}| = 0.25$ for all $i$.
+
+% =============================================================================
+\section{The Scaling Factor Model}
+\label{sec:scaling}
+% =============================================================================
+
+Given the benchmark-derived quantities from Sections
+\ref{sec:machine-bench}--\ref{sec:func-bench}, we can predict the runtime of
+any $(f, m)$ pair without any historical observation of that specific pair.
+
+\begin{definition}[Scaling Factor]
+\label{def:scaling}
+The scaling factor for function $f$ on machine $m$ relative to the BEM is:
+
+\begin{equation}
+\label{eq:scaling}
+    \boxed{\;\sigma(f, m) = \sum_{i \in \mathcal{R}} w_i(f) \cdot r_i(m)\;}
+\end{equation}
+
+where $w_i(f)$ are the function's resource sensitivity weights
+(Equation~\ref{eq:weights}) and $r_i(m)$ are the machine's performance ratios
+(Equation~\ref{eq:ratio}).
+\end{definition}
+
+The cold-start predicted runtime is then:
+
+\begin{equation}
+\label{eq:coldstart}
+    \hat{t}_{\mathrm{cold}}(f, m) = t_{\mathrm{ref}}(f) \cdot \sigma(f, m)
+\end{equation}
+
+\subsection{Intuition}
+
+The scaling factor is a weighted average of per-resource slowdown/speedup
+ratios relative to the BEM, where the weights encode how much the function
+cares about each resource. Consider two extremes:
+
+\begin{itemize}
+    \item A purely CPU-bound function ($w_{\texttt{cpu}} = 1$, others $= 0$):
+          $\sigma = r_{\texttt{cpu}}(m)$. The prediction scales linearly with
+          the CPU performance ratio. If the target has $2\times$ the CPU
+          throughput, the predicted runtime halves.
+    \item A function equally sensitive to all resources ($w_i = 0.25$):
+          $\sigma$ is the unweighted mean of all four ratios. The prediction
+          reflects the average hardware capability.
+\end{itemize}
+
+\subsection{Additive vs.\ Multiplicative Formulation}
+\bluecontentbegin
+
+An alternative multiplicative formulation is:
+
+\begin{equation}
+\label{eq:multiplicative}
+    \sigma_{\mathrm{mult}}(f, m)
+    = \prod_{i \in \mathcal{R}} r_i(m)^{\,w_i(f)}
+\end{equation}
+
+The \textbf{additive} model (Equation~\ref{eq:scaling}) is appropriate when the
+function executes resource-dependent phases \emph{sequentially} --- e.g., a
+compute phase followed by a network transfer phase. The total runtime is the
+sum of phase durations, each scaling independently.
+
+The \textbf{multiplicative} model (Equation~\ref{eq:multiplicative}) is
+appropriate when resources interact concurrently --- e.g., a function that
+simultaneously streams data from network while computing.
+
+For serverless functions that are typically short-lived and exhibit sequential
+resource access patterns, \textbf{the additive model is the recommended
+default}. We note that both formulations agree when all ratios are equal
+($r_i = c$ for all $i$), since $\sum w_i \cdot c = c = \prod c^{w_i}$.
+\bluecontentend
+
+% =============================================================================
+\section{Historical Data: Exponential Moving Average}
+\label{sec:ema}
+% =============================================================================
+
+When a $(f, m)$ pair has been observed before, the observed runtime is a more
+direct signal than the benchmark-derived prediction. We maintain an exponential
+moving average (EMA) of observed runtimes, updated upon each job completion.
+
+\begin{definition}[EMA Update]
+\label{def:ema}
+Let $x_n$ be the observed runtime of the $n$-th execution of function $f$ on
+machine $m$. The EMA is defined recursively:
+
+\begin{equation}
+\label{eq:ema}
+    \mathrm{EMA}_n(f, m) =
+    \begin{cases}
+        \hat{t}_{\mathrm{cold}}(f, m) & \text{if } n = 0 \text{ (initialization)} \\[4pt]
+        \alpha \cdot x_n + (1 - \alpha) \cdot \mathrm{EMA}_{n-1}(f, m) & \text{if } n \geq 1
+    \end{cases}
+\end{equation}
+
+where $\alpha \in (0, 1)$ is the smoothing factor. We recommend
+$\alpha \in [0.2, 0.3]$.
+\end{definition}
+
+\paragraph{Choice of $\alpha$.}
+A smaller $\alpha$ (e.g., $0.1$) produces smoother estimates that are slow to
+react to regime changes (e.g., provider load shifts). A larger $\alpha$ (e.g.,
+$0.4$) reacts quickly but is more susceptible to noise. For fixed-workload
+functions on dedicated infrastructure, $\alpha = 0.2$ balances stability and
+responsiveness.
+
+\paragraph{Storage.}
+The EMA requires storing a single floating-point value per observed $(f, m)$
+pair, plus a count $n(f, m)$. This is an $O(1)$ update --- no historical
+data needs to be fetched or retained.
+
+\paragraph{Initialization.}
+The EMA is initialized to the cold-start prediction
+$\hat{t}_{\mathrm{cold}}(f, m)$, ensuring continuity when the first
+observation arrives.
+
+\subsection{Implementation Note}
+\bluecontentbegin
+
+In the current codebase, the \texttt{Job} model stores \texttt{run\_time} per
+completed job, and \texttt{get\_latest\_run\_time} returns only the most recent
+value. The EMA replaces this single-sample lookup with a maintained aggregate.
+This requires either:
+
+\begin{enumerate}[label=(\alph*)]
+    \item A new field \texttt{ema\_runtime} on a \texttt{(provider, service)}
+          summary table (or on the \texttt{Job} model itself), updated on each
+          \texttt{JOB\_COMPLETE} event. \textbf{(Recommended.)}
+    \item A new model, e.g., \texttt{PairRuntimeStats}, with fields:
+          \texttt{provider\_id}, \texttt{service\_id},
+          \texttt{ema\_runtime}, \texttt{observation\_count}.
+\end{enumerate}
+\bluecontentend
+
+% =============================================================================
+\section{Adaptive Blending: Cold-Start to Steady-State}
+\label{sec:blending}
+% =============================================================================
+\bluecontentbegin
+
+The two prediction sources --- the benchmark-derived scaling factor and the
+EMA of observations --- are complementary. The scaling factor is always
+available but approximate; the EMA is precise but requires observations. We
+blend them with a \emph{confidence-weighted} scheme.
+
+\begin{definition}[Blended Prediction]
+\label{def:blended}
+\begin{equation}
+\label{eq:blended}
+    \boxed{\;
+    \hat{t}(f, m) = \frac{n}{n + \kappa} \cdot \mathrm{EMA}(f, m)
+                   + \frac{\kappa}{n + \kappa} \cdot \hat{t}_{\mathrm{cold}}(f, m)
+    \;}
+\end{equation}
+
+where $n = n(f, m)$ is the number of historical observations and
+$\kappa > 0$ is a tuning constant that controls how quickly we trust
+observations over benchmarks.
+\end{definition}
+
+\paragraph{Behavior.}
+\begin{itemize}
+    \item $n = 0$: $\hat{t} = \hat{t}_{\mathrm{cold}}$. Pure scaling factor.
+    \item $n = \kappa$: $\hat{t}$ is a 50/50 blend.
+    \item $n \gg \kappa$: $\hat{t} \to \mathrm{EMA}$. History dominates.
+\end{itemize}
+
+We recommend $\kappa \in [3, 7]$. With $\kappa = 5$, after 5 observations the
+prediction is already $50\%$ driven by actual data; after 15 observations it is
+$75\%$ driven by data.
+
+\begin{remark}
+This blending formula is formally equivalent to Bayesian shrinkage with a
+Gaussian prior (the scaling factor prediction) and Gaussian likelihood (the
+observed runtimes). The parameter $\kappa$ plays the role of the prior
+precision relative to the data precision. We achieve the effect of Bayesian
+updating without any explicit probabilistic machinery.
+\end{remark}
+\bluecontentend
+
+% =============================================================================
+\section{Image Pull Time Adjustment}
+\label{sec:pulltime}
+% =============================================================================
+
+Total predicted latency adds a pull-time component:
+$\hat{t}_{\mathrm{total}}(f, m) = \hat{t}(f, m) + \hat{t}_{\mathrm{pull}}(f, m)$.
+
+Let $V(f)$ be the compressed image size (MB), recorded at function
+registration from the image manifest. $S_{\texttt{net}}(m)$ and
+$S_{\texttt{disk}}(m)$ are the same machine benchmark scores from
+Section~\ref{sec:machine-bench}, in MB/s.
+
+\begin{equation}
+\label{eq:pull-piecewise}
+    \hat{t}_{\mathrm{pull}}(f, m) =
+    \begin{cases}
+        0 & \text{memory cache} \\[6pt]
+        V(f)\;/\;S_{\texttt{disk}}(m) & \text{disk cache} \\[6pt]
+        V(f)\;/\;S_{\texttt{net}}(m) & \text{cold pull}
+    \end{cases}
+\end{equation}
+
+\paragraph{Why the current heuristic is baseless.}
+The codebase adds \texttt{int(pull\_time * 0.2)} for disk-cached images.
+The constant $0.2$ has no derivation: it does not depend on $V(f)$,
+does not vary across machines with different disk speeds, and reuses a
+single past measurement that conflates registry RTT, congestion, and
+load. Equation~\ref{eq:pull-piecewise} replaces this with image size
+divided by benchmarked throughput --- the same principle as the compute
+scaling factor.
+
+% =============================================================================
+% APPENDICES
+% =============================================================================
+\newpage
+\appendix
+\begin{center}
+    {\Large\bfseries Appendices}
+\end{center}
+\addcontentsline{toc}{section}{Appendices}
+\bigskip
+
+% =============================================================================
+\section{Complete Prediction Algorithm}
+\label{sec:algorithm}
+% =============================================================================
+\bluecontentbegin
+
+\begin{algorithm}[H]
+\caption{Predict Runtime for $(f, m)$}
+\label{alg:predict}
+\begin{algorithmic}[1]
+\Require Function $f$, Machine $m$
+\Require Preloaded: $t_{\mathrm{ref}}(f)$,
+         $\mathbf{w}(f) = [w_i(f)]$,
+         $\mathbf{r}(m) = [r_i(m)]$
+\Require Stored: $\mathrm{EMA}(f,m)$, $n(f,m)$
+         (if any observations exist)
+\Require Parameters: $\kappa$
+
+\Statex
+
+\Function{PredictRuntime}{$f, m$}
+    \State $\sigma \gets \displaystyle\sum_{i \in \mathcal{R}}
+           w_i(f) \cdot r_i(m)$
+        \Comment{Scaling factor: 4 muls + 3 adds}
+    \State $\hat{t}_{\mathrm{cold}} \gets
+           t_{\mathrm{ref}}(f) \cdot \sigma$
+    \Statex
+    \State $n \gets n(f, m)$
+        \Comment{Observation count, 0 if unseen pair}
+    \If{$n > 0$}
+        \State $\hat{t} \gets \dfrac{n}{n + \kappa}
+               \cdot \mathrm{EMA}(f,m)
+               + \dfrac{\kappa}{n + \kappa}
+               \cdot \hat{t}_{\mathrm{cold}}$
+    \Else
+        \State $\hat{t} \gets \hat{t}_{\mathrm{cold}}$
+    \EndIf
+    \Statex
+    \State $\hat{t}_{\mathrm{pull}} \gets
+           \Call{EstimatePullTime}{f, m}$
+        \Comment{Section~\ref{sec:pulltime}}
+    \State \Return $\hat{t} + \hat{t}_{\mathrm{pull}}$
+\EndFunction
+
+\Statex
+\Statex
+
+\Function{OnJobComplete}{$f, m, x$}
+    \Comment{Called when observed runtime $x$ is reported}
+    \State $n \gets n(f, m)$
+    \If{$n = 0$}
+        \State $\mathrm{EMA}(f,m) \gets \alpha \cdot x
+               + (1-\alpha) \cdot \hat{t}_{\mathrm{cold}}(f,m)$
+    \Else
+        \State $\mathrm{EMA}(f,m) \gets \alpha \cdot x
+               + (1-\alpha) \cdot \mathrm{EMA}(f,m)$
+    \EndIf
+    \State $n(f,m) \gets n + 1$
+\EndFunction
+
+\end{algorithmic}
+\end{algorithm}
+\bluecontentend
+
+% =============================================================================
+\section{Deficiencies of the Current Implementation}
+\label{app:broken}
+% =============================================================================
+\bluecontentbegin
+
+\begin{enumerate}[label=(\arabic*)]
+    \item \textbf{Single-sample history.}
+          \texttt{get\_latest\_run\_time} returns exactly one past runtime.
+          A single anomalous run (GC pause, network hiccup) becomes the
+          prediction for the next scheduling round. There is no smoothing.
+
+    \item \textbf{MQTT round-trip latency.}
+          The prediction fallback path requires a network round-trip to
+          each provider. With MQTT pub/sub overhead and a 5\,s timeout,
+          this adds \emph{seconds} of latency to every scheduling
+          decision that involves an unseen $(f, m)$ pair.
+
+    \item \textbf{Model retrained from scratch per request.}
+          Every \texttt{PREDICT\_REQUEST} triggers a full
+          \texttt{LinearRegression().fit()} on the provider. This is
+          wasteful and introduces per-request latency.
+
+    \item \textbf{Training data conflates all functions.}
+          \texttt{eff\_score\_data.txt} mixes runs from different
+          functions into one pool. A linear model fit on this data
+          cannot distinguish a 55\,s CPU-heavy function from a 7\,s
+          memory-heavy one --- the features (raw CPU/memory usage
+          $\times$ efficiency) are not enough to separate them.
+
+    \item \textbf{Efficiency scores are all 1.0.}
+          In the current training data, every row has
+          \texttt{cpu\_efficiency\_score = 1.0} and
+          \texttt{memory\_efficiency\_score = 1.0}. The model has
+          never seen heterogeneous machines, so the efficiency score
+          features carry zero information.
+
+    \item \textbf{Only two resource dimensions.}
+          CPU and memory are tracked; disk I/O and network bandwidth
+          are ignored. Functions with significant I/O dependence
+          cannot be predicted accurately.
+
+    \item \textbf{Pull time heuristic is baseless.}
+          The factor $0.2$ applied to disk-cached pull time has no
+          derivation and does not vary with image size or disk speed
+          (Section~\ref{sec:pulltime}).
+
+    \item \textbf{Hard-coded 1000\,ms default.}
+          When all else fails, the scheduler uses 1000\,ms regardless
+          of function or machine.
+\end{enumerate}
+\bluecontentend
+
+% =============================================================================
+\section{Computational Overhead Analysis}
+\label{sec:overhead}
+% =============================================================================
+\bluecontentbegin
+
+A primary design goal is that prediction overhead must be negligible
+relative to the runtimes being predicted and the scheduling latency.
+
+\subsection{Prediction Cost}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lll@{}}
+    \toprule
+    Operation & Cost & When \\
+    \midrule
+    Scaling factor $\sigma(f,m)$ & 4 muls + 3 adds & Every prediction \\
+    Cold-start prediction & 1 mul & Every prediction \\
+    Blending (if $n > 0$) & 2 muls + 1 add & If history exists \\
+    EMA update & 2 muls + 1 add & On job complete \\
+    \bottomrule
+\end{tabular}
+\end{center}
+
+Total per prediction: $\sim$10 floating-point operations. On modern
+hardware, this completes in \textbf{well under 1 microsecond}.
+
+\subsection{Comparison with Current Implementation}
+
+The current system dispatches an MQTT \texttt{PREDICT\_REQUEST} to
+each provider when no historical data exists. This involves:
+\begin{itemize}
+    \item Network round-trip (MQTT pub/sub): $\sim$10--100\,ms.
+    \item Provider-side LR training: $\sim$1--10\,ms.
+    \item Timeout handling (up to 5\,s).
+\end{itemize}
+
+The proposed model eliminates this round-trip entirely. All data
+(weights, reference runtimes, ratios) is preloaded at scheduler
+startup. Predictions are computed locally in microseconds.
+
+\subsection{Storage Cost}
+
+\begin{center}
+\small
+\begin{tabular}{@{}llp{3.2cm}@{}}
+    \toprule
+    Data & Size & Stored Where \\
+    \midrule
+    Per-function benchmarks
+      ($t_{\mathrm{ref}}, \mathbf{w}$)
+      & $5 \!\times\! |\mathcal{F}|$ floats
+      & Scheduler DB \\
+    Per-machine ratios ($\mathbf{r}$)
+      & $4 \!\times\! |\mathcal{M}|$ floats
+      & User model \\
+    Per-pair EMA state
+      & $2 \!\times\! |\text{observed}|$
+      & Summary table \\
+    \bottomrule
+\end{tabular}
+\end{center}
+
+For 100 functions and 50 machines: 500 + 200 + (at most 10,000)
+floats. Entirely negligible.
+
+\subsection{Offline Benchmarking Cost}
+
+\begin{center}
+\small
+\begin{tabular}{@{}lll@{}}
+    \toprule
+    Task & Runs & Frequency \\
+    \midrule
+    Reference runtime & $B \!\times\! |\mathcal{F}|$ & Per function reg.\ \\
+    Throttled runtimes & $4B' \!\times\! |\mathcal{F}|$ & Per function reg.\ \\
+    Machine benchmarks & $4 \!\times\! |\mathcal{M}|$ & Per machine join \\
+    \bottomrule
+\end{tabular}
+\end{center}
+
+With $B = 5$, $B' = 3$: each new function requires $5 + 12 = 17$
+runs on the BEM. Each new machine requires 4 benchmark runs. These
+are one-time costs, amortized over all future invocations.
+\bluecontentend
+
+% =============================================================================
+\section{Proposed Variant for Implementation}
+\label{sec:variant}
+% =============================================================================
+\bluecontentbegin
+
+Based on the structure of the current codebase and the analysis
+above, we propose the following concrete implementation variant.
+
+\subsection{Data Model Changes}
+
+\begin{enumerate}
+    \item \textbf{Extend the \texttt{User} (Provider) model} with two
+          additional efficiency score fields:
+          \texttt{disk\_efficiency\_score} and
+          \texttt{network\_efficiency\_score}, stored as ratios
+          relative to BEM (i.e., $r_{\texttt{disk}}$ and
+          $r_{\texttt{net}}$). The existing
+          \texttt{cpu\_efficiency\_score} and
+          \texttt{memory\_efficiency\_score} already serve as
+          $r_{\texttt{cpu}}$ and $r_{\texttt{mem}}$.
+
+    \item \textbf{Extend the \texttt{Services} model} (or create a
+          related \texttt{FunctionBenchmark} model) with fields:
+          \texttt{ref\_runtime}, \texttt{w\_cpu}, \texttt{w\_mem},
+          \texttt{w\_disk}, \texttt{w\_net}. Populated during function
+          registration after BEM benchmarking.
+
+    \item \textbf{Create a \texttt{PairRuntimeStats} model}:
+          \begin{itemize}
+              \item \texttt{provider} (FK $\to$ User)
+              \item \texttt{service} (FK $\to$ Services)
+              \item \texttt{ema\_runtime} (Float)
+              \item \texttt{observation\_count} (Integer)
+              \item Unique on (\texttt{provider}, \texttt{service})
+          \end{itemize}
+          Updated on every \texttt{JOB\_COMPLETE} event.
+\end{enumerate}
+
+\subsection{Prediction Flow}
+
+Replace the current three-pass pipeline
+(\texttt{db\_pass} $\to$ MQTT $\to$ \texttt{cache\_pass}) with:
+
+\begin{enumerate}
+    \item \textbf{Preload at scheduler startup:} Load all function
+          benchmarks (weights, reference runtimes) and machine ratios
+          into memory. Refresh on new registrations.
+
+    \item \textbf{For each $(f, m)$ in cost matrix construction:}
+          Compute $\hat{t}(f, m)$ via Algorithm~\ref{alg:predict}.
+          All data is local --- no MQTT round-trip.
+
+    \item \textbf{Apply pull time adjustment} via
+          Equation~\ref{eq:pull-piecewise}:
+          $V(f)/S_{\texttt{net}}$ or $V(f)/S_{\texttt{disk}}$
+          from benchmarks, not the legacy
+          $0.2 \times t_{\mathrm{pull}}^{\mathrm{last}}$ heuristic
+          (Section~\ref{sec:pulltime}).
+
+    \item \textbf{Feed the cost matrix to the ILP solver}
+          (\texttt{minimize\_total\_cost}) as before.
+\end{enumerate}
+
+\subsection{EMA Update Path}
+
+On receiving a \texttt{JOB\_COMPLETE} message from a provider:
+
+\begin{enumerate}
+    \item Extract \texttt{run\_time} from the completion payload.
+    \item Upsert \texttt{PairRuntimeStats} for
+          (\texttt{provider\_id}, \texttt{service\_id}):
+          apply EMA update (Equation~\ref{eq:ema}).
+    \item Next scheduling round picks up the updated EMA.
+\end{enumerate}
+
+\subsection{Eliminating the MQTT Prediction Path}
+
+The MQTT \texttt{PREDICT\_REQUEST}/\texttt{PREDICT\_RESPONSE}
+exchange exists solely because the scheduler lacks data to predict
+locally for unseen pairs. With benchmark-derived weights and ratios
+at the scheduler, this path is unnecessary. The provider-side
+\texttt{handle\_predict\_request}, the scheduler-side
+\texttt{\_fetch\_predicted\_runtimes\_mqtt\_batch}, and the
+associated timeout/retry logic can all be retired.
+
+\subsection{Summary of the Recommended Variant}
+
+\begin{tcolorbox}[colback=blue!3, colframe=blue!50!black,
+    title=Final Recommended Prediction Model]
+
+\textbf{Cold-start} (no history for $(f, m)$):
+\[
+    \hat{t}(f, m) = t_{\mathrm{ref}}(f) \cdot
+    \sum_{i \in \{\texttt{cpu}, \texttt{mem}, \texttt{disk},
+    \texttt{net}\}}
+    w_i(f) \cdot \frac{S_i(m_0)}{S_i(m)}
+\]
+
+\textbf{With history} ($n$ observations, EMA maintained online):
+\[
+    \hat{t}(f, m) = \frac{n}{n + \kappa} \cdot \mathrm{EMA}(f, m)
+    + \frac{\kappa}{n + \kappa} \cdot \hat{t}_{\mathrm{cold}}(f, m)
+\]
+
+\textbf{Parameters:} $\alpha = 0.25$, $\kappa = 5$, $\theta = 0.5$,
+$B = 5$, $B' = 3$.
+
+\medskip
+
+\textbf{Properties:}
+\begin{itemize}[nosep]
+    \item No ML model, no training, no inference overhead.
+    \item Prediction in $< 1\,\mu$s (arithmetic only).
+    \item Graceful transition from benchmarks to observations.
+    \item Eliminates MQTT round-trip (seconds $\to$ $\mu$s).
+    \item $O(1)$ storage and update per observed pair.
+\end{itemize}
+\end{tcolorbox}
+\bluecontentend
+
+% =============================================================================
+\section{Limitations and Future Work}
+% =============================================================================
+\bluecontentbegin
+
+\begin{enumerate}
+    \item \textbf{Cross-resource coupling.} The additive scaling model
+          assumes resources contribute independently to runtime.
+          Functions with tightly interleaved CPU-memory access may
+          exhibit non-linear interactions. Empirical validation will
+          quantify this approximation error.
+
+    \item \textbf{System noise under load.} Under heavy cluster load,
+          contention for shared resources (cache, memory bus, network
+          switch) may degrade performance beyond what static benchmarks
+          predict. Incorporating real-time load signals as a
+          multiplicative correction factor is a natural extension.
+
+    \item \textbf{Benchmark staleness.} Machine performance may degrade
+          over time (thermal throttling, disk aging). Periodic
+          re-benchmarking or drift detection from EMA residuals
+          ($|\mathrm{EMA} - \hat{t}_{\mathrm{cold}}|$ growing) can
+          trigger re-calibration.
+
+    \item \textbf{Network state variability.} Network bandwidth is the
+          most volatile resource. Incorporating real-time network
+          measurements could improve predictions for network-heavy
+          workloads, though at considerable implementation complexity.
+\end{enumerate}
+\bluecontentend
+
+\end{document}
