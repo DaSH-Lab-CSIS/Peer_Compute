@@ -1,5 +1,5 @@
 from django.urls import path
-from .views import new_service, stop_service, index, user_services, start_service, delete_service, run_service, run_service_async, user_jobs, job_info
+from .views import new_service, stop_service, index, user_services, start_service, delete_service, run_service, run_service_async, run_service_async_api, user_jobs, job_info
 from .views import run_service_async_batch
 
 urlpatterns = [
@@ -11,6 +11,7 @@ urlpatterns = [
     path('delete_service/', delete_service, name='delete_service'),
     path('run_service/<int:service_id>', run_service, name='run_service'),
     path('run_service_async/<int:service_id>', run_service_async, name='run_service_async'),
+    path('run_service_async_api/<int:service_id>', run_service_async_api, name='run_service_async_api'),
     path('run_service_async_batch/', run_service_async_batch, name='run_service_async_batch'),
     path('user_jobs/', user_jobs, name='user_jobs'),
     path('job_info/', job_info, name='job_info'),
