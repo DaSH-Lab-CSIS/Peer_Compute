@@ -350,7 +350,7 @@
 
     - name: Run Experiments
       uri:
-        url: "{{ scheduler_url }}/developers/run_service_async/{{ item }}"
+        url: "{{ scheduler_url }}/developers/run_service_async_api/{{ item }}"
         method: POST
         body_format: json
         body:

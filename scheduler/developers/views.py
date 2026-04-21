@@ -199,6 +199,57 @@ def run_service_async(request, service_id):
 
     return redirect('index')
 
+
+@csrf_exempt
+def run_service_async_api(request, service_id):
+    """API-first async trigger endpoint: returns JSON with HTTP 202 on accept."""
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Invalid request method'}, status=405)
+
+    try:
+        service = Services.objects.get(id=service_id)
+    except ObjectDoesNotExist:
+        return JsonResponse(
+            {'status': 'error', 'message': 'Incorrect service id', 'service_id': service_id},
+            status=404,
+        )
+
+    if not service.active:
+        return JsonResponse(
+            {'status': 'error', 'message': 'This service is disabled', 'service_id': service_id},
+            status=400,
+        )
+
+    try:
+        data = json.loads(request.body)
+    except json.JSONDecodeError:
+        return JsonResponse({'status': 'error', 'message': 'Invalid JSON payload'}, status=400)
+
+    available_providers = User.objects.filter(
+        active=True,
+        is_provider=True,
+        ready=True
+    ).exists()
+    if not available_providers:
+        return JsonResponse(
+            {'status': 'error', 'message': 'There are no available providers in the network'},
+            status=503,
+        )
+
+    temp_time = datetime.now(tz=timezone(TIME_ZONE))
+    worker = threading.Thread(target=request_handler, args=(data, service, temp_time, True), daemon=True)
+    worker.start()
+
+    return JsonResponse(
+        {
+            'status': 'accepted',
+            'message': 'Async request queued',
+            'service_id': service_id,
+            'service_name': service.name,
+        },
+        status=202,
+    )
+
 @csrf_exempt
 def run_service_async_batch(request):
     """
