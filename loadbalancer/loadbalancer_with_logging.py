@@ -17,6 +17,7 @@ import os
 import sys
 import uuid
 import socket
+import threading
 from typing import List, Dict, Any, Optional
 import httpx
 from fastapi import FastAPI, Request, BackgroundTasks
@@ -354,6 +355,26 @@ def _mqtt_format_connack(reason_code, properties):
     return " | ".join(parts)
 
 
+def _mqtt_log_connect_context(client):
+    """Log safe broker/auth context (no passwords)."""
+    try:
+        cid = getattr(client, "_client_id", b"") or b""
+        if isinstance(cid, bytes):
+            cid = cid.decode("utf-8", errors="replace")
+    except Exception:
+        cid = "?"
+    user_set = bool(os.environ.get("MQTT_USERNAME"))
+    pw_set = bool(os.environ.get("MQTT_PASSWORD"))
+    logger.info(
+        "[MQTT] connect context: host=%s port=%s client_id=%r auth_username_env_set=%s auth_password_env_set=%s",
+        BROKER_ID,
+        BROKER_PORT,
+        cid,
+        user_set,
+        pw_set,
+    )
+
+
 # MQTT Client callbacks
 def on_connect(mqtt_client, userdata, flags, reason_code, properties):
     # paho CallbackAPIVersion.VERSION2: (client, userdata, flags, reason_code, properties)
@@ -393,6 +414,20 @@ def on_connect_fail(mqtt_client, userdata):
         BROKER_PORT,
         sock_err,
     )
+
+
+def on_disconnect(mqtt_client, userdata, disconnect_flags, reason_code, properties):
+    detail = f"flags={disconnect_flags!r}"
+    try:
+        detail += f" | reason={reason_code!r}"
+        if getattr(reason_code, "value", None) is not None:
+            detail += f" | reason_value={reason_code.value}"
+    except Exception:
+        pass
+    if properties is not None:
+        detail += f" | properties={properties!r}"
+    logger.warning("[MQTT] on_disconnect: %s", detail)
+
 
 def on_message(mqtt_client, userdata, msg):
     logger.info(f'Received message on topic: {msg.topic} with payload: {msg.payload}')
@@ -495,20 +530,72 @@ def on_message(mqtt_client, userdata, msg):
 def on_subscribe(mqtt_client, userdata, mid, qos, properties=None):
     logger.info(f"Subscribed with QOS: {qos}")
 
-# Initialize MQTT Client
-mclient = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
+# Initialize MQTT Client lazily, same pattern as scheduler/providers/views.py
+mclient = None
 mqtt_username = os.environ.get("MQTT_USERNAME")
 mqtt_password = os.environ.get("MQTT_PASSWORD")
-if mqtt_username:
-    mclient.username_pw_set(mqtt_username, mqtt_password)
-if _mqtt_env_truthy("MQTT_DEBUG"):
-    ph_logger = logging.getLogger("paho.mqtt.client")
-    ph_logger.setLevel(logging.DEBUG)
-    mclient.enable_logger(ph_logger)
-mclient.on_connect = on_connect
-mclient.on_connect_fail = on_connect_fail
-mclient.on_message = on_message
-mclient.on_subscribe = on_subscribe
+MQTT_CONNECT_TIMEOUT = 5
+
+
+def _do_mqtt_connect(timed_out_flag):
+    """Run MQTT connect in a thread; set global mclient on success or DISCONNECTED on failure."""
+    global mclient
+    try:
+        client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
+        if mqtt_username:
+            client.username_pw_set(mqtt_username, mqtt_password)
+        if _mqtt_env_truthy("MQTT_DEBUG"):
+            ph_logger = logging.getLogger("paho.mqtt.client")
+            ph_logger.setLevel(logging.DEBUG)
+            client.enable_logger(ph_logger)
+        client.on_connect = on_connect
+        client.on_connect_fail = on_connect_fail
+        client.on_disconnect = on_disconnect
+        client.on_message = on_message
+        client.on_subscribe = on_subscribe
+
+        _mqtt_log_connect_context(client)
+        client.connect(host=BROKER_ID, port=BROKER_PORT, keepalive=100)
+        if timed_out_flag[0]:
+            return
+        client.loop_start()
+        mclient = client
+        logger.info(
+            "[MQTT] connect() returned and loop_start() running; broker CONNACK is asynchronous "
+            "(success appears in on_connect when reason_code==0)."
+        )
+    except Exception as e:
+        if not timed_out_flag[0]:
+            hint = ""
+            if isinstance(e, OSError) and e.errno == 101:
+                hint = (
+                    " No route to broker: confirm MQTT_BROKER in .env, ping that host from this machine, "
+                    "and check ip route / WiFi or VLAN."
+                )
+            logger.error("Failed to start MQTT client: %s%s", e, hint)
+        mclient = "DISCONNECTED"
+
+
+def get_mclient():
+    global mclient
+    if mclient is None:
+        timed_out_flag = [False]
+        conn_thread = threading.Thread(target=_do_mqtt_connect, args=(timed_out_flag,), daemon=True)
+        conn_thread.start()
+        conn_thread.join(timeout=MQTT_CONNECT_TIMEOUT)
+        if conn_thread.is_alive():
+            timed_out_flag[0] = True
+            mclient = "DISCONNECTED"
+            logger.warning(
+                "MQTT connection to %s:%s timed out after %ss. MQTT functionality will be unavailable.",
+                BROKER_ID,
+                BROKER_PORT,
+                MQTT_CONNECT_TIMEOUT,
+            )
+            return None
+    if mclient == "DISCONNECTED":
+        return None
+    return mclient
 
 app = FastAPI(title="Load Balancer with Batching")
 
@@ -652,9 +739,18 @@ async def process_batch():
     pending_responses[correlation_id] = None
     
     try:
+        mqtt_client = get_mclient()
+        if mqtt_client is None:
+            logger.error("MQTT client unavailable. Keeping batch in memory until broker is reachable.")
+            ilp_state = "done"
+            del pending_responses[correlation_id]
+            async with batch_state.lock:
+                batch_state.current_batch = batch_to_send + batch_state.current_batch
+            return
+
         # Publish to scheduler-specific topic with BATCH_REQUEST prefix
         message = "BATCH_REQUEST:" + json.dumps(mqtt_payload)
-        mclient.publish(
+        mqtt_client.publish(
             topic=scheduler_topic,
             payload=message,
             qos=2
@@ -783,36 +879,20 @@ async def startup_event():
             "MQTT_BROKER is not set. Set it to the same broker host as the scheduler (see views.py)."
         )
         return
-    try:
-        logger.info(
-            "[MQTT] connecting to %s:%s (auth_username_env_set=%s; CONNACK is async, see on_connect)",
-            BROKER_ID,
-            BROKER_PORT,
-            bool(mqtt_username),
-        )
-        mclient.connect(host=BROKER_ID, port=BROKER_PORT, keepalive=100)
-        mclient.loop_start()  # Start MQTT loop in separate thread
+    client = get_mclient()
+    if client is None:
+        logger.warning("Starting without MQTT connectivity. Batch forwarding will wait for broker availability.")
+    else:
         logger.info("MQTT client started successfully")
-    except Exception as e:
-        hint = ""
-        if isinstance(e, OSError) and e.errno == 101:
-            hint = (
-                " No route to broker: confirm MQTT_BROKER in .env, ping that host from this machine, "
-                "and check ip route / WiFi or VLAN."
-            )
-        logger.error(
-            "Failed to start MQTT client: %s%s",
-            e,
-            hint,
-        )
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup when shutting down"""
     # Stop MQTT client
-    mclient.loop_stop()
-    mclient.disconnect()
-    logger.info("MQTT client stopped")
+    if mclient not in (None, "DISCONNECTED"):
+        mclient.loop_stop()
+        mclient.disconnect()
+        logger.info("MQTT client stopped")
     
     # Stop logging if experiment mode was enabled
     global experiment_logger
