@@ -22,6 +22,16 @@ ansible-playbook -i inventory.ini playbooks/setup.yml -K --ask-vault-pass --tags
 
 password is `peercompute`
 
+### 1.1 Direct Provider Invocation (Internal Testing)
+
+For a timestamped log per run use:
+`./run_playbook.sh -i inventory.ini playbooks/direct_provider_invocation.yml -K --ask-vault-pass -e 'service_ids=[3,12]' -e 'direct_invocation_timeout=300'`.
+
+Equivalent plain Ansible command:
+```bash
+ansible-playbook -i inventory.ini playbooks/direct_provider_invocation.yml -K --ask-vault-pass -e 'service_ids=[3,12]' -e 'direct_invocation_timeout=300'
+```
+
 ### 2. Run Experiments
 
 To trigger the experiment loop (running services on the cluster), you can use the `experiment` tag or the `run_experiment` variable.
