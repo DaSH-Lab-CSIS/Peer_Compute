@@ -10,6 +10,8 @@
     project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
     miniforge_path: "/home/{{ ansible_user }}/miniforge3"
     venv_python: "{{ project_dir }}/.venv/bin/python"
+    cockroach_client_certs_source_dir: "/var/lib/cockroach/certs"
+    cockroach_client_certs_dest_dir: "/etc/cockroach/certs"
   tasks:
     # NOTE: this is commented as it was old way of connecting to wifi.
     # - name: Give execute permission to login.sh
@@ -108,6 +110,44 @@
       shell: pkill -f "[m]anage.py runserver" || true
       args:
         executable: /bin/bash
+
+    - name: Ensure CockroachDB client cert directory exists on scheduler host
+      tags: [debug, debug-django, cockroach]
+      file:
+        path: "{{ cockroach_client_certs_dest_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Check CockroachDB client cert files on source path
+      tags: [debug, debug-django, cockroach]
+      stat:
+        path: "{{ cockroach_client_certs_source_dir }}/{{ item }}"
+      loop:
+        - ca.crt
+        - client.root.crt
+        - client.root.key
+      register: cockroach_cert_stats
+
+    - name: Copy CockroachDB client cert files for Django TLS
+      tags: [debug, debug-django, cockroach]
+      copy:
+        src: "{{ item.stat.path }}"
+        dest: "{{ cockroach_client_certs_dest_dir }}/{{ item.stat.path | basename }}"
+        owner: root
+        group: root
+        mode: "{{ '0600' if (item.stat.path | basename) == 'client.root.key' else '0644' }}"
+        remote_src: true
+      loop: "{{ cockroach_cert_stats.results }}"
+      when: item.stat.exists
+
+    - name: Warn if CockroachDB client cert files are missing
+      tags: [debug, debug-django, cockroach]
+      debug:
+        msg: "Missing {{ item.item }} at {{ cockroach_client_certs_source_dir }}; copy it before starting Django with CockroachDB TLS."
+      loop: "{{ cockroach_cert_stats.results }}"
+      when: not item.stat.exists
 
 
     - name: Start Django server
@@ -331,35 +371,88 @@
       poll: 0
       when: provider_process.stdout == ""
 
-- name: Run Experiments
+- name: Start Load Balancer
   hosts: managed
   become: yes
   tags: experiment
+  vars_files:
+    - secrets.yml
   vars:
-    scheduler_probe_timeout: 120
-    service_ids: [3, 12, 13, 17, 18, 19, 20, 21, 22, 23, 24]
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+    lb_host: "colva2.dashlab.in"
+    lb_url: "http://colva2.dashlab.in:9001"
   tasks:
-    - name: Default scheduler_url from scheduler_host (-e override)
-      set_fact:
-        scheduler_url: "http://{{ scheduler_host }}:8000"
-      when: scheduler_host is defined and scheduler_url is not defined
+    - name: Check if Load Balancer Script is running
+      shell: "pgrep -f 'loadbalancer_with_logging' || true"
+      register: lb_process
+      delegate_to: "{{ lb_host }}"
+      run_once: true
 
-    - name: Discover scheduler on control group (try each [control] host in order)
-      include_tasks: tasks/resolve_scheduler.yml
-      when: scheduler_host is not defined and scheduler_url is not defined
+    - name: Start Load Balancer Script
+      shell: |
+        nohup {{ project_dir }}/.venv/bin/uvicorn loadbalancer_with_logging:app --host 0.0.0.0 --port 9001 > {{ project_dir }}/lb.log 2>&1 &
+      args:
+        executable: /bin/bash
+        chdir: "{{ project_dir }}/loadbalancer"
+      async: 10
+      poll: 0
+      when: lb_process.stdout == ""
+      delegate_to: "{{ lb_host }}"
+      run_once: true
 
-    - name: Run Experiments
+    - name: Wait for Load Balancer to become healthy
       uri:
-        url: "{{ scheduler_url }}/developers/run_service_async_api/{{ item }}"
-        method: POST
-        body_format: json
-        body:
-          numberOfInvocations: 1
-          chained: false
-          input: "None"
-          runMultipleInvocations: false
-        headers:
-          Content-Type: "application/json"
-        status_code: [200, 201, 202]
-      loop: "{{ service_ids }}"
-      when: run_experiment is defined and run_experiment | bool
+        url: "{{ lb_url }}/status"
+        return_content: yes
+      register: lb_health
+      retries: 10
+      delay: 3
+      until: lb_health.status == 200
+      delegate_to: localhost
+      run_once: true
+
+- name: Run Experiments
+  hosts: localhost
+  connection: local
+  become: no
+  tags: experiment
+  vars_files:
+    - secrets.yml
+  vars:
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+    testbed_dir: "{{ project_dir }}/testbed"
+    lb_url: "http://colva2.dashlab.in:9001"
+    scenario: "baseline"
+    iterations: 1
+    research_mode: false
+    seed: ""
+  tasks:
+    - name: Install testbed pip requirements
+      command: "{{ project_dir }}/.venv/bin/pip install -r {{ testbed_dir }}/requirements.txt --no-input --index-url https://pypi.org/simple"
+
+    - name: Build testbed command
+      set_fact:
+        testbed_cmd: >-
+          {{ project_dir }}/.venv/bin/python main.py
+          --scenario {{ scenario }}
+          --load-balancer-url {{ lb_url }}
+          --iterations {{ iterations }}
+          {% if research_mode | bool %} --research-mode{% endif %}
+          {% if seed | string | length > 0 %} --seed {{ seed }}{% endif %}
+
+    - name: Run testbed experiments via load balancer
+      command: "{{ testbed_cmd }}"
+      args:
+        chdir: "{{ testbed_dir }}"
+      register: testbed_run
+
+    - name: Print testbed output
+      debug:
+        msg: |
+          STDOUT:
+          {{ testbed_run.stdout | default('') }}
+          STDERR:
+          {{ testbed_run.stderr | default('') }}
+          RC:
+          {{ testbed_run.rc }}
+      when: testbed_run is defined
