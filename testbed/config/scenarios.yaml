@@ -26,7 +26,7 @@ steady_load:
   # Research-scale: Already supports research scale (2,000-5,000 requests)
   rps_levels: [10]  # Fixed RPS for uniform long-duration run
   duration_per_level: 7200  # seconds (2 hours)
-  services: [11, 12, 16, 19]
+  services: [12, 16, 19]
   interval: 1.0
   invocations: 1
   # ILP configuration
@@ -60,7 +60,7 @@ stress_soak:
   max_duration: 3600  # 1 hour
   max_error_rate: 0.10  # 10%
   min_requests: null  # Optional: minimum requests before stopping (research-scale: 5000)
-  services: [20, 21, 22, 24, 25]  # Heavy services
+  services: [12, 19, 20, 21, 22]
   invocations: 1
   chained: false
   check_interval: 60.0  # Check error rate every minute
