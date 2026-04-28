@@ -1,0 +1,205 @@
+---
+- name: Direct Provider Invocation
+  hosts: managed
+  become: yes
+  gather_facts: yes
+  vars:
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+    service_ids: []
+    scheduler_probe_timeout: 120
+    direct_invocation_timeout: 300
+    direct_invocation_poll_delay: 5
+    direct_invocation_input: "None"
+    direct_number_of_invocations: 1
+    direct_chained: false
+    direct_run_multiple_invocations: false
+  tasks:
+    - name: Ensure scheduler is running (subtask of Direct Provider Invocation)
+      run_once: true
+      block:
+        - name: Check if Django scheduler is running on each control node
+          shell: "pgrep -f '[m]anage.py runserver' || true"
+          register: scheduler_processes
+          changed_when: false
+          delegate_to: "{{ item }}"
+          loop: "{{ groups['control'] }}"
+
+        - name: Start Django scheduler where missing
+          shell: |
+            nohup /home/{{ hostvars[item.item].ansible_user }}/deploy/Serverless_Scheduler/.venv/bin/python manage.py runserver 0.0.0.0:8000 \
+            > django.log 2>&1 &
+          args:
+            chdir: "/home/{{ hostvars[item.item].ansible_user }}/deploy/Serverless_Scheduler/scheduler"
+            executable: /bin/bash
+          async: 30
+          poll: 0
+          delegate_to: "{{ item.item }}"
+          loop: "{{ scheduler_processes.results }}"
+          when: item.stdout == ""
+
+        - name: Wait for Django scheduler to accept connections on control nodes
+          wait_for:
+            host: 127.0.0.1
+            port: 8000
+            delay: 2
+            timeout: 30
+          delegate_to: "{{ item }}"
+          loop: "{{ groups['control'] }}"
+
+    - name: Validate service_ids override
+      assert:
+        that:
+          - service_ids is defined
+          - service_ids is iterable
+          - service_ids | length > 0
+        fail_msg: "Pass service IDs using -e \"service_ids=[3,12]\""
+
+    - name: Default scheduler_url from scheduler_host (-e override)
+      set_fact:
+        scheduler_url: "http://{{ scheduler_host }}:8000"
+      when: scheduler_host is defined and scheduler_url is not defined
+
+    - name: Discover scheduler on control group (try each [control] host in order)
+      include_tasks: tasks/resolve_scheduler.yml
+      when: scheduler_host is not defined and scheduler_url is not defined
+
+    - name: Resolve provider user id from scheduler by managed node location
+      uri:
+        url: "{{ scheduler_url }}/providers/get_user_id/?location={{ ansible_hostname }}"
+        method: GET
+        return_content: yes
+        status_code: [200]
+      register: provider_lookup
+
+    - name: Set provider user id fact
+      set_fact:
+        provider_user_id: "{{ provider_lookup.json.user_id }}"
+
+    - name: Check if provider script is running for this provider
+      shell: "pgrep -f '[p]rovider1.py {{ provider_user_id }}' || true"
+      register: provider_process
+      changed_when: false
+
+    - name: Stop existing provider script for this provider
+      shell: "kill -TERM {{ provider_process.stdout_lines | join(' ') }}"
+      changed_when: provider_process.stdout != ""
+      failed_when: false
+      when: provider_process.stdout != ""
+
+    - name: Wait for previous provider process to exit
+      shell: "pgrep -f '[p]rovider1.py {{ provider_user_id }}' || true"
+      register: provider_process_after_kill
+      changed_when: false
+      until: provider_process_after_kill.stdout == ""
+      retries: 5
+      delay: 2
+      when: provider_process.stdout != ""
+
+    - name: Force stop previous provider script if still running
+      shell: "kill -KILL {{ provider_process_after_kill.stdout_lines | join(' ') }}"
+      changed_when: provider_process_after_kill.stdout != ""
+      failed_when: false
+      when:
+        - provider_process.stdout != ""
+        - provider_process_after_kill.stdout | default("") != ""
+
+    - name: Confirm previous provider process is stopped
+      shell: "pgrep -f '[p]rovider1.py {{ provider_user_id }}' || true"
+      register: provider_process_after_force_kill
+      changed_when: false
+      until: provider_process_after_force_kill.stdout == ""
+      retries: 3
+      delay: 1
+      when: provider_process.stdout != ""
+
+    - name: Start provider script for this provider
+      shell: |
+        set -a
+        [ -f {{ project_dir }}/.env ] && source {{ project_dir }}/.env
+        set +a
+        nohup {{ project_dir }}/.venv/bin/python provider/provider1.py {{ provider_user_id }} \
+        > {{ project_dir }}/provider.log 2>&1 &
+      args:
+        chdir: "{{ project_dir }}"
+        executable: /bin/bash
+      async: 10
+      poll: 0
+
+    - name: Pause briefly for provider script to write startup log
+      pause:
+        seconds: 3
+
+    - name: Tail provider startup log to catch early exit
+      shell: head -30 {{ project_dir }}/provider.log 2>/dev/null || true
+      register: provider_startup_log
+      changed_when: false
+
+    - name: Show provider startup log
+      debug:
+        msg: "{{ provider_startup_log.stdout_lines }}"
+
+    - name: Wait for provider to report ready to scheduler
+      uri:
+        url: "{{ scheduler_url }}/providers/get_user_id/?location={{ ansible_hostname }}"
+        method: GET
+        return_content: yes
+        status_code: [200]
+      register: provider_ready_check
+      until: provider_ready_check.json.ready | default(false) | bool
+      retries: 12
+      delay: 5
+
+    - name: Trigger direct service invocation for this managed provider
+      uri:
+        url: "{{ scheduler_url }}/providers/direct_invoke/"
+        method: POST
+        body_format: json
+        body:
+          provider_user_id: "{{ provider_user_id }}"
+          service_ids: "{{ service_ids }}"
+          input: "{{ direct_invocation_input }}"
+          numberOfInvocations: "{{ direct_number_of_invocations }}"
+          chained: "{{ direct_chained }}"
+          runMultipleInvocations: "{{ direct_run_multiple_invocations }}"
+        return_content: yes
+        status_code: [202]
+      register: direct_invoke_response
+
+    - name: Collect created direct invocation job ids
+      set_fact:
+        direct_job_ids: "{{ direct_invoke_response.json.jobs | default([]) | map(attribute='job_id') | list }}"
+
+    - name: Ensure direct invocation returned at least one job id
+      assert:
+        that:
+          - direct_job_ids | length > 0
+        fail_msg: "No job IDs were returned by /providers/direct_invoke/"
+
+    - name: Compute polling retry budget
+      set_fact:
+        direct_status_retries: "{{ [1, (direct_invocation_timeout | int // direct_invocation_poll_delay | int)] | max }}"
+
+    - name: Poll direct invocation status until all jobs finish
+      uri:
+        url: "{{ scheduler_url }}/providers/direct_invocation_status/"
+        method: POST
+        body_format: json
+        body:
+          job_ids: "{{ direct_job_ids }}"
+        return_content: yes
+        status_code: [200]
+      register: direct_status
+      until: direct_status.json.all_finished | default(false)
+      retries: "{{ direct_status_retries }}"
+      delay: "{{ direct_invocation_poll_delay }}"
+
+    - name: Print per-host direct invocation summary
+      debug:
+        msg: >-
+          host={{ inventory_hostname }}
+          provider_user_id={{ provider_user_id }}
+          requested_service_ids={{ service_ids }}
+          job_ids={{ direct_job_ids }}
+          finished_count={{ direct_status.json.finished_count }}
+          all_finished={{ direct_status.json.all_finished }}
+          unfinished_job_ids={{ (direct_status.json.jobs | rejectattr('finished') | map(attribute='job_id') | list) }}
