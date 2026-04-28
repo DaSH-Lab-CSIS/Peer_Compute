@@ -3,7 +3,10 @@
   hosts: managed
   become: yes
   gather_facts: yes
+  vars_files:
+    - secrets.yml
   vars:
+    repo_url: "https://{{ github_pat }}@github.com/aalhadsawane/Serverless_Scheduler"
     project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
     service_ids: []
     scheduler_probe_timeout: 120
@@ -13,29 +16,85 @@
     direct_number_of_invocations: 1
     direct_chained: false
     direct_run_multiple_invocations: false
+    mqtt_broker: "utorda2.dashlab.in"
+    mqtt_port: 1884
+    mqtt_username: "peercompute"
+    mqtt_password: "peercompute"
   tasks:
+    # - name: Ensure deployment directory exists
+    #   file:
+    #     path: "{{ project_dir }}"
+    #     state: directory
+    #     owner: "{{ ansible_user }}"
+    #     group: "{{ ansible_user }}"
+    #     mode: "0755"
+
+    # - name: Sync repository on managed node
+    #   git:
+    #     repo: "{{ repo_url }}"
+    #     dest: "{{ project_dir }}"
+    #     version: main
+    #     force: yes
+
     - name: Ensure scheduler is running (subtask of Direct Provider Invocation)
       run_once: true
       block:
-        - name: Check if Django scheduler is running on each control node
-          shell: "pgrep -f '[m]anage.py runserver' || true"
-          register: scheduler_processes
-          changed_when: false
+        - name: Ensure deployment directory exists on each control node
+          file:
+            path: "/home/{{ hostvars[item].ansible_user }}/deploy/Serverless_Scheduler"
+            state: directory
+            owner: "{{ hostvars[item].ansible_user }}"
+            group: "{{ hostvars[item].ansible_user }}"
+            mode: "0755"
           delegate_to: "{{ item }}"
           loop: "{{ groups['control'] }}"
 
-        - name: Start Django scheduler where missing
+        - name: Sync repository on control node
+          git:
+            repo: "{{ repo_url }}"
+            dest: "/home/{{ hostvars[item].ansible_user }}/deploy/Serverless_Scheduler"
+            version: main
+            force: yes
+          delegate_to: "{{ item }}"
+          loop: "{{ groups['control'] }}"
+
+        - name: Ensure MQTT settings in control node project .env
+          blockinfile:
+            path: "/home/{{ hostvars[item].ansible_user }}/deploy/Serverless_Scheduler/.env"
+            marker: "# {mark} ANSIBLE MANAGED MQTT"
+            block: |
+              export MQTT_BROKER={{ mqtt_broker }}
+              export MQTT_PORT={{ mqtt_port }}
+              export MQTT_USERNAME={{ mqtt_username }}
+              export MQTT_PASSWORD={{ mqtt_password }}
+            create: true
+            owner: "{{ hostvars[item].ansible_user }}"
+            group: "{{ hostvars[item].ansible_user }}"
+            mode: "0600"
+          delegate_to: "{{ item }}"
+          loop: "{{ groups['control'] }}"
+
+        - name: Stop existing Django scheduler on each control node
+          shell: "pkill -f '[m]anage.py runserver' || true"
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ item }}"
+          loop: "{{ groups['control'] }}"
+
+        - name: Start Django scheduler on each control node
           shell: |
-            nohup /home/{{ hostvars[item.item].ansible_user }}/deploy/Serverless_Scheduler/.venv/bin/python manage.py runserver 0.0.0.0:8000 \
+            set -a
+            [ -f /home/{{ hostvars[item].ansible_user }}/deploy/Serverless_Scheduler/.env ] && source /home/{{ hostvars[item].ansible_user }}/deploy/Serverless_Scheduler/.env
+            set +a
+            nohup /home/{{ hostvars[item].ansible_user }}/deploy/Serverless_Scheduler/.venv/bin/python manage.py runserver 0.0.0.0:8000 \
             > django.log 2>&1 &
           args:
-            chdir: "/home/{{ hostvars[item.item].ansible_user }}/deploy/Serverless_Scheduler/scheduler"
+            chdir: "/home/{{ hostvars[item].ansible_user }}/deploy/Serverless_Scheduler/scheduler"
             executable: /bin/bash
           async: 30
           poll: 0
-          delegate_to: "{{ item.item }}"
-          loop: "{{ scheduler_processes.results }}"
-          when: item.stdout == ""
+          delegate_to: "{{ item }}"
+          loop: "{{ groups['control'] }}"
 
         - name: Wait for Django scheduler to accept connections on control nodes
           wait_for:
@@ -53,6 +112,18 @@
           - service_ids is iterable
           - service_ids | length > 0
         fail_msg: "Pass service IDs using -e \"service_ids=[3,12]\""
+
+    - name: Normalize service_ids override into a list
+      set_fact:
+        direct_service_ids: "{{ (service_ids | from_yaml) if service_ids is string else service_ids }}"
+
+    - name: Validate normalized service_ids
+      assert:
+        that:
+          - direct_service_ids is iterable
+          - direct_service_ids is not string
+          - direct_service_ids | length > 0
+        fail_msg: "service_ids must parse to a list, for example -e \"service_ids=[3,12]\""
 
     - name: Default scheduler_url from scheduler_host (-e override)
       set_fact:
@@ -74,6 +145,21 @@
     - name: Set provider user id fact
       set_fact:
         provider_user_id: "{{ provider_lookup.json.user_id }}"
+
+    - name: Ensure MQTT settings in project .env
+      blockinfile:
+        path: "{{ project_dir }}/.env"
+        marker: "# {mark} ANSIBLE MANAGED MQTT"
+        block: |
+          export MQTT_BROKER={{ mqtt_broker }}
+          export MQTT_PORT={{ mqtt_port }}
+          export MQTT_USERNAME={{ mqtt_username }}
+          export MQTT_PASSWORD={{ mqtt_password }}
+        create: true
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0600"
+      become_user: "{{ ansible_user }}"
 
     - name: Check if provider script is running for this provider
       shell: "pgrep -f '[p]rovider1.py {{ provider_user_id }}' || true"
@@ -153,14 +239,20 @@
       uri:
         url: "{{ scheduler_url }}/providers/direct_invoke/"
         method: POST
-        body_format: json
-        body:
-          provider_user_id: "{{ provider_user_id }}"
-          service_ids: "{{ service_ids }}"
-          input: "{{ direct_invocation_input }}"
-          numberOfInvocations: "{{ direct_number_of_invocations }}"
-          chained: "{{ direct_chained }}"
-          runMultipleInvocations: "{{ direct_run_multiple_invocations }}"
+        body_format: raw
+        headers:
+          Content-Type: "application/json"
+        body: >-
+          {{
+            {
+              "provider_user_id": provider_user_id,
+              "service_ids": direct_service_ids,
+              "input": direct_invocation_input,
+              "numberOfInvocations": direct_number_of_invocations,
+              "chained": direct_chained,
+              "runMultipleInvocations": direct_run_multiple_invocations
+            } | to_json
+          }}
         return_content: yes
         status_code: [202]
       register: direct_invoke_response
@@ -183,9 +275,15 @@
       uri:
         url: "{{ scheduler_url }}/providers/direct_invocation_status/"
         method: POST
-        body_format: json
-        body:
-          job_ids: "{{ direct_job_ids }}"
+        body_format: raw
+        headers:
+          Content-Type: "application/json"
+        body: >-
+          {{
+            {
+              "job_ids": direct_job_ids
+            } | to_json
+          }}
         return_content: yes
         status_code: [200]
       register: direct_status
