@@ -103,16 +103,35 @@ WSGI_APPLICATION = 'scheduler.wsgi.application'
 #     }
 # }
 
-# Local db on colva3
+# # Local db on colva3
+# DATABASES = {
+#     "default": {
+#         "ENGINE": "django.db.backends.postgresql",
+#         "NAME": "supabase_local",
+#         "USER": "postgres",
+#         "PASSWORD": "postgres",
+#         # "HOST": "10.1.19.77",
+#         "HOST": "colva3.dashlab.in",
+#         "PORT": "5432",
+#     }
+# }
+
+# CockroachDB migration
 DATABASES = {
     "default": {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": "supabase_local",
-        "USER": "postgres",
-        "PASSWORD": "postgres",
-        # "HOST": "10.1.19.77",
-        "HOST": "colva3.dashlab.in",
-        "PORT": "5432",
+        "ENGINE": "scheduler.db.cockroach",
+        "NAME": "peercompute",
+        "USER": "root",
+        "PASSWORD": "",
+        "HOST": "anjuna2.dashlab.in",   # or HAProxy VIP/host
+        "PORT": "26257",
+        "OPTIONS": {
+            "sslmode": "verify-full",
+            "sslrootcert": "/var/lib/cockroach/certs/ca.crt",
+            "sslcert": "/var/lib/cockroach/certs/client.root.crt",
+            "sslkey": "/var/lib/cockroach/certs/client.root.key",
+        },
+        "CONN_MAX_AGE": 600,
     }
 }
 
