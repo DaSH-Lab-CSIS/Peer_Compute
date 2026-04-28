@@ -929,6 +929,199 @@ def set_reference_stats(request):
     client.publish(topic=reference_provider_id, payload="ref_run_service_id/"+str(task_link))
     return JsonResponse({'State':'Running service on the reference provider, stats will be printed on django server and added to files also'})
 
+
+def _coerce_service_ids(raw_service_ids):
+    """Normalize service ids from request payload into unique integer ids preserving order."""
+    if not isinstance(raw_service_ids, list):
+        raise ValueError("service_ids must be a list")
+    normalized = []
+    seen = set()
+    for raw_id in raw_service_ids:
+        try:
+            service_id = int(raw_id)
+        except (TypeError, ValueError):
+            raise ValueError(f"Invalid service id: {raw_id}")
+        if service_id not in seen:
+            seen.add(service_id)
+            normalized.append(service_id)
+    if not normalized:
+        raise ValueError("service_ids cannot be empty")
+    return normalized
+
+
+@csrf_exempt
+def direct_invoke(request):
+    """
+    Internal endpoint to invoke services directly on one provider (bypasses LB/ILP).
+    """
+    if request.method != 'POST':
+        return JsonResponse({'status': 'error', 'message': 'Only POST is supported'}, status=405)
+
+    try:
+        body = json.loads(request.body.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JsonResponse({'status': 'error', 'message': 'Invalid JSON payload'}, status=400)
+
+    provider_user_id = str(body.get('provider_user_id', '')).strip()
+    if not provider_user_id:
+        return JsonResponse({'status': 'error', 'message': 'provider_user_id is required'}, status=400)
+
+    try:
+        service_ids = _coerce_service_ids(body.get('service_ids'))
+    except ValueError as e:
+        return JsonResponse({'status': 'error', 'message': str(e)}, status=400)
+
+    try:
+        provider = User.objects.get(
+            user_id=provider_user_id,
+            is_provider=True,
+            active=True,
+        )
+    except User.DoesNotExist:
+        return JsonResponse(
+            {'status': 'error', 'message': f'Provider not found or inactive: {provider_user_id}'},
+            status=404,
+        )
+
+    if not provider.ready:
+        return JsonResponse(
+            {'status': 'error', 'message': f'Provider is not ready: {provider_user_id}'},
+            status=409,
+        )
+
+    services = list(Services.objects.filter(id__in=service_ids, active=True))
+    found_ids = {svc.id for svc in services}
+    missing_or_inactive = [sid for sid in service_ids if sid not in found_ids]
+    if missing_or_inactive:
+        return JsonResponse(
+            {
+                'status': 'error',
+                'message': 'Some services are missing or inactive',
+                'service_ids': missing_or_inactive,
+            },
+            status=404,
+        )
+
+    service_by_id = {svc.id: svc for svc in services}
+    ordered_services = [service_by_id[sid] for sid in service_ids]
+
+    run_multiple = bool(body.get('runMultipleInvocations', False))
+    number_of_invocations = int(body.get('numberOfInvocations', 1))
+    is_chained = bool(body.get('chained', False))
+    input_data = body.get('input', 'None')
+    assigned_time = datetime.now(tz=timezone(TIME_ZONE))
+
+    created_jobs = []
+    errors = []
+
+    for service in ordered_services:
+        try:
+            job = Job.objects.create(
+                provider=provider,
+                service=service,
+                developer=service.developer,
+                finished=False,
+                scheduler_received_time=assigned_time,
+                assigned_to_provider_time=assigned_time,
+            )
+
+            service_key = str(service.id)
+            provider.function_invocations = provider.function_invocations or {}
+            provider.function_invocations[service_key] = provider.function_invocations.get(service_key, 0) + 1
+            provider.save(update_fields=['function_invocations'])
+
+            publish_to_topic_mqtt(
+                run_multiple,
+                number_of_invocations,
+                is_chained,
+                input_data,
+                provider,
+                service.docker_container,
+                service.developer,
+                job.id,
+            )
+
+            created_jobs.append({
+                'job_id': job.id,
+                'service_id': service.id,
+                'provider_user_id': str(provider.user_id),
+                'status': 'sent',
+            })
+        except Exception as e:
+            errors.append({'service_id': service.id, 'error': str(e)})
+
+    http_status = 202 if created_jobs else 500
+    return JsonResponse(
+        {
+            'status': 'accepted' if created_jobs else 'error',
+            'provider_user_id': str(provider.user_id),
+            'jobs': created_jobs,
+            'errors': errors,
+        },
+        status=http_status,
+    )
+
+
+@csrf_exempt
+def direct_invocation_status(request):
+    """Return current status for previously created direct invocation job ids."""
+    if request.method != 'POST':
+        return JsonResponse({'status': 'error', 'message': 'Only POST is supported'}, status=405)
+
+    try:
+        body = json.loads(request.body.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JsonResponse({'status': 'error', 'message': 'Invalid JSON payload'}, status=400)
+
+    raw_job_ids = body.get('job_ids')
+    if not isinstance(raw_job_ids, list) or not raw_job_ids:
+        return JsonResponse({'status': 'error', 'message': 'job_ids must be a non-empty list'}, status=400)
+
+    job_ids = []
+    for raw_id in raw_job_ids:
+        try:
+            job_ids.append(int(raw_id))
+        except (TypeError, ValueError):
+            return JsonResponse({'status': 'error', 'message': f'Invalid job id: {raw_id}'}, status=400)
+
+    jobs = Job.objects.filter(id__in=job_ids).select_related('provider', 'service').order_by('id')
+    job_by_id = {job.id: job for job in jobs}
+    not_found = [job_id for job_id in job_ids if job_id not in job_by_id]
+
+    results = []
+    for job_id in job_ids:
+        job = job_by_id.get(job_id)
+        if not job:
+            continue
+        results.append(
+            {
+                'job_id': job.id,
+                'provider_user_id': str(job.provider.user_id),
+                'service_id': job.service.id if job.service else None,
+                'finished': job.finished,
+                'ack_time': job.ack_time.isoformat() if job.ack_time else None,
+                'scheduler_received_time': job.scheduler_received_time.isoformat() if job.scheduler_received_time else None,
+                'assigned_to_provider_time': job.assigned_to_provider_time.isoformat() if job.assigned_to_provider_time else None,
+                'pull_time': job.pull_time,
+                'run_time': job.run_time,
+                'total_time': job.total_time,
+                'response': job.response,
+            }
+        )
+
+    finished_count = len([j for j in results if j['finished']])
+    return JsonResponse(
+        {
+            'status': 'ok',
+            'job_count': len(job_ids),
+            'finished_count': finished_count,
+            'all_finished': finished_count == len(job_ids),
+            'not_found_job_ids': not_found,
+            'jobs': results,
+        },
+        status=200,
+    )
+
 @csrf_exempt
 def get_user_id(request):
     """
