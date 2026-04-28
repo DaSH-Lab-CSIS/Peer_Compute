@@ -13,6 +13,12 @@ categories:
     description: "Services with average runtime > 10 seconds"
     threshold_ms: null
 
+# Explicit service-category mapping derived from service_categorization.csv
+service_categories:
+  light: [14, 24]
+  medium: [13, 16, 17, 18, 19, 20, 21, 22, 25, 26]
+  heavy: [12]
+
 # Service selection weights for weighted random selection
 selection_weights:
   default:
