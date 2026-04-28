@@ -1,0 +1,34 @@
+---
+- name: Sync repository on all nodes
+  hosts: control:managed
+  become: yes
+  vars_files:
+    - secrets.yml
+  vars:
+    repo_url: "https://{{ github_pat }}@github.com/aalhadsawane/Serverless_Scheduler"
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+  tasks:
+    - name: Bootstrap python3-apt
+      raw: apt-get update && apt-get install -y python3-apt
+      changed_when: false
+
+    - name: Ensure git is installed
+      apt:
+        name: git
+        state: present
+        update_cache: yes
+
+    - name: Ensure deployment directory exists
+      file:
+        path: "{{ project_dir }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0755"
+
+    - name: Sync repository to latest main
+      git:
+        repo: "{{ repo_url }}"
+        dest: "{{ project_dir }}"
+        version: main
+        force: yes
