@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 from collections import defaultdict
 import random
+import yaml
 
 
 class ServiceAnalyzer:
@@ -37,9 +38,8 @@ class ServiceAnalyzer:
     def _load_and_analyze(self):
         """Load avg_job_times.json and analyze service characteristics."""
         if not self.avg_job_times_path.exists():
-            raise FileNotFoundError(
-                f"avg_job_times.json not found at {self.avg_job_times_path}"
-            )
+            self._load_from_services_config()
+            return
         
         with open(self.avg_job_times_path, 'r') as f:
             data = json.load(f)
@@ -93,6 +93,57 @@ class ServiceAnalyzer:
         # for service_id, pull_times in service_pull_times.items():
         #     if service_id in self.service_stats:
         #         self.service_stats[service_id]['avg_pull_time'] = sum(pull_times) / len(pull_times)
+
+    def _load_from_services_config(self):
+        """
+        Fallback when avg_job_times.json is unavailable.
+        Uses testbed/config/services.yaml service_categories/known_services.
+        """
+        services_cfg_path = Path(__file__).parent.parent / "config" / "services.yaml"
+        if not services_cfg_path.exists():
+            raise FileNotFoundError(
+                f"avg_job_times.json not found at {self.avg_job_times_path} "
+                f"and fallback services config missing at {services_cfg_path}"
+            )
+
+        with open(services_cfg_path, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+
+        explicit_categories = cfg.get("service_categories") or {}
+        known_services = cfg.get("known_services") or []
+
+        # Build category buckets from explicit mapping first.
+        light_ids = [int(s) for s in explicit_categories.get("light", [])]
+        medium_ids = [int(s) for s in explicit_categories.get("medium", [])]
+        heavy_ids = [int(s) for s in explicit_categories.get("heavy", [])]
+
+        # If explicit categories are missing, treat known services as medium.
+        if not (light_ids or medium_ids or heavy_ids):
+            medium_ids = [int(s) for s in known_services]
+
+        self.service_categories = {
+            "light": light_ids,
+            "medium": medium_ids,
+            "heavy": heavy_ids,
+        }
+
+        # Create synthetic stats so API remains consistent.
+        # Values are representative placeholders for category class.
+        category_defaults = {
+            "light": 3000.0,
+            "medium": 7000.0,
+            "heavy": 15000.0,
+        }
+        for category, service_ids in self.service_categories.items():
+            default_rt = category_defaults[category]
+            for service_id in service_ids:
+                self.service_stats[service_id] = {
+                    "avg_runtime": default_rt,
+                    "min_runtime": default_rt,
+                    "max_runtime": default_rt,
+                    "sample_count": 1,
+                    "runtimes": [default_rt],
+                }
     
     def get_service_stats(self, service_id: int) -> Optional[Dict]:
         """Get statistics for a specific service."""
