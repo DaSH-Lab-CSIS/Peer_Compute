@@ -10,7 +10,7 @@
     project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
     miniforge_path: "/home/{{ ansible_user }}/miniforge3"
     venv_python: "{{ project_dir }}/.venv/bin/python"
-    cockroach_client_certs_source_dir: "/var/lib/cockroach/certs"
+    cockroach_client_certs_source_dir: "{{ project_dir }}/certs"
     cockroach_client_certs_dest_dir: "/etc/cockroach/certs"
   tasks:
     # NOTE: this is commented as it was old way of connecting to wifi.
