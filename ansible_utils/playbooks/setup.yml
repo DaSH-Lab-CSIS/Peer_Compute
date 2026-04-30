@@ -162,6 +162,10 @@
       shell: |
         nohup {{ venv_python }} manage.py runserver 0.0.0.0:8000 \
         > django.log 2>&1 &
+      environment:
+        DB_SSLROOTCERT: "{{ cockroach_client_certs_source_dir }}/ca.crt"
+        DB_SSLCERT: "{{ cockroach_client_certs_source_dir }}/client.root.crt"
+        DB_SSLKEY: "{{ cockroach_client_certs_source_dir }}/client.root.key"
       args:
         chdir: "{{ project_dir }}/scheduler"
         executable: /bin/bash
