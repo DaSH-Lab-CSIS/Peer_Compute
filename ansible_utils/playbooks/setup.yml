@@ -147,16 +147,18 @@
       loop: "{{ cockroach_cert_stats.results }}"
       when: item.stat.exists
 
-    - name: Warn if CockroachDB client cert files are missing
+    - name: Fail if CockroachDB client cert files are missing
       tags: [debug, debug-django, cockroach]
-      debug:
-        msg: "Missing {{ item.item }} at {{ cockroach_client_certs_source_dir }}; copy it before starting Django with CockroachDB TLS."
+      assert:
+        that:
+          - item.stat.exists
+        fail_msg: "Missing {{ item.item }} at {{ cockroach_client_certs_source_dir }}. Refusing to start Django with CockroachDB TLS."
       loop: "{{ cockroach_cert_stats.results }}"
-      when: not item.stat.exists
 
 
     - name: Start Django server
       tags: [debug, debug-django]
+      become_user: "{{ ansible_user }}"
       shell: |
         nohup {{ venv_python }} manage.py runserver 0.0.0.0:8000 \
         > django.log 2>&1 &
@@ -166,14 +168,47 @@
       async: 30
       poll: 0
 
+    - name: Validate venv python runtime can import encodings
+      tags: [debug, debug-django]
+      become_user: "{{ ansible_user }}"
+      command:
+        argv:
+          - "{{ venv_python }}"
+          - "-c"
+          - "import encodings; print('ok')"
+
 
     - name: Wait for Django to start
       tags: [debug, debug-django]
-      wait_for:
-        host: 127.0.0.1
-        port: 8000
-        delay: 2
-        timeout: 30
+      block:
+        - name: Wait for Django port 8000
+          wait_for:
+            host: 127.0.0.1
+            port: 8000
+            delay: 2
+            timeout: 30
+      rescue:
+        - name: Show recent Django log lines after failed startup
+          shell: |
+            if [ -f "{{ project_dir }}/scheduler/django.log" ]; then
+              echo "===== django.log (last 120 lines) ====="
+              sed -n '1,120p' "{{ project_dir }}/scheduler/django.log"
+              echo "===== end django.log ====="
+            else
+              echo "django.log not found at {{ project_dir }}/scheduler/django.log"
+            fi
+          args:
+            executable: /bin/bash
+          register: django_startup_log
+          changed_when: false
+
+        - name: Print Django startup diagnostics
+          debug:
+            msg: "{{ django_startup_log.stdout }}"
+
+        - name: Fail setup due to Django startup timeout
+          fail:
+            msg: "Django did not start on 127.0.0.1:8000. See diagnostics above."
 
 # Separate play so --start-at-task on any task in "Setup Managed Nodes" still runs a full git sync
 # first (Ansible only skips tasks before the match within the play that contains that task).
