@@ -214,3 +214,13 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# Structured profiling (JSON append, one file per Django startup).
+# Each run writes to: SCHEDULER_PROFILE_LOG_DIR/scheduler_profile_<run_code>.jsonl
+SCHEDULER_PROFILE_LOG_DIR = os.environ.get(
+    "SCHEDULER_PROFILE_LOG_DIR",
+    str(BASE_DIR / "logs"),
+)
+SCHEDULER_PROFILE_LOG_ENABLED = os.environ.get(
+    "SCHEDULER_PROFILE_LOG_ENABLED", "1"
+).strip().lower() in ("1", "true", "yes", "on")
