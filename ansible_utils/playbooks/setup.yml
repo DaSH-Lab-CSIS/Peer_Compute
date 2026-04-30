@@ -410,6 +410,18 @@
       shell: "pgrep -f 'provider1.py' || true"
       register: provider_process
 
+    - name: Resolve provider no-kill override
+      set_fact:
+        provider_no_kill: "{{ (no_kill | default(false) | bool) or (vars.get('no-kill', false) | bool) }}"
+
+    - name: Stop running Provider Script before restart
+      shell: "kill -TERM {{ provider_process.stdout_lines | join(' ') }}"
+      failed_when: false
+      changed_when: provider_process.stdout != ""
+      when:
+        - provider_process.stdout != ""
+        - not provider_no_kill
+
     - name: Start Provider Script
       shell: |
         nohup {{ project_dir }}/.venv/bin/python {{ project_dir }}/provider/provider1.py {{ provider_user_id }} > {{ project_dir }}/provider.log 2>&1 &
@@ -417,4 +429,4 @@
         executable: /bin/bash
       async: 10
       poll: 0
-      when: provider_process.stdout == ""
+      when: provider_process.stdout == "" or not provider_no_kill
