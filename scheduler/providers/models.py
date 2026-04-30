@@ -92,6 +92,43 @@ class Job(models.Model):
         else:
             return None
 
+    @classmethod
+    def bulk_latest_run_time(cls, provider_ids, service_ids):
+        """Return {(provider_id, service_id): run_time} for all pairs in ONE query.
+
+        Uses DISTINCT ON (provider_id, service_id) ORDER BY start_time DESC so we get
+        the run_time from the most-recently-started job per pair — same semantics as
+        calling get_latest_run_time() in a loop but with a single round-trip.
+        """
+        if not provider_ids or not service_ids:
+            return {}
+        qs = (
+            cls.objects
+            .filter(provider_id__in=provider_ids, service_id__in=service_ids)
+            .order_by('provider_id', 'service_id', '-start_time')
+            .distinct('provider_id', 'service_id')
+            .values('provider_id', 'service_id', 'run_time')
+        )
+        return {(r['provider_id'], r['service_id']): r['run_time'] for r in qs}
+
+    @classmethod
+    def bulk_latest_pull_time(cls, provider_ids, service_ids):
+        """Return {(provider_id, service_id): pull_time} for all pairs in ONE query.
+
+        Uses MAX(pull_time) per pair — same semantics as calling get_latest_pull_time()
+        (which uses .latest('pull_time') = largest pull_time value) in a loop.
+        """
+        if not provider_ids or not service_ids:
+            return {}
+        from django.db.models import Max
+        qs = (
+            cls.objects
+            .filter(provider_id__in=provider_ids, service_id__in=service_ids)
+            .values('provider_id', 'service_id')
+            .annotate(pull_time=Max('pull_time'))
+        )
+        return {(r['provider_id'], r['service_id']): r['pull_time'] for r in qs}
+
     # override the save and clean method for enforcing constraints at model level processes
     def save(self, *args, **kwargs):
         if self.service:
