@@ -104,7 +104,12 @@ class Job(models.Model):
             return {}
         qs = (
             cls.objects
-            .filter(provider_id__in=provider_ids, service_id__in=service_ids)
+            .filter(
+                provider_id__in=provider_ids,
+                service_id__in=service_ids,
+                finished=True,
+                run_time__gt=0,
+            )
             .order_by('provider_id', 'service_id', '-start_time')
             .distinct('provider_id', 'service_id')
             .values('provider_id', 'service_id', 'run_time')
@@ -123,7 +128,12 @@ class Job(models.Model):
         from django.db.models import Max
         qs = (
             cls.objects
-            .filter(provider_id__in=provider_ids, service_id__in=service_ids)
+            .filter(
+                provider_id__in=provider_ids,
+                service_id__in=service_ids,
+                finished=True,
+                pull_time__gt=0,
+            )
             .values('provider_id', 'service_id')
             .annotate(pull_time=Max('pull_time'))
         )
