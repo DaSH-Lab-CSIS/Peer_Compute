@@ -127,9 +127,9 @@ DATABASES = {
         "PORT": "26257",
         "OPTIONS": {
             "sslmode": "verify-full",
-            "sslrootcert": "/var/lib/cockroach/certs/ca.crt",
-            "sslcert": "/var/lib/cockroach/certs/client.root.crt",
-            "sslkey": "/var/lib/cockroach/certs/client.root.key",
+            "sslrootcert": os.environ.get("DB_SSLROOTCERT", "/etc/cockroach/certs/ca.crt"),
+            "sslcert": os.environ.get("DB_SSLCERT", "/etc/cockroach/certs/client.root.crt"),
+            "sslkey": os.environ.get("DB_SSLKEY", "/etc/cockroach/certs/client.root.key"),
         },
         "CONN_MAX_AGE": 600,
     }
@@ -214,3 +214,13 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# Structured profiling (JSON append, one file per Django startup).
+# Each run writes to: SCHEDULER_PROFILE_LOG_DIR/scheduler_profile_<run_code>.jsonl
+SCHEDULER_PROFILE_LOG_DIR = os.environ.get(
+    "SCHEDULER_PROFILE_LOG_DIR",
+    str(BASE_DIR / "logs"),
+)
+SCHEDULER_PROFILE_LOG_ENABLED = os.environ.get(
+    "SCHEDULER_PROFILE_LOG_ENABLED", "1"
+).strip().lower() in ("1", "true", "yes", "on")

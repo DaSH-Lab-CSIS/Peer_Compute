@@ -6,7 +6,7 @@ mosquitto -v -c /home/user/Documents/Serverless_Scheduler/broker/moqsuitto.conf
 example curl
 ```
 
-  curl -X POST "http://localhost:8000/developers/run_service_async/18" \
+  curl -X POST "http://localhost:8000/developers/run_service_async_api/18" \
   -H "Accept: */*" \
   -H "User-Agent: Thunder Client (https://www.thunderclient.com)" \
   -H "Content-Type: application/json" \

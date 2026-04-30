@@ -3,6 +3,7 @@ import time
 import pulp
 from django.apps import apps
 from django.db import transaction
+from django.db.models import Max
 from django.shortcuts import render,get_object_or_404, redirect
 import pika 
 import json
@@ -34,10 +35,162 @@ from providers.prediction import (
     ServicePredInput,
     predict as predict_runtimes,
 )
+from providers import profiling as scheduler_profiling
 from developers.models import Services
 import threading
 import requests
+import queue as _queue_mod
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# ---------------------------------------------------------------------------
+# Persistent in-process request queue + batch scheduler
+# ---------------------------------------------------------------------------
+# Each item: {'service': <Services obj>, 'req_data': dict,
+#             'correlation_id': str, 'loadbalancer_id': str,
+#             'received_time_iso': str}
+_request_queue: _queue_mod.Queue = _queue_mod.Queue()
+
+ILP_BATCH_SIZE = 50           # max services per ILP solve
+ILP_QUEUE_POLL_INTERVAL = 0.5  # seconds between drain checks
+
+
+def _prof(label: str, t0: float, **extra) -> float:
+    """Print a structured PROFILE line, append JSONL when enabled; return current time."""
+    elapsed = time.time() - t0
+    extra_str = "  ".join(f"{k}={v}" for k, v in extra.items())
+    print(f"[PROFILE] {label}  elapsed={elapsed:.4f}s  {extra_str}".rstrip())
+    try:
+        scheduler_profiling.persist_profile_row(label, elapsed_s=elapsed, **extra)
+    except Exception:
+        pass
+    return time.time()
+
+
+def _profile_note(label: str, **extra) -> None:
+    """Structured PROFILE line without elapsed timing (persist + stderr)."""
+    extra_str = "  ".join(f"{k}={v}" for k, v in extra.items())
+    print(f"[PROFILE] {label}  {extra_str}".rstrip())
+    try:
+        scheduler_profiling.persist_profile_row(label, **extra)
+    except Exception:
+        pass
+
+
+def _batch_scheduler_worker():
+    """Background daemon that drains _request_queue in batches of ILP_BATCH_SIZE."""
+    print("[batch-scheduler] worker started")
+    while True:
+        # Collect up to ILP_BATCH_SIZE pending items
+        batch = []
+        try:
+            item = _request_queue.get(timeout=ILP_QUEUE_POLL_INTERVAL)
+            batch.append(item)
+        except _queue_mod.Empty:
+            continue
+
+        t_drain_start = time.time()
+        while len(batch) < ILP_BATCH_SIZE:
+            try:
+                batch.append(_request_queue.get_nowait())
+            except _queue_mod.Empty:
+                break
+        t_drain_end = time.time()
+
+        queue_depth_after = _request_queue.qsize()
+        _profile_note(
+            "batch-drain",
+            batch_size=len(batch),
+            drain_time=round(t_drain_end - t_drain_start, 6),
+            queue_depth_after=queue_depth_after,
+        )
+
+        by_correlation: dict = {}
+        for it in batch:
+            cid = it['correlation_id']
+            by_correlation.setdefault(cid, {
+                'services': [], 'requests_data': [],
+                'loadbalancer_id': it['loadbalancer_id'],
+                'received_time_iso': it['received_time_iso'],
+            })
+            by_correlation[cid]['services'].append(it['service'])
+            by_correlation[cid]['requests_data'].append(it['req_data'])
+
+        for cid, grp in by_correlation.items():
+            svc_list = grp['services']
+            req_list = grp['requests_data']
+            lb_id = grp['loadbalancer_id']
+
+            t_batch_start = time.time()
+            scheduler_profiling.set_profile_correlation_id(cid)
+            try:
+                _profile_note(
+                    "batch-start",
+                    correlation_id=str(cid),
+                    n_services=len(svc_list),
+                    lb=lb_id,
+                    queue_depth=_request_queue.qsize(),
+                )
+
+                try:
+                    temp_time = datetime.now(tz=timezone(TIME_ZONE))
+                    batch_results = request_handler(req_list, svc_list, temp_time, False)
+                    t_batch_end = time.time()
+                    processed_count = (
+                        len([r for r in batch_results if 'error' not in r])
+                        if batch_results else 0
+                    )
+                    results = batch_results or []
+                    error_count = len(svc_list) - processed_count
+                    _profile_note(
+                        "batch-done",
+                        correlation_id=str(cid),
+                        n_services=len(svc_list),
+                        processed=processed_count,
+                        errors=error_count,
+                        total_batch_time=round(t_batch_end - t_batch_start, 6),
+                    )
+                except Exception as exc:
+                    t_batch_end = time.time()
+                    _profile_note(
+                        "batch-error",
+                        correlation_id=str(cid),
+                        error=str(exc),
+                        total_batch_time=round(t_batch_end - t_batch_start, 6),
+                    )
+                    results = [{'error': f'ILP processing failed: {exc}'} for _ in svc_list]
+                    processed_count = 0
+
+                try:
+                    mc = get_mclient()
+                    if mc:
+                        response_payload = {
+                            'correlation_id': cid,
+                            'status': 'success',
+                            'batch_size': len(svc_list),
+                            'processed': processed_count,
+                            'ilp_solve_time': time.time() - t_batch_start,
+                            'results': results,
+                        }
+                        mc.publish(
+                            topic=lb_id,
+                            payload="BATCH_RESPONSE:" + json.dumps(response_payload),
+                            qos=2,
+                        )
+                except Exception as pub_exc:
+                    print(f"[batch-scheduler] failed to publish response: {pub_exc}")
+            finally:
+                scheduler_profiling.clear_profile_correlation_id()
+
+        for _ in batch:
+            _request_queue.task_done()
+
+
+# Start the batch-scheduler daemon thread once at module load
+_batch_scheduler_thread = threading.Thread(
+    target=_batch_scheduler_worker, daemon=True, name="batch-scheduler"
+)
+_batch_scheduler_thread.start()
+# ---------------------------------------------------------------------------
 
 global procedural_shutdown_penalty
 procedural_shutdown_penalty = 0
@@ -419,118 +572,83 @@ def on_message(mqtt_client, userdata, msg):
                 print(f"Error handling ACK signal for job {job_id}: {str(e)}")
         
         elif payload_str.startswith("BATCH_REQUEST:"):
+            # Parse on the paho thread (fast) then hand off to batch-scheduler.
+            # This keeps on_message() non-blocking so ACK/READY/stats are processed
+            # without waiting for ILP to finish.
             try:
-                # Extract correlation ID and batch data
-                batch_json = payload_str[14:]  # Remove "BATCH_REQUEST:" prefix
+                batch_json = payload_str[14:]
                 request_data = json.loads(batch_json)
                 correlation_id = request_data.get('correlation_id')
                 batch_data = request_data.get('batch_data')
                 loadbalancer_id = request_data.get('loadbalancer_id', 'LOADBALANCER')
-                
-                print(f"Received BATCH_REQUEST with correlation_id: {correlation_id}")
-                
-                # Record timestamp when scheduler receives the batch
-                scheduler_received_time = datetime.now(tz=timezone(TIME_ZONE))
-                scheduler_received_time_iso = scheduler_received_time.isoformat()
-                
-                # Process batch (reuse run_service_async_batch logic)
-                services = []
-                requests_data = []
-                results = []
-                temp_time = datetime.now(tz=timezone(TIME_ZONE))
-                
-                for req_data in batch_data['requests']:
+
+                print(f"Received BATCH_REQUEST with correlation_id: {correlation_id} "
+                      f"({len(batch_data.get('requests', []))} requests) — enqueueing")
+
+                scheduler_received_time_iso = datetime.now(tz=timezone(TIME_ZONE)).isoformat()
+                enqueued = 0
+                skipped_results = []
+
+                for req_data in batch_data.get('requests', []):
                     try:
                         service_id = req_data.get('serviceID')
                         if not service_id:
-                            results.append({'error': 'Missing serviceID'})
+                            skipped_results.append({'error': 'Missing serviceID'})
                             continue
-                            
                         service = Services.objects.get(id=service_id)
-                        
                         if not service.active:
-                            results.append({'error': f'Service {service_id} is disabled'})
+                            skipped_results.append({'error': f'Service {service_id} is disabled'})
                             continue
-                        
-                        # Add scheduler received time to request data (preserve lb_received_time if present)
                         req_data['_scheduler_received_time'] = scheduler_received_time_iso
-                        # lb_received_time should already be in req_data from load balancer
-                        
-                        services.append(service)
-                        requests_data.append(req_data)
-                        
-                        results.append({
-                            'status': 'pending',
-                            'message': f'Service {service_id} queued for processing',
-                            'service_name': service.name
+                        _request_queue.put({
+                            'service': service,
+                            'req_data': req_data,
+                            'correlation_id': correlation_id,
+                            'loadbalancer_id': loadbalancer_id,
+                            'received_time_iso': scheduler_received_time_iso,
                         })
-                        
+                        enqueued += 1
                     except ObjectDoesNotExist:
-                        results.append({'error': f'Service {service_id} not found'})
+                        skipped_results.append({'error': f'Service {service_id} not found'})
                     except Exception as e:
-                        results.append({'error': f'Failed to process request: {str(e)}'})
-                
-                # Process the batch synchronously to get actual results
-                ilp_solve_time = None
-                if services:
-                    print(f"Starting ILP processing for {len(services)} services...")
+                        skipped_results.append({'error': f'Failed to enqueue request: {str(e)}'})
+
+                print(f"[BATCH_REQUEST] enqueued {enqueued} requests "
+                      f"(skipped {len(skipped_results)}), queue depth={_request_queue.qsize()}")
+
+                # If every request was skipped (all invalid), reply immediately so
+                # the LB is not left waiting indefinitely.
+                if enqueued == 0 and skipped_results:
                     try:
-                        # Measure ILP solve time
-                        import time as time_module
-                        ilp_start_time = time_module.time()
-                        
-                        # Call request_handler directly (not in a thread) to get results
-                        batch_results = request_handler(requests_data, services, temp_time, False)
-                        
-                        ilp_end_time = time_module.time()
-                        ilp_solve_time = ilp_end_time - ilp_start_time
-                        
-                        print(f"ILP processing completed in {ilp_solve_time:.3f}s. Results: {batch_results}")
-                        
-                        # Update results with actual processing results
-                        if batch_results and len(batch_results) > 0:
-                            results = batch_results
-                            processed_count = len([r for r in results if 'error' not in r])
-                        else:
-                            processed_count = 0
-                    except Exception as e:
-                        print(f"Error in ILP processing: {e}")
-                        results = [{'error': f'ILP processing failed: {str(e)}'} for _ in services]
-                        processed_count = 0
-                else:
-                    processed_count = 0
-                
-                # Send response back to load balancer on its specific topic
-                response_payload = {
-                    'correlation_id': correlation_id,
-                    'status': 'success',
-                    'batch_size': len(batch_data['requests']),
-                    'processed': processed_count,
-                    'ilp_solve_time': ilp_solve_time,  # Include ILP solve time
-                    'results': results
-                }
-                mqtt_client.publish(
-                    topic=loadbalancer_id,
-                    payload="BATCH_RESPONSE:" + json.dumps(response_payload),
-                    qos=2
-                )
-                print(f"Published BATCH_RESPONSE to {loadbalancer_id}")
-                
+                        error_response = {
+                            'correlation_id': correlation_id,
+                            'status': 'success',
+                            'batch_size': len(batch_data.get('requests', [])),
+                            'processed': 0,
+                            'ilp_solve_time': None,
+                            'results': skipped_results,
+                        }
+                        mqtt_client.publish(
+                            topic=loadbalancer_id,
+                            payload="BATCH_RESPONSE:" + json.dumps(error_response),
+                            qos=2,
+                        )
+                    except Exception:
+                        pass
+
             except Exception as e:
-                print(f"Error processing BATCH_REQUEST: {e}")
-                # Try to send error response if we have correlation_id
+                print(f"Error parsing BATCH_REQUEST: {e}")
                 try:
-                    error_response = {
-                        'correlation_id': correlation_id if 'correlation_id' in locals() else 'unknown',
-                        'status': 'error',
-                        'error': str(e)
-                    }
                     mqtt_client.publish(
                         topic=loadbalancer_id if 'loadbalancer_id' in locals() else 'LOADBALANCER',
-                        payload="BATCH_RESPONSE:" + json.dumps(error_response),
-                        qos=2
+                        payload="BATCH_RESPONSE:" + json.dumps({
+                            'correlation_id': correlation_id if 'correlation_id' in locals() else 'unknown',
+                            'status': 'error',
+                            'error': str(e),
+                        }),
+                        qos=2,
                     )
-                except:
+                except Exception:
                     pass
         
         # Existing message handlers
@@ -546,7 +664,6 @@ def on_message(mqtt_client, userdata, msg):
                 run_vars = json.loads(ref_stats_json)
                 service_id_str = run_vars.get("service")
                 if service_id_str:
-                    from developers.models import Services
                     reference_stats = {
                         "memory_usage": run_vars.get("memory_usage"),
                         "cpu_usage": run_vars.get("cpu_usage"),
@@ -1618,13 +1735,20 @@ def _fetch_predicted_runtimes_mqtt_batch(provider_services_map, timeout=7):
     return results
 
 
-def get_predicted_runtimes_db_pass(provider, services):
+def get_predicted_runtimes_db_pass(provider, services, run_time_map=None):
     """
-    First pass: fill predicted_runtimes from Job history; collect services needing provider prediction.
-    Returns: (predicted_runtimes dict, services_needing_prediction list of (service_id, service)).
+    First pass: fill predicted_runtimes from Job history; collect services needing prediction.
+
+    run_time_map: optional pre-fetched {(provider_id, service_id): run_time} built by
+                  Job.bulk_latest_run_time().  When supplied, no per-row ORM calls are made
+                  (fast path — one round-trip for the entire batch instead of N×M).
+
+    Returns: (predicted_runtimes dict, services_needing_prediction list, timing dict).
     """
     predicted_runtimes = {}
     services_needing_prediction = []
+    job_latest_run_query_s = 0.0
+    job_latest_run_calls = 0
     for service in services:
         try:
             service_id = None
@@ -1634,21 +1758,46 @@ def get_predicted_runtimes_db_pass(provider, services):
                 service_id = service[1].id
             if service_id is None:
                 continue
-            try:
-                latest_run_time = Job.get_latest_run_time(provider.id, service_id)
-                predicted_runtimes[service_id] = latest_run_time
-            except Job.DoesNotExist:
-                services_needing_prediction.append((service_id, service))
+
+            if run_time_map is not None:
+                val = run_time_map.get((provider.id, service_id))
+                if val is not None:
+                    predicted_runtimes[service_id] = val
+                else:
+                    services_needing_prediction.append((service_id, service))
+            else:
+                try:
+                    tq = time.time()
+                    latest_run_time = Job.get_latest_run_time(provider.id, service_id)
+                    job_latest_run_query_s += time.time() - tq
+                    job_latest_run_calls += 1
+                    predicted_runtimes[service_id] = latest_run_time
+                except Job.DoesNotExist:
+                    services_needing_prediction.append((service_id, service))
         except Exception:
             pass
-    return predicted_runtimes, services_needing_prediction
+    timings = {
+        "job_latest_run_query_s": job_latest_run_query_s,
+        "job_latest_run_calls": job_latest_run_calls,
+    }
+    return predicted_runtimes, services_needing_prediction, timings
 
 
-def get_predicted_runtimes_cache_pass(provider, services, predicted_runtimes, default_runtime=1000):
+def get_predicted_runtimes_cache_pass(provider, services, predicted_runtimes,
+                                      default_runtime=1000, pull_time_map=None):
     """
     Second pass: adjust predicted_runtimes for cache state (pull time).
     Mutates predicted_runtimes in place.
+
+    pull_time_map: optional pre-fetched {(provider_id, service_id): pull_time} built by
+                   Job.bulk_latest_pull_time().  When supplied, no per-row ORM calls are made.
+
+    Returns a timing breakdown dict with cache_probe_s, pull_time_query_s, pull_time_calls.
     """
+    cache_probe_s = 0.0
+    pull_time_query_s = 0.0
+    pull_time_calls = 0
+
     for service in services:
         try:
             service_id = None
@@ -1658,27 +1807,50 @@ def get_predicted_runtimes_cache_pass(provider, services, predicted_runtimes, de
                 service_id = service[1].id
             if service_id is None or service_id not in predicted_runtimes:
                 continue
-            if provider.is_service_cached(service_id):
+            tp = time.time()
+            cached = provider.is_service_cached(service_id)
+            cache_location = None
+            if cached:
                 cache_location = provider.get_cache_location(service_id)
+            cache_probe_s += time.time() - tp
+            if cached:
                 if cache_location == "memory":
                     continue
                 if cache_location == "disk":
                     try:
-                        pull_time = Job.get_latest_pull_time(provider.id, service_id)
+                        if pull_time_map is not None:
+                            pull_time = pull_time_map.get((provider.id, service_id))
+                            pull_time_calls += 1
+                        else:
+                            t_pull = time.time()
+                            pull_time = Job.get_latest_pull_time(provider.id, service_id)
+                            pull_time_query_s += time.time() - t_pull
+                            pull_time_calls += 1
                         if pull_time:
                             predicted_runtimes[service_id] += int(pull_time * 0.2)
                     except Exception:
                         pass
             else:
                 try:
-                    pull_time = Job.get_latest_pull_time(provider.id, service_id)
+                    if pull_time_map is not None:
+                        pull_time = pull_time_map.get((provider.id, service_id))
+                        pull_time_calls += 1
+                    else:
+                        t_pull = time.time()
+                        pull_time = Job.get_latest_pull_time(provider.id, service_id)
+                        pull_time_query_s += time.time() - t_pull
+                        pull_time_calls += 1
                     if pull_time:
                         predicted_runtimes[service_id] += pull_time
                 except Exception:
                     pass
         except Exception:
             pass
-    return predicted_runtimes
+    return {
+        "cache_probe_s": cache_probe_s,
+        "pull_time_query_s": pull_time_query_s,
+        "pull_time_calls": pull_time_calls,
+    }
 
 
 def _build_prediction_input(provider, services_needing_prediction, service_rows_by_id=None):
@@ -1734,7 +1906,9 @@ def get_predicted_runtimes(provider, services):
     """
     DEFAULT_RUNTIME = 1000
     print("Entering get_predicted_runtimes")
-    predicted_runtimes, services_needing_prediction = get_predicted_runtimes_db_pass(provider, services)
+    predicted_runtimes, services_needing_prediction, _db_timings = get_predicted_runtimes_db_pass(
+        provider, services
+    )
     if services_needing_prediction:
         pred_input = _build_prediction_input(provider, services_needing_prediction)
         try:
@@ -1814,21 +1988,63 @@ def build_cost_matrix(providers, services):
     :mod:`providers.prediction`.
     """
     DEFAULT_RUNTIME = 1000
-    print("Entering build_cost_matrix")
+    t0 = time.time()
+    n_providers = len(providers)
+    n_services = len(services)
+    _profile_note(
+        "build_cost_matrix-start",
+        n_providers=n_providers,
+        n_services=n_services,
+        matrix_entries=n_providers * n_services,
+    )
     cost_matrix = {}
     indexed_services = list(enumerate(services))
     compatible_services = services
 
-    # First pass: DB per provider and collect providers that need a prediction
+    # Bulk-fetch run_time and pull_time for ALL (provider, service) pairs in two queries
+    # instead of N_providers × N_services individual round-trips.
+    t_bulk = time.time()
+    provider_ids = [p.id for p in providers]
+    service_ids = list({
+        getattr(s, "id", None) or (s[1].id if isinstance(s, tuple) and len(s) == 2 else None)
+        for s in services
+    } - {None})
+    run_time_map  = Job.bulk_latest_run_time(provider_ids, service_ids)
+    pull_time_map = Job.bulk_latest_pull_time(provider_ids, service_ids)
+    _prof(
+        "build_cost_matrix-bulk_prefetch",
+        t_bulk,
+        n_run_time_rows=len(run_time_map),
+        n_pull_time_rows=len(pull_time_map),
+        n_provider_ids=len(provider_ids),
+        n_service_ids=len(service_ids),
+    )
+
+    # First pass: distribute pre-fetched run_times per provider — pure dict lookups.
+    t_db_outer = time.time()
     per_provider_runtimes = {}
     provider_services_map = {}
     for provider in providers:
-        predicted_runtimes, services_needing_prediction = get_predicted_runtimes_db_pass(provider, compatible_services)
+        predicted_runtimes, services_needing_prediction, t_db_inner = (
+            get_predicted_runtimes_db_pass(provider, compatible_services,
+                                           run_time_map=run_time_map)
+        )
         per_provider_runtimes[provider] = predicted_runtimes
         if services_needing_prediction:
             provider_services_map[provider] = services_needing_prediction
+    t_db_elapsed = time.time() - t_db_outer
+    _prof(
+        "build_cost_matrix-db_pass",
+        t_db_outer,
+        n_providers=n_providers,
+        providers_needing_prediction=len(provider_services_map),
+        job_latest_run_query_s=0.0,
+        job_latest_run_calls=0,
+        db_pass_non_orm_s=t_db_elapsed,
+    )
 
     # Pre-fetch all Services rows once for the union of ids needing prediction
+    t_prefetch = time.time()
     service_rows_by_id = {}
     if provider_services_map:
         all_ids = {
@@ -1848,28 +2064,68 @@ def build_cost_matrix(providers, services):
                     "reference_stats",
                 )
             }
+    _prof("build_cost_matrix-prefetch_service_rows", t_prefetch,
+          ids_fetched=len(service_rows_by_id))
 
     # Run the strategy once per provider using the pre-fetched rows
+    t_predict_total = time.time()
+    sum_predict_strategy_s = 0.0
+    sum_predict_merge_defaults_s = 0.0
+    sum_cache_probe_s = 0.0
+    sum_pull_query_s = 0.0
+    sum_pull_calls = 0
+    sum_subdict_s = 0.0
+
     for provider in providers:
         predicted_runtimes = per_provider_runtimes[provider]
         if provider in provider_services_map:
             pred_input = _build_prediction_input(
                 provider, provider_services_map[provider], service_rows_by_id
             )
+            t_strat = time.time()
             try:
                 output = predict_runtimes(pred_input)
                 runtimes = output.runtimes_ms
             except Exception as e:
                 print(f"[predict] strategy raised {e}; falling back to default")
                 runtimes = {}
+            strat_elapsed = time.time() - t_strat
+            sum_predict_strategy_s += strat_elapsed
+            _prof(
+                "build_cost_matrix-predict_strategy_provider",
+                t_strat,
+                provider=provider.user_id,
+                strategy_segment_s=strat_elapsed,
+            )
+
+            t_merge = time.time()
+            n_predicted = 0
+            n_defaulted = 0
             for service_id, _ in provider_services_map[provider]:
                 val = runtimes.get(service_id)
                 if val is not None and val > 0:
                     predicted_runtimes[service_id] = int(val)
+                    n_predicted += 1
                 else:
                     predicted_runtimes[service_id] = DEFAULT_RUNTIME
-        get_predicted_runtimes_cache_pass(provider, compatible_services, predicted_runtimes, DEFAULT_RUNTIME)
+                    n_defaulted += 1
+            sum_predict_merge_defaults_s += time.time() - t_merge
+            _profile_note(
+                "build_cost_matrix-merge_defaults_provider",
+                provider=provider.user_id,
+                predicted=n_predicted,
+                defaulted=n_defaulted,
+            )
 
+        ctim = get_predicted_runtimes_cache_pass(
+            provider, compatible_services, predicted_runtimes, DEFAULT_RUNTIME,
+            pull_time_map=pull_time_map,
+        )
+        sum_cache_probe_s += ctim["cache_probe_s"]
+        sum_pull_query_s += ctim["pull_time_query_s"]
+        sum_pull_calls += int(ctim["pull_time_calls"])
+
+        t_sub = time.time()
         subdict = {}
         for i, svc in indexed_services:
             service_id = getattr(svc, "id", None)
@@ -1879,10 +2135,44 @@ def build_cost_matrix(providers, services):
             else:
                 print(f"Warning: Could not get ID from service object: {svc}")
                 subdict[(i, svc)] = float("inf")
+        sum_subdict_s += time.time() - t_sub
         cost_matrix[provider] = subdict
 
-    print_cost_matrix(cost_matrix)
-    print("Exiting build_cost_matrix")
+    _prof(
+        "build_cost_matrix-predict_all_providers",
+        t_predict_total,
+        n_providers=n_providers,
+        predict_strategy_s=sum_predict_strategy_s,
+        predict_merge_defaults_s=sum_predict_merge_defaults_s,
+        cache_probe_s=sum_cache_probe_s,
+        pull_time_query_s=sum_pull_query_s,
+        pull_time_calls=sum_pull_calls,
+        subdict_build_s=sum_subdict_s,
+        cache_python_overhead_s=max(
+            0.0,
+            (time.time() - t_predict_total)
+            - sum_predict_strategy_s
+            - sum_predict_merge_defaults_s
+            - sum_cache_probe_s
+            - sum_pull_query_s
+            - sum_subdict_s,
+        ),
+    )
+
+    # Only print cost matrix for small batches to avoid log flood (time this explicitly).
+    if n_services <= 20:
+        t_print_m = time.time()
+        print_cost_matrix(cost_matrix)
+        _prof("build_cost_matrix-print_matrix", t_print_m, n_services=n_services)
+    else:
+        _profile_note(
+            "build_cost_matrix-skipping_print_matrix",
+            reason=f"n_services={n_services}>20",
+        )
+
+    _prof("build_cost_matrix-total", t0,
+          n_providers=n_providers, n_services=n_services,
+          matrix_entries=n_providers * n_services)
     return cost_matrix
 
 # NOTE This is for when services would have requirements. Function unused for now.
@@ -1897,11 +2187,32 @@ def get_suitable_providers(services):
 
 # FIX figure out the right way to calculate delays
 def build_delay_dict(providers):
-    print("Entering build_delay_dict")
+    t0 = time.time()
+    _profile_note("build_delay_dict-start", n_providers=len(providers))
     delay = {}
+    sum_get_last_start_s = 0.0
+    sum_calculate_delay_s = 0.0
+
+    # Bulk-fetch the latest start_time for all providers in ONE query instead of
+    # one round-trip per provider (~60ms × N_providers saved).
+    t_bulk = time.time()
+    provider_id_list = [p.id for p in providers]
+    bulk_rows = (
+        Job.objects
+        .filter(provider_id__in=provider_id_list)
+        .values('provider_id')
+        .annotate(last_start=Max('start_time'))
+    )
+    last_start_map = {r['provider_id']: r['last_start'] for r in bulk_rows}
+    _prof("build_delay_dict-bulk_prefetch", t_bulk,
+          n_providers=len(providers), n_rows=len(last_start_map))
+
+    t_loop = time.time()
     for provider in providers:
         try:
-            time_of_last_startjob = provider.get_last_start_time()
+            t_gl = time.time()
+            time_of_last_startjob = last_start_map.get(provider.id)
+            sum_get_last_start_s += time.time() - t_gl
             print(f"Time of last start job for {provider.user_id}: {str(time_of_last_startjob)}")
             
             # Ensure proper type for datetime calculation
@@ -1910,7 +2221,9 @@ def build_delay_dict(providers):
                 delay[provider] = 0
             elif isinstance(time_of_last_startjob, datetime):
                 try:
+                    t_cd = time.time()
                     delay[provider] = provider.calculate_current_delay(time_of_last_startjob)
+                    sum_calculate_delay_s += time.time() - t_cd
                     print(f"Delay for {provider.user_id}: {delay[provider]}")
                 except Exception as e:
                     print(f"Error calculating delay: {str(e)}")
@@ -1926,7 +2239,9 @@ def build_delay_dict(providers):
                         # Django format with timezone
                         dt = datetime.strptime(time_of_last_startjob, "%Y-%m-%d %H:%M:%S.%f%z")
                     
+                    t_cd = time.time()
                     delay[provider] = provider.calculate_current_delay(dt)
+                    sum_calculate_delay_s += time.time() - t_cd
                     print(f"Delay for {provider.user_id} after conversion: {delay[provider]}")
                 except Exception as e:
                     print(f"Error converting datetime string: {str(e)}")
@@ -1945,9 +2260,23 @@ def build_delay_dict(providers):
             except Exception as retry_error:
                 print(f"Error after reset for provider {provider.user_id} - {str(retry_error)}")
                 delay[provider] = 0  # Ensure we always have a delay value
-    
+
+    _prof(
+        "build_delay_dict-provider_loop",
+        t_loop,
+        n_providers=len(providers),
+        get_last_start_time_s=sum_get_last_start_s,
+        calculate_current_delay_s=sum_calculate_delay_s,
+        loop_remainder_s=max(
+            0.0,
+            time.time() - t_loop - sum_get_last_start_s - sum_calculate_delay_s,
+        ),
+    )
+
+    t_print_final = time.time()
     print(f"Delay dictionary: {delay}")
-    print("Exiting build_delay_dict")
+    _prof("build_delay_dict-print_final_dict_summary", t_print_final)
+    _prof("build_delay_dict-total", t0, n_providers=len(providers))
     return delay
 
 def process_assignments(assignment, cost_matrix, request_data_map=None):
@@ -1959,11 +2288,13 @@ def process_assignments(assignment, cost_matrix, request_data_map=None):
         cost_matrix: Cost matrix for ILP
         request_data_map: Optional dict mapping service.id to request data (for timestamps)
     """
-    print("\nEntering process_assignments")
-    jobs_to_send = []  # Store jobs to send after transaction
-    assigned_time = datetime.now(tz=timezone(TIME_ZONE))  # Time when jobs are assigned to providers
-    
-    # Database operations inside transaction
+    t0 = time.time()
+    n_assignments = len(assignment)
+    _profile_note("process_assignments-start", n_assignments=n_assignments)
+    jobs_to_send = []
+    assigned_time = datetime.now(tz=timezone(TIME_ZONE))
+
+    t_tx1 = time.time()
     with transaction.atomic():
         for key, provider in assignment.items():
             # Extract service from the assignment key
@@ -2082,21 +2413,23 @@ def process_assignments(assignment, cost_matrix, request_data_map=None):
             })
 
     # Send jobs to providers after the transaction has committed
+    _prof("process_assignments-tx1_job_create", t_tx1, n_jobs=n_assignments)
+
+    t_send = time.time()
+    n_sent = 0
+    n_send_errors = 0
     for job_info in jobs_to_send:
         job = job_info['job']
         provider = job_info['provider']
         service = job_info['service']
-        
+
         try:
-            # Create a dummy data structure similar to what request_handler expects
             job_data = {
-                'runMultipleInvocations': False,  # Default values
+                'runMultipleInvocations': False,
                 'numberOfInvocations': 1,
                 'chained': False,
                 'input': 'None'
             }
-            
-            # Send the job to the provider
             print(f"Sending job {job.id} to provider {provider.user_id}")
             publish_to_topic_mqtt(
                 job_data['runMultipleInvocations'],
@@ -2108,21 +2441,24 @@ def process_assignments(assignment, cost_matrix, request_data_map=None):
                 service.developer,
                 job.id
             )
-            
-            # Refresh and save job
             job.refresh_from_db()
             job.save()
             print(f"Job {job.id} successfully sent to provider {provider.user_id}")
+            n_sent += 1
         except Exception as e:
             print(f"Failed to send job {job.id} to provider {provider.user_id}: {str(e)}")
-            # Don't raise exception - this job will be recovered by the recovery process
+            n_send_errors += 1
 
-    print("Exiting process_assignments\n")
+    _prof("process_assignments-mqtt_publish_jobs", t_send,
+          n_sent=n_sent, n_send_errors=n_send_errors)
+    _prof("process_assignments-total", t0,
+          n_assignments=n_assignments, n_sent=n_sent, n_send_errors=n_send_errors)
 
-    # Publish ILP_DONE to ROTATION topic after processing assignments
-    mqtt_client = get_mclient()
-    mqtt_client.publish(topic="ROTATION", payload="ILP_DONE", qos=2)
-    print("Published ILP_DONE to ROTATION topic")
+    mc = get_mclient()
+    if mc:
+        mc.publish(topic="ROTATION", payload="ILP_DONE", qos=2)
+        _profile_note("process_assignments", mqtt_note="published ILP_DONE to ROTATION")
+
 
 def find_providers(services, jobs=None, request_data_map=None):
     """
@@ -2133,78 +2469,110 @@ def find_providers(services, jobs=None, request_data_map=None):
         jobs: Optional jobs parameter (legacy)
         request_data_map: Optional dict mapping service.id to request data (for timestamps)
     """
-    print("Debug: Entering find_providers")
-    
-    # Import here to avoid circular imports
-    # from providers.scheduling_algorithms import get_scheduler
-    # from providers.experiment_framework import experiment_runner
-    
+    t_fp_start = time.time()
+    n_services = len(services) if isinstance(services, list) else 1
+    _profile_note("find_providers-start", n_services=n_services)
+
     # Retry logic for database lock contention
     max_retries = 3
     retry_count = 0
-    
+
     while retry_count < max_retries:
         try:
-            # Wrap the entire process in a transaction to keep providers locked
-            with transaction.atomic():
-                if not isinstance(services, list):
-                    services = [services]
+            if not isinstance(services, list):
+                services = [services]
 
-                # 1. Get Suitable Providers (now locks are kept until this transaction ends)
+            # ------------------------------------------------------------------
+            # Transaction 1 (short): read provider state, build cost/delay data.
+            # Locks are released before ILP solve so MQTT callbacks can write DB.
+            # ------------------------------------------------------------------
+            t_tx1_start = time.time()
+            with transaction.atomic():
                 suitable_providers = get_ready_providers()
+                t_pr = time.time()
                 for provider in suitable_providers:
                     print(provider)
+                _prof(
+                    "find_providers-print_ready_providers_rows",
+                    t_pr,
+                    n_providers=len(suitable_providers),
+                )
                 if not suitable_providers:
                     print("No ready providers available.")
                     return None
+                _prof("find_providers-get_ready_providers", t_tx1_start,
+                      n_providers=len(suitable_providers))
 
-                # 2. Build Cost Matrix
+                t_cm = time.time()
                 cost_matrix = build_cost_matrix(suitable_providers, services)
+                _prof("find_providers-build_cost_matrix", t_cm,
+                      n_providers=len(suitable_providers), n_services=len(services))
 
-                # 3. Build Delay Dict
+                t_dd = time.time()
                 delay = build_delay_dict(suitable_providers)
+                _prof("find_providers-build_delay_dict", t_dd,
+                      n_providers=len(suitable_providers))
 
-                # 4. Get min cost provider by calling the ILP solver
-                # Extract the list of (index, service) tuples as jobs for the minimize function
-                indexed_services = [(i, svc) for i, svc in enumerate(services)]
-                workers = list(cost_matrix.keys())
-                
-                try:
-                    # Call minimize_total_cost with proper arguments
-                    assignment, total_cost = minimize_total_cost(suitable_providers, indexed_services, cost_matrix, delay)
-                    main_processing_succeeded = False  # Initialize flag
-                    
-                    if assignment is None:
-                        print("Warning: No optimal solution found")
-                        return None
-                        
-                    # 5. Process assignments - Invoke providers and update job status
+            _prof("find_providers-tx1_total", t_tx1_start,
+                  n_providers=len(suitable_providers), n_services=len(services))
+            # provider row locks released here
+
+            # ------------------------------------------------------------------
+            # ILP solve — pure CPU, no DB, runs outside any transaction.
+            # ACK/READY/stats from providers can now update the DB freely.
+            # ------------------------------------------------------------------
+            indexed_services = [(i, svc) for i, svc in enumerate(services)]
+            n_vars = len(suitable_providers) * len(services)
+            t_ilp = time.time()
+            _profile_note(
+                "find_providers-ilp_start",
+                n_providers=len(suitable_providers),
+                n_services=len(services),
+                n_binary_vars=n_vars,
+            )
+
+            try:
+                assignment, total_cost = minimize_total_cost(
+                    suitable_providers, indexed_services, cost_matrix, delay
+                )
+                _prof("find_providers-ilp_solve", t_ilp,
+                      n_vars=n_vars, total_cost=total_cost)
+                main_processing_succeeded = False
+
+                if assignment is None:
+                    print("Warning: No optimal solution found")
+                    return None
+
+                # ------------------------------------------------------------------
+                # Transaction 2 (short): write assignments, create Job rows.
+                # ------------------------------------------------------------------
+                t_tx2 = time.time()
+                with transaction.atomic():
                     process_assignments(assignment, cost_matrix, request_data_map)
-                    main_processing_succeeded = True  # Flag to prevent fallback from running
-                    print(f"DEBUG: Main processing succeeded, flag set to: {main_processing_succeeded}")
-                    
-                    # If jobs were provided, map job IDs to provider assignments
-                    if jobs is not None:
-                        # Create mappings from index and service to job
-                        job_mapping = {}
-                        for i, (service, job) in enumerate(zip(services, jobs)):
-                            job_mapping[(i, service)] = job
-                        
-                        # Create provider assignments
-                        provider_assignments = {}
-                        for (i, service), provider in assignment.items():
-                            if (i, service) in job_mapping:
-                                job = job_mapping[(i, service)]
-                                provider_assignments[job.id] = (provider, delay.get(provider, 0))
-                        return provider_assignments
-                    
-                    # Return the original assignment format if no jobs provided
-                    return assignment
-                    
-                except Exception as ilp_error:
-                    print(f"Error in ILP solver: {str(ilp_error)}")
-                    # This will be caught by the outer exception handler
-                    raise
+                _prof("find_providers-tx2_process_assignments", t_tx2,
+                      n_assignments=len(assignment))
+                main_processing_succeeded = True
+                _prof("find_providers-total", t_fp_start,
+                      n_services=len(services), n_providers=len(suitable_providers),
+                      n_vars=n_vars)
+                print(f"DEBUG: Main processing succeeded, flag set to: {main_processing_succeeded}")
+
+                if jobs is not None:
+                    job_mapping = {}
+                    for i, (service, job) in enumerate(zip(services, jobs)):
+                        job_mapping[(i, service)] = job
+                    provider_assignments = {}
+                    for (i, service), provider in assignment.items():
+                        if (i, service) in job_mapping:
+                            job = job_mapping[(i, service)]
+                            provider_assignments[job.id] = (provider, delay.get(provider, 0))
+                    return provider_assignments
+
+                return assignment
+
+            except Exception as ilp_error:
+                print(f"Error in ILP solver: {str(ilp_error)}")
+                raise
                     
         except Exception as e:
             # Check if this is a database lock contention error
