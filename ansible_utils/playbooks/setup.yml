@@ -105,6 +105,11 @@
       command: "{{ project_dir }}/.venv/bin/pip install psycopg2-binary --no-input --index-url https://pypi.org/simple"
       become_user: "{{ ansible_user }}"
 
+    - name: Install loadbalancer pip requirements (control node)
+      tags: [debug, debug-django]
+      command: "{{ project_dir }}/.venv/bin/pip install -r {{ project_dir }}/loadbalancer/requirements.txt --no-input --index-url https://pypi.org/simple"
+      become_user: "{{ ansible_user }}"
+
     - name: Kill any existing Django server
       tags: [debug, debug-django]
       shell: pkill -f "[m]anage.py runserver" || true
@@ -370,89 +375,3 @@
       async: 10
       poll: 0
       when: provider_process.stdout == ""
-
-- name: Start Load Balancer
-  hosts: managed
-  become: yes
-  tags: experiment
-  vars_files:
-    - secrets.yml
-  vars:
-    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
-    lb_host: "colva2.dashlab.in"
-    lb_url: "http://colva2.dashlab.in:9001"
-  tasks:
-    - name: Check if Load Balancer Script is running
-      shell: "pgrep -f 'loadbalancer_with_logging' || true"
-      register: lb_process
-      delegate_to: "{{ lb_host }}"
-      run_once: true
-
-    - name: Start Load Balancer Script
-      shell: |
-        nohup {{ project_dir }}/.venv/bin/uvicorn loadbalancer_with_logging:app --host 0.0.0.0 --port 9001 > {{ project_dir }}/lb.log 2>&1 &
-      args:
-        executable: /bin/bash
-        chdir: "{{ project_dir }}/loadbalancer"
-      async: 10
-      poll: 0
-      when: lb_process.stdout == ""
-      delegate_to: "{{ lb_host }}"
-      run_once: true
-
-    - name: Wait for Load Balancer to become healthy
-      uri:
-        url: "{{ lb_url }}/status"
-        return_content: yes
-      register: lb_health
-      retries: 10
-      delay: 3
-      until: lb_health.status == 200
-      delegate_to: localhost
-      run_once: true
-
-- name: Run Experiments
-  hosts: localhost
-  connection: local
-  become: no
-  tags: experiment
-  vars_files:
-    - secrets.yml
-  vars:
-    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
-    testbed_dir: "{{ project_dir }}/testbed"
-    lb_url: "http://colva2.dashlab.in:9001"
-    scenario: "baseline"
-    iterations: 1
-    research_mode: false
-    seed: ""
-  tasks:
-    - name: Install testbed pip requirements
-      command: "{{ project_dir }}/.venv/bin/pip install -r {{ testbed_dir }}/requirements.txt --no-input --index-url https://pypi.org/simple"
-
-    - name: Build testbed command
-      set_fact:
-        testbed_cmd: >-
-          {{ project_dir }}/.venv/bin/python main.py
-          --scenario {{ scenario }}
-          --load-balancer-url {{ lb_url }}
-          --iterations {{ iterations }}
-          {% if research_mode | bool %} --research-mode{% endif %}
-          {% if seed | string | length > 0 %} --seed {{ seed }}{% endif %}
-
-    - name: Run testbed experiments via load balancer
-      command: "{{ testbed_cmd }}"
-      args:
-        chdir: "{{ testbed_dir }}"
-      register: testbed_run
-
-    - name: Print testbed output
-      debug:
-        msg: |
-          STDOUT:
-          {{ testbed_run.stdout | default('') }}
-          STDERR:
-          {{ testbed_run.stderr | default('') }}
-          RC:
-          {{ testbed_run.rc }}
-      when: testbed_run is defined

@@ -49,14 +49,14 @@
           delegate_to: "{{ item }}"
           loop: "{{ groups['control'] }}"
 
-        - name: Sync repository on control node
-          git:
-            repo: "{{ repo_url }}"
-            dest: "/home/{{ hostvars[item].ansible_user }}/deploy/Serverless_Scheduler"
-            version: main
-            force: yes
-          delegate_to: "{{ item }}"
-          loop: "{{ groups['control'] }}"
+        # - name: Sync repository on control node
+        #   git:
+        #     repo: "{{ repo_url }}"
+        #     dest: "/home/{{ hostvars[item].ansible_user }}/deploy/Serverless_Scheduler"
+        #     version: main
+        #     force: yes
+        #   delegate_to: "{{ item }}"
+        #   loop: "{{ groups['control'] }}"
 
         - name: Ensure MQTT settings in control node project .env
           blockinfile:

@@ -1,0 +1,166 @@
+---
+- name: Start Load Balancer
+  hosts: localhost
+  connection: local
+  become: no
+  tags: experiment
+  vars_files:
+    - secrets.yml
+  vars:
+    local_user: "{{ lookup('env', 'USER') }}"
+    local_project_dir: "/home/{{ local_user }}/Serverless_Scheduler"
+    lb_project_dir: "/home/{{ lb_ssh_user }}/deploy/Serverless_Scheduler"
+    lb_host: "colva2.dashlab.in"
+    lb_url: "http://colva2.dashlab.in:9001"
+    lb_ssh_user: "peercompute"
+  tasks:
+    - name: Verify passwordless SSH access to load balancer host
+      command: >-
+        ssh -o BatchMode=yes -o ConnectTimeout=8
+        {{ lb_ssh_user }}@{{ lb_host }} "echo ssh_ok"
+      register: lb_ssh_check
+      changed_when: false
+      failed_when: false
+      become: false
+      delegate_to: localhost
+      run_once: true
+
+    - name: Fail with SSH key setup instructions when SSH access is missing
+      fail:
+        msg: >-
+          Passwordless SSH to {{ lb_ssh_user }}@{{ lb_host }} is required for delegated experiment tasks.
+          Run this once from the Ansible runner host:
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519 (if key missing),
+          then ssh-copy-id {{ lb_ssh_user }}@{{ lb_host }}.
+          Verify with: ssh -o BatchMode=yes {{ lb_ssh_user }}@{{ lb_host }} "echo ok"
+      when: lb_ssh_check.rc != 0
+      become: false
+      delegate_to: localhost
+      run_once: true
+
+    - name: Check if Load Balancer Script is running
+      shell: "pgrep -f 'loadbalancer_with_logging' || true"
+      register: lb_process
+      become: false
+      delegate_to: "{{ lb_host }}"
+
+    - name: Check current load balancer health before restart decision
+      uri:
+        url: "{{ lb_url }}/status"
+        method: GET
+        timeout: 5
+      register: lb_prehealth
+      failed_when: false
+      changed_when: false
+      become: false
+      delegate_to: localhost
+
+    - name: Install loadbalancer pip requirements on lb host
+      command: "{{ lb_project_dir }}/.venv/bin/pip install -r {{ lb_project_dir }}/loadbalancer/requirements.txt --no-input --index-url https://pypi.org/simple"
+      become: false
+      delegate_to: "{{ lb_host }}"
+
+    - name: Check if avg_job_times.json exists on current node
+      stat:
+        path: "{{ local_project_dir }}/avg_job_times.json"
+      register: avg_job_times_local
+      become: false
+      delegate_to: localhost
+
+    - name: Sync avg_job_times.json to lb host when present locally
+      copy:
+        src: "{{ local_project_dir }}/avg_job_times.json"
+        dest: "{{ lb_project_dir }}/avg_job_times.json"
+        mode: "0644"
+      become: false
+      delegate_to: "{{ lb_host }}"
+      when: avg_job_times_local.stat.exists
+
+    - name: Stop stale load balancer process when unhealthy
+      shell: "pkill -f 'uvicorn loadbalancer_with_logging:app' || true"
+      failed_when: false
+      changed_when: false
+      become: false
+      delegate_to: "{{ lb_host }}"
+      when: lb_process.stdout != "" and (lb_prehealth.status | default(-1)) != 200
+
+    - name: Start Load Balancer Script
+      shell: |
+        source "{{ lb_project_dir }}/.env"
+        nohup {{ lb_project_dir }}/.venv/bin/uvicorn loadbalancer_with_logging:app --host 0.0.0.0 --port 9001 --reload > {{ lb_project_dir }}/lb.log 2>&1 &
+      args:
+        executable: /bin/bash
+        chdir: "{{ lb_project_dir }}/loadbalancer"
+      async: 10
+      poll: 0
+      when: lb_process.stdout == "" or (lb_prehealth.status | default(-1)) != 200
+      become: false
+      delegate_to: "{{ lb_host }}"
+
+    - name: Wait for Load Balancer port on lb host
+      wait_for:
+        host: 127.0.0.1
+        port: 9001
+        delay: 1
+        timeout: 60
+      become: false
+      delegate_to: "{{ lb_host }}"
+
+    - name: Wait for Load Balancer to become healthy
+      uri:
+        url: "http://127.0.0.1:9001/status"
+        return_content: yes
+        use_proxy: false
+      register: lb_health
+      retries: 10
+      delay: 3
+      until: lb_health.status == 200
+      become: false
+      delegate_to: "{{ lb_host }}"
+
+- name: Run Experiments
+  hosts: localhost
+  connection: local
+  become: no
+  tags: experiment
+  vars_files:
+    - secrets.yml
+  vars:
+    local_user: "{{ lookup('env', 'USER') }}"
+    local_project_dir: "/home/{{ local_user }}/Serverless_Scheduler"
+    testbed_dir: "{{ local_project_dir }}/testbed"
+    lb_url: "http://colva2.dashlab.in:9001"
+    scenario: "baseline"
+    iterations: 1
+    research_mode: false
+    seed: ""
+  tasks:
+    - name: Install testbed pip requirements
+      command: "{{ local_project_dir }}/.venv/bin/pip install -r {{ testbed_dir }}/requirements.txt --no-input --index-url https://pypi.org/simple"
+
+    - name: Build testbed command
+      set_fact:
+        testbed_cmd: >-
+          {{ local_project_dir }}/.venv/bin/python main.py
+          --scenario {{ scenario }}
+          --load-balancer-url {{ lb_url }}
+          --iterations {{ iterations }}
+          {% if research_mode | bool %} --research-mode{% endif %}
+          {% if seed | string | length > 0 %} --seed {{ seed }}{% endif %}
+
+    - name: Run testbed experiments via load balancer
+      command: "{{ testbed_cmd }}"
+      args:
+        chdir: "{{ testbed_dir }}"
+      register: testbed_run
+
+    - name: Print testbed output
+      debug:
+        msg: |
+          STDOUT:
+          {{ testbed_run.stdout | default('') }}
+          STDERR:
+          {{ testbed_run.stderr | default('') }}
+          RC:
+          {{ testbed_run.rc }}
+      when: testbed_run is defined

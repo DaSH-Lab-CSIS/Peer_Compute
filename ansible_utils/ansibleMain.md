@@ -34,18 +34,16 @@ ansible-playbook -i inventory.ini playbooks/direct_provider_invocation.yml -K --
 
 ### 2. Run Experiments
 
-To trigger the experiment loop (running services on the cluster), you can use the `experiment` tag or the `run_experiment` variable.
+Experiments are now in a dedicated playbook: `playbooks/experiment.yml`.
 
-**Using Tags (Recommended):**
-This runs *only* the experiment tasks, skipping the setup verification steps.
+**Baseline run:**
 ```bash
-ansible-playbook -i inventory.ini setup.yml --tags experiment --extra-vars "run_experiment=true"
+./run_playbook.sh -i inventory.ini playbooks/experiment.yml -K --ask-vault-pass
 ```
 
-**Run Everything (Setup + Experiment):**
-This ensures setup is correct and then runs experiments.
+**Research steady-load run:**
 ```bash
-ansible-playbook -i inventory.ini setup.yml --extra-vars "run_experiment=true"
+./run_playbook.sh -i inventory.ini playbooks/experiment.yml -K --ask-vault-pass -e scenario=steady_load -e iterations=5 -e research_mode=true -e seed=42
 ```
 
 ### 3. Setup Only Specific Groups
