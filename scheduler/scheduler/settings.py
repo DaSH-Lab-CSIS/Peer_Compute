@@ -127,9 +127,9 @@ DATABASES = {
         "PORT": "26257",
         "OPTIONS": {
             "sslmode": "verify-full",
-            "sslrootcert": "/var/lib/cockroach/certs/ca.crt",
-            "sslcert": "/var/lib/cockroach/certs/client.root.crt",
-            "sslkey": "/var/lib/cockroach/certs/client.root.key",
+            "sslrootcert": os.environ.get("DB_SSLROOTCERT", "/etc/cockroach/certs/ca.crt"),
+            "sslcert": os.environ.get("DB_SSLCERT", "/etc/cockroach/certs/client.root.crt"),
+            "sslkey": os.environ.get("DB_SSLKEY", "/etc/cockroach/certs/client.root.key"),
         },
         "CONN_MAX_AGE": 600,
     }
