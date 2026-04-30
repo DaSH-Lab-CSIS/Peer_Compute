@@ -327,6 +327,10 @@
       include_tasks: tasks/resolve_scheduler.yml
       when: scheduler_host is not defined and scheduler_url is not defined
 
+    - name: Install boto3 on managed node
+      command: "{{ project_dir }}/.venv/bin/pip install boto3 --no-input --index-url https://pypi.org/simple"
+      become_user: "{{ ansible_user }}"
+
     - name: Check for existing User ID
       stat:
         path: "{{ user_id_file }}"
