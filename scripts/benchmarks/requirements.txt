@@ -1,0 +1,20 @@
+# Minimal pip dependencies for scripts/benchmarks/ (host machine only).
+#
+# Install into a dedicated venv, e.g.:
+#   python3 -m venv .venv-bench
+#   .venv-bench/bin/pip install -r scripts/benchmarks/requirements.txt
+#
+# Run with Docker socket access (example: sudo + venv interpreter):
+#   cd /path/to/Serverless_Scheduler
+#   sudo /path/to/.venv-bench/bin/python scripts/benchmarks/benchmark.py provider ...
+
+docker>=6.0.0
+requests>=2.28.0
+
+
+#cd /home/sohlost/Projects/Serverless_Scheduler
+#python3 -m venv .venv-bench
+#.venv-bench/bin/pip install -r scripts/benchmarks/requirements.txt
+#sudo .venv-bench/bin/python scripts/benchmarks/benchmark.py provider \
+#    --provider-id 34933555-5cca-41fb-aded-4ab7900c48d5 \
+#    --out machine_bench.json
