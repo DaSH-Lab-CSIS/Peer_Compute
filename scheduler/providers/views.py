@@ -1436,6 +1436,7 @@ def request_handler(data, service, start_time, run_async=False):
                         providing_time = int(((job.ack_time - job.start_time)/timedelta(microseconds=1))/1000)
                     
                     response_decoded = {"Result": "Request sent to provider", "pull_time": 0, "run_time": 0, "total_time": 0}
+                    results.append((response_decoded, provider.user_id, providing_time, job.id))
                 
                 except Exception as service_error:
                     print(f"Error processing service {svc.id}: {str(service_error)}")

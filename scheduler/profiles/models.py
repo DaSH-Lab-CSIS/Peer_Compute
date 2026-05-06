@@ -71,6 +71,18 @@ class User(models.Model):
         ]
 
     #NOTE This needs to have knowledge of the user's cache limit, based on which it will remove least frequently used.
+    def _ensure_delay_shape(self):
+        """Normalize legacy/invalid delay payloads to the expected dict shape."""
+        if not isinstance(self.delay, dict):
+            self.delay = {}
+        inflight = self.delay.get("inflight_jobs")
+        if not isinstance(inflight, list):
+            self.delay["inflight_jobs"] = []
+        last = self.delay.get("time_of_last_startjob")
+        # Keep a datetime if already parsed, else reset to 0 sentinel.
+        if not isinstance(last, datetime):
+            self.delay["time_of_last_startjob"] = 0
+
     def add_inflight_job(self, job_id, estimated_runtime):
         # Add a service ID to the inflight jobs at the end
         if job_id not in self.inflight_jobs:
@@ -97,6 +109,7 @@ class User(models.Model):
         self.reputation_score -= amount
 
     def reset_delay(self):
+        self._ensure_delay_shape()
         self.delay["time_of_last_startjob"] = 0
         self.delay["inflight_jobs"] = []
         self.save()
@@ -108,6 +121,7 @@ class User(models.Model):
         print(f"Type of new delay: {type(new_delay)}")
         
         try:
+            self._ensure_delay_shape()
             if isinstance(new_delay, dict):
                 print("Converting dict to JSON string")
                 new_delay = json.dumps(new_delay, cls=DjangoJSONEncoder)
@@ -139,12 +153,15 @@ class User(models.Model):
         """
         This calculation is only done when needed (i.e. just before job creation)
         """
+        self._ensure_delay_shape()
         if not self.delay["inflight_jobs"]:
             print(f"No inflight jobs for {self.user_id}")
             return 0
 
         # elapsed time since the last job started
         current_time = datetime.now()
+        if not isinstance(self.delay["time_of_last_startjob"], datetime):
+            return 0
         elapsed_time = (current_time - self.delay["time_of_last_startjob"]).total_seconds()
 
         remaining_time_for_current_job = max(0, self.delay["time_of_last_startjob"] - elapsed_time)
@@ -159,6 +176,7 @@ class User(models.Model):
          -> Remove the oldest predicted runtime
          -> adjust time_of_last_startjob
         """
+        self._ensure_delay_shape()
         if not self.delay["inflight_jobs"]:
             return
 
@@ -171,6 +189,7 @@ class User(models.Model):
         self.save()
 
     def update_delay_after_start(self, time_of_last_startjob):
+        self._ensure_delay_shape()
         self.delay["time_of_last_startjob"] = time_of_last_startjob
 
     def satisfies(self, requirements):

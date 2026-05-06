@@ -3,6 +3,7 @@
 
 # Env (repo-root .env for MQTT_BROKER, etc.)
 python-dotenv
+boto3
 
 # MQTT
 paho-mqtt

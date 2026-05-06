@@ -14,6 +14,16 @@
     lb_url: "http://colva2.dashlab.in:9001"
     lb_ssh_user: "peercompute"
   tasks:
+    - name: Register load balancer delegate host
+      add_host:
+        name: lb_delegate
+        ansible_host: "{{ lb_host }}"
+        ansible_user: "{{ lb_ssh_user }}"
+        ansible_connection: ssh
+        ansible_ssh_private_key_file: "/home/{{ local_user }}/.ssh/id_ed25519"
+      changed_when: false
+      run_once: true
+
     - name: Verify passwordless SSH access to load balancer host
       command: >-
         ssh -o BatchMode=yes -o ConnectTimeout=8
@@ -42,7 +52,7 @@
       shell: "pgrep -f 'loadbalancer_with_logging' || true"
       register: lb_process
       become: false
-      delegate_to: "{{ lb_host }}"
+      delegate_to: lb_delegate
 
     - name: Check current load balancer health before restart decision
       uri:
@@ -58,7 +68,7 @@
     - name: Install loadbalancer pip requirements on lb host
       command: "{{ lb_project_dir }}/.venv/bin/pip install -r {{ lb_project_dir }}/loadbalancer/requirements.txt --no-input --index-url https://pypi.org/simple"
       become: false
-      delegate_to: "{{ lb_host }}"
+      delegate_to: lb_delegate
 
     - name: Check if avg_job_times.json exists on current node
       stat:
@@ -73,7 +83,7 @@
         dest: "{{ lb_project_dir }}/avg_job_times.json"
         mode: "0644"
       become: false
-      delegate_to: "{{ lb_host }}"
+      delegate_to: lb_delegate
       when: avg_job_times_local.stat.exists
 
     - name: Stop stale load balancer process when unhealthy
@@ -81,13 +91,13 @@
       failed_when: false
       changed_when: false
       become: false
-      delegate_to: "{{ lb_host }}"
+      delegate_to: lb_delegate
       when: lb_process.stdout != "" and (lb_prehealth.status | default(-1)) != 200
 
     - name: Start Load Balancer Script
       shell: |
         source "{{ lb_project_dir }}/.env"
-        nohup {{ lb_project_dir }}/.venv/bin/uvicorn loadbalancer_with_logging:app --host 0.0.0.0 --port 9001 --reload > {{ lb_project_dir }}/lb.log 2>&1 &
+        nohup {{ lb_project_dir }}/.venv/bin/uvicorn loadbalancer_with_logging:app --host 0.0.0.0 --port 9001 > /tmp/lb.log 2>&1 &
       args:
         executable: /bin/bash
         chdir: "{{ lb_project_dir }}/loadbalancer"
@@ -95,7 +105,7 @@
       poll: 0
       when: lb_process.stdout == "" or (lb_prehealth.status | default(-1)) != 200
       become: false
-      delegate_to: "{{ lb_host }}"
+      delegate_to: lb_delegate
 
     - name: Wait for Load Balancer port on lb host
       wait_for:
@@ -104,7 +114,7 @@
         delay: 1
         timeout: 60
       become: false
-      delegate_to: "{{ lb_host }}"
+      delegate_to: lb_delegate
 
     - name: Wait for Load Balancer to become healthy
       uri:
@@ -116,7 +126,142 @@
       delay: 3
       until: lb_health.status == 200
       become: false
-      delegate_to: "{{ lb_host }}"
+      delegate_to: lb_delegate
+
+- name: Start Schedulers
+  hosts: control
+  become: yes
+  tags: experiment
+  vars_files:
+    - secrets.yml
+  vars:
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+    venv_python: "{{ project_dir }}/.venv/bin/python"
+    cockroach_client_certs_source_dir: "{{ project_dir }}/certs"
+  tasks:
+    - name: Check if scheduler (Django) is running
+      shell: "pgrep -f '[m]anage.py runserver' || true"
+      register: scheduler_process
+      become: false
+
+    - name: Stop running scheduler before restart
+      shell: "pkill -f '[m]anage.py runserver' || true"
+      failed_when: false
+      changed_when: false
+      when: scheduler_process.stdout != ""
+
+    - name: Start scheduler (Django)
+      become_user: "{{ ansible_user }}"
+      shell: |
+        source "{{ project_dir }}/.env"
+        nohup {{ venv_python }} manage.py runserver 0.0.0.0:8000 \
+        > /tmp/django.log 2>&1 &
+      environment:
+        DB_SSLROOTCERT: "{{ cockroach_client_certs_source_dir }}/ca.crt"
+        DB_SSLCERT: "{{ cockroach_client_certs_source_dir }}/client.root.crt"
+        DB_SSLKEY: "{{ cockroach_client_certs_source_dir }}/client.root.key"
+      args:
+        chdir: "{{ project_dir }}/scheduler"
+        executable: /bin/bash
+      async: 30
+      poll: 0
+
+    - name: Wait for scheduler port 8000
+      block:
+        - name: Wait for Django port 8000
+          wait_for:
+            host: 127.0.0.1
+            port: 8000
+            delay: 2
+            timeout: 60
+      rescue:
+        - name: Show recent Django log on failed startup
+          shell: |
+            if [ -f "/tmp/django.log" ]; then
+              tail -120 /tmp/django.log
+            else
+              echo "django.log not found at /tmp/django.log"
+            fi
+          args:
+            executable: /bin/bash
+          register: django_startup_log
+          changed_when: false
+
+        - name: Print Django startup diagnostics
+          debug:
+            msg: "{{ django_startup_log.stdout }}"
+
+        - name: Fail due to scheduler startup timeout
+          fail:
+            msg: "Scheduler did not start on 127.0.0.1:8000. See diagnostics above."
+
+- name: Start Providers
+  hosts: managed
+  become: yes
+  tags: experiment
+  vars_files:
+    - secrets.yml
+  vars:
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+    user_id_file: "{{ project_dir }}/provider_user_id.txt"
+    scheduler_probe_timeout: 60
+  tasks:
+    - name: Ensure Docker is running
+      service:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Discover scheduler on control group
+      include_tasks: tasks/resolve_scheduler.yml
+      when: scheduler_host is not defined and scheduler_url is not defined
+
+    - name: Default scheduler_url from scheduler_host when passed via -e
+      set_fact:
+        scheduler_url: "http://{{ scheduler_host }}:8000"
+      when: scheduler_host is defined and scheduler_url is not defined
+
+    - name: Read provider user ID from file
+      slurp:
+        src: "{{ user_id_file }}"
+      register: slurp_user_id
+
+    - name: Set provider_user_id fact
+      set_fact:
+        provider_user_id: "{{ slurp_user_id.content | b64decode | trim }}"
+
+    - name: Check if provider script is running
+      shell: "pgrep -f 'provider1.py' || true"
+      register: provider_process
+
+    - name: Resolve provider no-kill override
+      set_fact:
+        provider_no_kill: "{{ (no_kill | default(false) | bool) or (vars.get('no-kill', false) | bool) }}"
+
+    - name: Stop running provider before restart
+      shell: "kill -TERM {{ provider_process.stdout_lines | join(' ') }}"
+      failed_when: false
+      changed_when: provider_process.stdout != ""
+      when:
+        - provider_process.stdout != ""
+        - not provider_no_kill
+
+    - name: Ensure provider TrainingData directory exists
+      file:
+        path: "{{ project_dir }}/TrainingData"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0755"
+
+    - name: Start provider script
+      shell: |
+        nohup {{ project_dir }}/.venv/bin/python {{ project_dir }}/provider/provider1.py {{ provider_user_id }} > {{ project_dir }}/provider.log 2>&1 &
+      args:
+        executable: /bin/bash
+      async: 10
+      poll: 0
+      when: provider_process.stdout == "" or not provider_no_kill
 
 - name: Run Experiments
   hosts: localhost
