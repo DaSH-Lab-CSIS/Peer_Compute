@@ -145,7 +145,7 @@ class ScalingFactorStrategy(PredictionStrategy):
             s_net_mbps=_as_float(provider.s_net_mbps),
         )
 
-        total = t_hat + t_pull
+        total = t_hat #+ t_pull
         if total <= 0:
             return None
         return int(round(total))
