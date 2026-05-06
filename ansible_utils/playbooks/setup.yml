@@ -135,14 +135,16 @@
         - client.root.key
       register: cockroach_cert_stats
 
+    # Private key must be readable by the Django user (ansible_user), not only root
+    # Mode 0600 root:root breaks psycopg2/openssl (Permission denied on client.key).
     - name: Copy CockroachDB client cert files for Django TLS
       tags: [debug, debug-django, cockroach]
       copy:
         src: "{{ item.stat.path }}"
         dest: "{{ cockroach_client_certs_dest_dir }}/{{ item.stat.path | basename }}"
         owner: root
-        group: root
-        mode: "{{ '0600' if (item.stat.path | basename) == 'client.root.key' else '0644' }}"
+        group: "{{ ansible_user }}"
+        mode: "{{ '0640' if (item.stat.path | basename) == 'client.root.key' else '0644' }}"
         remote_src: true
       loop: "{{ cockroach_cert_stats.results }}"
       when: item.stat.exists
@@ -319,6 +321,12 @@
         name: docker
         state: started
         enabled: yes
+
+    - name: Enable binfmt emulation for amd64 and arm64 images
+      tags: debug
+      command: docker run --privileged --rm tonistiigi/binfmt --install amd64,arm64
+      register: binfmt_install
+      changed_when: "'installing' in (binfmt_install.stdout | lower)"
 
     - name: Default scheduler_url from scheduler_host (-e override)
       tags: debug
