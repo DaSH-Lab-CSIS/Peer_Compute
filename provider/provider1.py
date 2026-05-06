@@ -376,6 +376,7 @@ signal.signal(signal.SIGTERM, procedural_shutdown)  # we may not need to handle 
 #making all data into a list...
 # Function to append data returned by run_docker() to a file
 def append_data_to_file(data, filename):
+    os.makedirs(os.path.dirname(filename), exist_ok=True) if os.path.dirname(filename) else None
     with open(filename, 'a') as file:
         file.write(json.dumps(data) + '\n')
 
