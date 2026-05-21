@@ -17,6 +17,7 @@ from scenarios.steady_load import SteadyLoadScenario
 from scenarios.bursty_load import BurstyLoadScenario
 from scenarios.stress_soak import StressSoakScenario
 from scenarios.chaos_edge import ChaosEdgeScenario
+from scenarios.fairness_mix import FairnessMixScenario
 from utils.config_loader import get_scenario_config, get_services_config, load_yaml
 from utils.logger import setup_logger
 from analysis.report_generator import ReportGenerator
@@ -33,7 +34,8 @@ SCENARIO_CLASSES = {
     'steady_load': SteadyLoadScenario,
     'bursty_load': BurstyLoadScenario,
     'stress_soak': StressSoakScenario,
-    'chaos_edge': ChaosEdgeScenario
+    'chaos_edge': ChaosEdgeScenario,
+    'fairness_mix': FairnessMixScenario,
 }
 
 
@@ -74,6 +76,9 @@ def apply_research_scaling(config: Dict[str, Any], scenario_name: str) -> Dict[s
         },
         'chaos_edge': {
             'total_requests': 5  # 200 -> 1000
+        },
+        'fairness_mix': {
+            'phases_request_count': 5  # 200 -> 1000 per phase (600 -> 3000 total)
         }
         # steady_load already supports research scale
     }
@@ -81,7 +86,20 @@ def apply_research_scaling(config: Dict[str, Any], scenario_name: str) -> Dict[s
     if scenario_name in scaling_map:
         scaling = scaling_map[scenario_name]
         for key, value in scaling.items():
-            if key in scaled_config:
+            if key == 'phases_request_count' and 'phases' in scaled_config:
+                # Scale request_count inside each phase entry
+                scaled_phases = []
+                for phase in scaled_config['phases']:
+                    scaled_phase = phase.copy()
+                    if 'request_count' in scaled_phase:
+                        scaled_phase['request_count'] = int(scaled_phase['request_count'] * value)
+                    scaled_phases.append(scaled_phase)
+                scaled_config['phases'] = scaled_phases
+                if 'total_requests' in scaled_config:
+                    scaled_config['total_requests'] = sum(
+                        p.get('request_count', 0) for p in scaled_config['phases']
+                    )
+            elif key in scaled_config:
                 if isinstance(value, (int, float)) and isinstance(scaled_config[key], (int, float)):
                     if key == 'repeat_count':
                         scaled_config[key] = max(1, int(scaled_config[key] * value))
