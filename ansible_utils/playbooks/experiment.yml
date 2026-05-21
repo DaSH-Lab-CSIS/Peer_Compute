@@ -205,6 +205,10 @@
     project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
     user_id_file: "{{ project_dir }}/provider_user_id.txt"
     scheduler_probe_timeout: 60
+    # Override MQTT broker on the fly: -e mqtt_broker=utorda1.dashlab.in
+    # Leave unset to keep whatever is already in .env on each node.
+    mqtt_broker: ""
+    mqtt_port: ""
   tasks:
     - name: Ensure Docker is running
       service:
@@ -245,6 +249,22 @@
       when:
         - provider_process.stdout != ""
         - not provider_no_kill
+
+    - name: Override MQTT_BROKER in project .env
+      blockinfile:
+        path: "{{ project_dir }}/.env"
+        marker: "# {mark} ANSIBLE MANAGED MQTT"
+        block: |
+          export MQTT_BROKER={{ mqtt_broker }}
+          export MQTT_PORT={{ mqtt_port | default('1884') }}
+          export MQTT_USERNAME=peercompute
+          export MQTT_PASSWORD=peercompute
+        create: true
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0600"
+      become_user: "{{ ansible_user }}"
+      when: mqtt_broker != ""
 
     - name: Ensure provider TrainingData directory exists
       file:
@@ -293,6 +313,10 @@
           {% if research_mode | bool %} --research-mode{% endif %}
           {% if seed | string | length > 0 %} --seed {{ seed }}{% endif %}
 
+    - name: Record experiment start time
+      set_fact:
+        experiment_start_time: "{{ ansible_date_time.iso8601 }}"
+
     - name: Run testbed experiments via load balancer
       command: "{{ testbed_cmd }}"
       args:
@@ -309,3 +333,82 @@
           RC:
           {{ testbed_run.rc }}
       when: testbed_run is defined
+
+    - name: Resolve scheduler host for job drain poll
+      set_fact:
+        scheduler_poll_host: "{{ groups['control'] | first }}"
+      when: scheduler_host is not defined
+
+    - name: Set scheduler_host fact when not already provided
+      set_fact:
+        scheduler_host: "{{ scheduler_poll_host }}"
+      when: scheduler_host is not defined
+
+    - name: Wait for all provider jobs from this experiment to finish
+      uri:
+        url: "http://{{ scheduler_host }}:8000/providers/pending_jobs_count/?since={{ experiment_start_time }}"
+        method: GET
+        return_content: yes
+        use_proxy: false
+      register: pending_check
+      retries: 60
+      delay: 10
+      until: (pending_check.json.pending | int) == 0
+      delegate_to: localhost
+
+- name: Analyze scheduler profiling
+  hosts: control
+  become: yes
+  tags: experiment
+  vars_files:
+    - secrets.yml
+  vars:
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+    venv_python: "{{ project_dir }}/.venv/bin/python"
+    run_profile_analysis: true
+    profile_analysis_all: false
+  tasks:
+    - name: Check for scheduler profiling log files
+      find:
+        paths: "{{ project_dir }}/scheduler/logs"
+        patterns: "scheduler_profile_run_*.jsonl"
+      register: profile_logs
+      when: run_profile_analysis | bool
+
+    - name: Build analyze_profile.py command
+      set_fact:
+        analyze_profile_cmd: >-
+          {{ venv_python }} analyze_profile.py
+          {% if profile_analysis_all | bool %} --all{% endif %}
+      when: run_profile_analysis | bool
+
+    - name: Run analyze_profile.py on scheduler host
+      become_user: "{{ ansible_user }}"
+      command: "{{ analyze_profile_cmd }}"
+      args:
+        chdir: "{{ project_dir }}"
+      register: profile_analysis
+      when:
+        - run_profile_analysis | bool
+        - profile_logs.matched | default(0) > 0
+
+    - name: Print profile analysis output
+      debug:
+        msg: "{{ profile_analysis.stdout_lines | default([]) }}"
+      when:
+        - profile_analysis is defined
+        - profile_analysis.stdout is defined
+
+    - name: Note when profile analysis was skipped
+      debug:
+        msg: >-
+          No scheduler_profile_run_*.jsonl under {{ project_dir }}/scheduler/logs
+          (skip with -e run_profile_analysis=false to silence)
+      when:
+        - run_profile_analysis | bool
+        - profile_logs.matched | default(0) == 0
+
+    - name: Note when profile analysis is disabled
+      debug:
+        msg: "Profile analysis disabled (run_profile_analysis=false)"
+      when: not (run_profile_analysis | bool)
