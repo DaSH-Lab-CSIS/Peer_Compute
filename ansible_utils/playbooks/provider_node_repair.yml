@@ -1,0 +1,200 @@
+---
+# Repairs managed provider nodes after manual fixes applied on cortalim (ARM + amd64 images).
+# Code fixes ship via sync_repo / git; this playbook applies node-level state only.
+#
+# Covers:
+#   - binfmt so amd64 benchmark images run on aarch64 Pis
+#   - Writable TrainingData / results.csv under project_dir
+#   - User-level hybrid cache dir (~/.cache/serverless_scheduler/provider)
+#   - Optional wipe of legacy cache_dir/cached_images (wrong-arch tars)
+#   - Provider venv deps (fastapi for optional experiment logging)
+#   - Single provider1.py instance (no duplicate :9002 bind)
+#
+# Usage (from ansible_utils/):
+#   ./run_playbook.sh -i inventory.ini playbooks/provider_node_repair.yml -K --ask-vault-pass
+#   ./run_playbook.sh -i inventory.ini playbooks/provider_node_repair.yml -K --ask-vault-pass --limit cortalim1.dashlab.in
+#   ./run_playbook.sh -i inventory.ini playbooks/provider_node_repair.yml -K --ask-vault-pass -e reset_image_cache=true
+#   ./run_playbook.sh -i inventory.ini playbooks/provider_node_repair.yml -K --ask-vault-pass -e restart_provider=false
+#
+# Tags: binfmt, permissions, deps, provider, reset_cache
+
+- name: Repair managed provider nodes
+  hosts: managed
+  become: yes
+  tags: provider_repair
+  vars_files:
+    - secrets.yml
+  vars:
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+    user_id_file: "{{ project_dir }}/provider_user_id.txt"
+    provider_cache_home: "/home/{{ ansible_user }}/.cache/serverless_scheduler/provider"
+    venv_python: "{{ project_dir }}/.venv/bin/python"
+    venv_pip: "{{ project_dir }}/.venv/bin/pip"
+    reset_image_cache: false
+    restart_provider: true
+
+  tasks:
+    - name: Ensure Docker is running
+      service:
+        name: docker
+        state: started
+        enabled: yes
+      tags: [binfmt, provider]
+
+    - name: Enable binfmt emulation for amd64 images on ARM hosts
+      command: docker run --privileged --rm tonistiigi/binfmt --install amd64,arm64
+      register: binfmt_install
+      changed_when: "'installing' in (binfmt_install.stdout | lower)"
+      tags: [binfmt]
+
+    - name: Verify amd64 userspace via binfmt
+      command: docker run --rm --platform linux/amd64 alpine uname -m
+      register: binfmt_amd64_test
+      changed_when: false
+      failed_when: (binfmt_amd64_test.stdout | default('') | trim) != 'x86_64'
+      tags: [binfmt]
+
+    - name: Remove legacy project-local image cache
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ project_dir }}/cache_dir"
+        - "{{ project_dir }}/cached_images"
+      when: reset_image_cache | bool
+      tags: [reset_cache, permissions]
+
+    - name: Ensure user-level provider disk cache directory
+      file:
+        path: "{{ provider_cache_home }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0755"
+      tags: [permissions]
+
+    - name: Ensure TrainingData directory exists
+      file:
+        path: "{{ project_dir }}/TrainingData"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0755"
+      tags: [permissions]
+
+    - name: Ensure provider append-only data files exist
+      file:
+        path: "{{ item }}"
+        state: touch
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0644"
+      loop:
+        - "{{ project_dir }}/TrainingData/eff_score_data.txt"
+        - "{{ project_dir }}/results.csv"
+      tags: [permissions]
+
+    - name: Fix ownership on legacy cache paths if present
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0755"
+        recurse: yes
+      loop:
+        - "{{ project_dir }}/cache_dir"
+        - "{{ project_dir }}/cached_images"
+      failed_when: false
+      tags: [permissions]
+
+    - name: Check project venv exists
+      stat:
+        path: "{{ venv_python }}"
+      register: venv_stat
+      tags: [deps]
+
+    - name: Install provider pip requirements
+      command: "{{ venv_pip }} install -r {{ project_dir }}/provider/requirements.txt --no-input --index-url https://pypi.org/simple"
+      become_user: "{{ ansible_user }}"
+      when: venv_stat.stat.exists
+      tags: [deps]
+
+    - name: Install fastapi for optional experiment logging
+      command: "{{ venv_pip }} install fastapi --no-input --index-url https://pypi.org/simple"
+      become_user: "{{ ansible_user }}"
+      when: venv_stat.stat.exists
+      tags: [deps]
+
+    - name: Check for provider user ID file
+      stat:
+        path: "{{ user_id_file }}"
+      register: user_id_stat
+      tags: [provider]
+
+    - name: Read provider user ID
+      slurp:
+        src: "{{ user_id_file }}"
+      register: slurp_user_id
+      when: user_id_stat.stat.exists
+      tags: [provider]
+
+    - name: Set provider_user_id fact
+      set_fact:
+        provider_user_id: "{{ slurp_user_id.content | b64decode | trim }}"
+      when: user_id_stat.stat.exists
+      tags: [provider]
+
+    - name: List running provider processes
+      shell: pgrep -af '[p]rovider/provider1.py' || true
+      register: provider_process_list
+      changed_when: false
+      tags: [provider]
+
+    - name: Show provider processes
+      debug:
+        var: provider_process_list.stdout_lines
+      when: provider_process_list.stdout | length > 0
+      tags: [provider]
+
+    - name: Stop all provider1.py processes
+      shell: |
+        pids=$(pgrep -f '[p]rovider1[.]py' 2>/dev/null || true)
+        [ -z "$pids" ] && exit 0
+        kill -TERM $pids 2>/dev/null || true
+        exit 0
+      args:
+        executable: /bin/bash
+      register: provider_stop
+      failed_when: false
+      changed_when: provider_process_list.stdout | length > 0
+      when: restart_provider | bool
+      tags: [provider]
+
+    - name: Brief wait after provider stop
+      pause:
+        seconds: 2
+      when: restart_provider | bool
+      tags: [provider]
+
+    - name: Start provider script (single instance)
+      shell: |
+        nohup {{ venv_python }} {{ project_dir }}/provider/provider1.py {{ provider_user_id }} \
+          >> {{ project_dir }}/provider.log 2>&1 &
+      args:
+        executable: /bin/bash
+        chdir: "{{ project_dir }}"
+      become_user: "{{ ansible_user }}"
+      when:
+        - restart_provider | bool
+        - provider_user_id is defined
+        - venv_stat.stat.exists
+      tags: [provider]
+
+    - name: Skip provider start when user id file missing
+      debug:
+        msg: >-
+          No {{ user_id_file }} — run setup.yml on this host first, or start
+          provider1.py manually after registration.
+      when: provider_user_id is not defined
+      tags: [provider]

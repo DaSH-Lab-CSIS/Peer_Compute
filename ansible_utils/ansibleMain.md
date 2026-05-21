@@ -46,6 +46,29 @@ Experiments are now in a dedicated playbook: `playbooks/experiment.yml`.
 ./run_playbook.sh -i inventory.ini playbooks/experiment.yml -K --ask-vault-pass -e scenario=steady_load -e iterations=5 -e research_mode=true -e seed=42
 ```
 
+### 2.1 Repair managed provider nodes (ARM / cortalim fixes)
+
+Node-level repairs from manual cortalim troubleshooting (separate from `sync_repo` / code deploy):
+
+* binfmt for **amd64** images on **aarch64** hosts
+* Writable `TrainingData/`, `results.csv`, `~/.cache/serverless_scheduler/provider`
+* Optional wipe of legacy `cache_dir/` / `cached_images/` (wrong-arch cache)
+* `fastapi` in provider venv
+* Stop duplicate `provider1.py` processes and start one instance
+
+```bash
+./run_playbook.sh -i inventory.ini playbooks/provider_node_repair.yml -K --ask-vault-pass
+```
+
+One host, reset image cache, no provider restart:
+
+```bash
+./run_playbook.sh -i inventory.ini playbooks/provider_node_repair.yml -K --ask-vault-pass \
+  --limit cortalim1.dashlab.in -e reset_image_cache=true -e restart_provider=false
+```
+
+Tags: `binfmt`, `permissions`, `deps`, `provider`, `reset_cache`.
+
 ### 3. Setup Only Specific Groups
 
 If you only want to update the managed nodes or just the control node, use the `--limit` flag.
