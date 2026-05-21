@@ -39,3 +39,23 @@ ssh -o BatchMode=yes <user>@colva2.dashlab.in "echo ok"
 ```bash
 ./run_playbook.sh -i inventory.ini playbooks/experiment.yml -K --ask-vault-pass -e lb_ssh_user=peercompute -e lb_url=http://colva2.dashlab.in:9001
 ```
+
+## 6) Scheduler profile charts (runs automatically after testbed)
+
+After the testbed finishes, the playbook runs `analyze_profile.py` on each `control` host
+that has `scheduler/logs/scheduler_profile_run_*.jsonl`. Charts are written under
+`scheduler/logs/profile_charts_run_*` on that host (e.g. utorda2).
+
+```bash
+# Disable post-experiment analysis
+./run_playbook.sh -i inventory.ini playbooks/experiment.yml -K --ask-vault-pass -e run_profile_analysis=false
+
+# Merge all profiling runs into one chart set
+./run_playbook.sh -i inventory.ini playbooks/experiment.yml -K --ask-vault-pass -e profile_analysis_all=true
+```
+
+Fetch charts locally:
+
+```bash
+scp -r peercompute@utorda2.dashlab.in:~/deploy/Serverless_Scheduler/scheduler/logs/profile_charts_run_* .
+```
