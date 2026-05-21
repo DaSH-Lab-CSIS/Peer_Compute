@@ -1,4 +1,7 @@
 import os
+import sqlite3
+import sys
+import tempfile
 import diskcache
 import docker
 
@@ -6,18 +9,50 @@ import docker
 # requires the image to be within memory limit.
 # use self.cache.clear() to clear the diskCache.
 
+
+def _default_cache_base():
+    """User-writable cache root (avoids deploy-tree cache_dir owned by another user)."""
+    override = os.environ.get("PROVIDER_CACHE_DIR", "").strip()
+    if override:
+        return os.path.abspath(override)
+    xdg = os.environ.get("XDG_CACHE_HOME") or os.path.join(
+        os.path.expanduser("~"), ".cache"
+    )
+    return os.path.join(xdg, "serverless_scheduler", "provider")
+
+
+def _open_diskcache(directory):
+    os.makedirs(directory, mode=0o755, exist_ok=True)
+    try:
+        return diskcache.Cache(directory)
+    except sqlite3.OperationalError as exc:
+        if "readonly" not in str(exc).lower():
+            raise
+        fallback = os.path.join(
+            tempfile.gettempdir(),
+            f"serverless_scheduler_provider_cache_{os.getuid()}",
+            "diskcache",
+        )
+        os.makedirs(fallback, mode=0o755, exist_ok=True)
+        print(
+            f"Warning: diskcache directory is not writable ({directory}); "
+            f"using {fallback}",
+            file=sys.stderr,
+        )
+        return diskcache.Cache(fallback)
+
+
 class HybridImageManager:
     def __init__(self, memory_limit, disk_limit):
         self.memory_limit = memory_limit
         self.disk_limit = disk_limit
         self.memory_cache = {}  # Dictionary to store images in memory
         self.docker_client = docker.from_env()
-        # Create cache_dir directory with proper permissions before initializing diskcache
-        diskcache_dir = "cache_dir"
-        os.makedirs(diskcache_dir, mode=0o755, exist_ok=True)
-        self.cache = diskcache.Cache(diskcache_dir)  # Create a DiskCache instance
-        self.cache_dir = 'cached_images'
+        cache_base = _default_cache_base()
+        diskcache_dir = os.path.join(cache_base, "diskcache")
+        self.cache_dir = os.path.join(cache_base, "cached_images")
         os.makedirs(self.cache_dir, mode=0o755, exist_ok=True)
+        self.cache = _open_diskcache(diskcache_dir)
 
     def request_image(self, image_id):
         print(f"[request_image] Requesting image: {image_id}")

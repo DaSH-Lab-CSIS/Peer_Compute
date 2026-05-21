@@ -709,6 +709,118 @@ def get_docker_host_ip():
     # If all else fails, return localhost (might work in some setups)
     return '10.1.19.76'
 
+
+# Benchmark HTTP settings (aligned with scripts/benchmarks/reference_images.py)
+_BENCHMARK_HTTP_TIMEOUT = 60
+_BENCHMARK_READY_TIMEOUT = float(os.environ.get("PROVIDER_CONTAINER_READY_TIMEOUT", "30"))
+_BENCHMARK_READY_POLL_INTERVAL = float(
+    os.environ.get("PROVIDER_CONTAINER_READY_POLL_INTERVAL", "0.05")
+)
+# templates/python/handler.py prints this immediately before httpd.handle_request()
+_BENCHMARK_SERVER_LOG_MARKER = "starting http server on port 8080"
+
+
+def _resolve_host_port(cont):
+    port_info = cont.ports.get("8080/tcp") if cont.ports else None
+    if port_info and len(port_info) > 0:
+        return port_info[0]["HostPort"]
+    return "8080"
+
+
+def _benchmark_server_started_in_logs(cont):
+    """True once the process is blocked in handle_request() waiting for POST.
+
+    Do not use host-port LISTEN (ss): docker-proxy binds before the app is ready.
+    """
+    try:
+        logs = cont.logs(tail=64).decode("utf-8", errors="replace")
+    except Exception:
+        return False
+    return _BENCHMARK_SERVER_LOG_MARKER in logs.lower()
+
+
+def _wait_for_benchmark_ready(cont):
+    """Poll container logs until the benchmark HTTP server is accepting POST."""
+    started = time.monotonic()
+    deadline = started + _BENCHMARK_READY_TIMEOUT
+    host_port = None
+
+    while time.monotonic() < deadline:
+        cont.reload()
+        status = cont.status
+
+        if status == "exited":
+            try:
+                logs = cont.logs(tail=30).decode("utf-8", errors="replace")
+            except Exception:
+                logs = ""
+            raise RuntimeError(
+                f"Container exited before HTTP ready (status={status}). "
+                f"Logs: {logs[:400]}"
+            )
+
+        if status == "running":
+            if host_port is None:
+                host_port = _resolve_host_port(cont)
+                print(f"[DEBUG] Host port: {host_port}")
+
+            if _benchmark_server_started_in_logs(cont):
+                elapsed = time.monotonic() - started
+                print(
+                    f"[DEBUG] Container HTTP ready after {elapsed:.2f}s "
+                    f"(log: {_BENCHMARK_SERVER_LOG_MARKER!r}, port {host_port})"
+                )
+                return host_port, elapsed
+
+        time.sleep(_BENCHMARK_READY_POLL_INTERVAL)
+
+    if host_port is None:
+        host_port = _resolve_host_port(cont)
+
+    elapsed = time.monotonic() - started
+    try:
+        logs = cont.logs(tail=50).decode("utf-8", errors="replace")
+    except Exception:
+        logs = ""
+    raise RuntimeError(
+        f"Timed out after {elapsed:.2f}s waiting for benchmark HTTP server "
+        f"(expected log {_BENCHMARK_SERVER_LOG_MARKER!r}). "
+        f"Logs: {logs[-500:]}"
+    )
+
+
+def _post_to_benchmark_container(cont, host_port, payload):
+    """POST once to the benchmark server (one-shot handle_request per container).
+
+    No TCP probes and no POST retries: extra connections waste the single request.
+    Mirrors scripts/benchmarks/docker_bench.py run_service_once().
+    """
+    host_ip = "127.0.0.1"
+    url = f"http://{host_ip}:{host_port}"
+    print(f"[DEBUG] Making POST request to {url} (no socket probe, single attempt)")
+    print(f"[DEBUG] Request payload: {payload}")
+
+    try:
+        response = requests.post(
+            url,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=_BENCHMARK_HTTP_TIMEOUT,
+        )
+        print(f"[DEBUG] POST request completed with status: {response.status_code}")
+        print("post request sent")
+        return response
+    except requests.exceptions.RequestException as exc:
+        print(f"[DEBUG] POST failed: {exc}")
+        if cont is not None:
+            try:
+                logs = cont.logs(tail=30).decode("utf-8", errors="replace")
+                print(f"[DEBUG] Container logs after failed POST: {logs}")
+            except Exception as log_exc:
+                print(f"[DEBUG] Could not get container logs: {log_exc}")
+        return None
+
+
 def run_and_invoke_docker(body, container_name) -> dict:
     try:
         print(f"[DEBUG] run_and_invoke_docker started with body: {body}, container_name: {container_name}")
@@ -782,30 +894,8 @@ def run_and_invoke_docker(body, container_name) -> dict:
                                          )
             print(f"[DEBUG] Container created successfully: {cont.id}")
             
-            # Wait a bit for container to start
-            time.sleep(2)  # Increased wait time
-            cont.reload()  # Refresh container data
-            print(f"[DEBUG] Container reloaded, status: {cont.status}")
-            
-            # Check if container is actually running
-            if cont.status != 'running':
-                print(f"[DEBUG] ERROR: Container is not running! Status: {cont.status}")
-                # Try to get container logs to see what happened
-                try:
-                    logs = cont.logs().decode('utf-8')
-                    print(f"[DEBUG] Container logs: {logs}")
-                except Exception as e:
-                    print(f"[DEBUG] Could not get container logs: {e}")
-                raise Exception(f"Container failed to start properly. Status: {cont.status}")
-            
-            port_info = cont.ports.get('8080/tcp')
-            print(f"[DEBUG] Port info: {port_info}")
-            if port_info and len(port_info) > 0:
-                host_port = port_info[0]['HostPort'] #get the port
-                print(f"[DEBUG] Host port: {host_port}")
-            else:
-                print(f"[DEBUG] No port 8080 exposed, using default port 8080")
-                host_port = "8080"  # Default port for containers without exposed ports
+            host_port, _ready_wait_s = _wait_for_benchmark_ready(cont)
+            print(f"[DEBUG] Container status after readiness poll: {cont.status}")
             
             # Additional container health check
             print(f"[DEBUG] Container ID: {cont.id}")
@@ -832,75 +922,7 @@ def run_and_invoke_docker(body, container_name) -> dict:
                 
                 # Only attempt HTTP request if container started successfully and host_port was assigned
                 if host_port is not None and cont is not None:
-                    # Get the appropriate host IP for container communication
-                    host_ip = get_docker_host_ip()
-                    print(f"Using host IP: {host_ip}")
-                    
-                    # Try localhost as fallback if the detected IP doesn't work
-                    import socket
-                    test_ips = [host_ip, "127.0.0.1", "localhost"]
-                    working_ip = None
-                    
-                    for test_ip in test_ips:
-                        try:
-                            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                            sock.settimeout(2)
-                            result = sock.connect_ex((test_ip, int(host_port)))
-                            sock.close()
-                            if result == 0:
-                                working_ip = test_ip
-                                print(f"[DEBUG] Found working IP: {test_ip}")
-                                break
-                            else:
-                                print(f"[DEBUG] IP {test_ip} not accessible")
-                        except Exception as e:
-                            print(f"[DEBUG] IP {test_ip} test failed: {e}")
-                    
-                    if working_ip:
-                        host_ip = working_ip
-                        print(f"[DEBUG] Using working IP: {host_ip}")
-                    else:
-                        print(f"[DEBUG] No working IP found, using original: {host_ip}")
-                    
-                    # Check container logs before making request
-                    try:
-                        logs = cont.logs(tail=10).decode('utf-8')
-                        print(f"[DEBUG] Container logs (last 10 lines): {logs}")
-                    except Exception as e:
-                        print(f"[DEBUG] Could not get container logs: {e}")
-                    
-                    # Test if port is accessible (using the working IP we found)
-                    try:
-                        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                        sock.settimeout(5)
-                        result = sock.connect_ex((host_ip, int(host_port)))
-                        sock.close()
-                        if result == 0:
-                            print(f"[DEBUG] Port {host_port} is accessible on {host_ip}")
-                        else:
-                            print(f"[DEBUG] Port {host_port} is NOT accessible on {host_ip} (connection failed)")
-                    except Exception as e:
-                        print(f"[DEBUG] Port accessibility test failed: {e}")
-                    
-                    print(f"[DEBUG] Making POST request to http://{host_ip}:{host_port}")
-                    print(f"[DEBUG] Request payload: {payload}")
-                    try:
-                        response = requests.post(f'http://{host_ip}:{host_port}', 
-                                            json=payload,
-                                            headers={'Content-Type': 'application/json'},
-                                            timeout=30)  # Increased timeout to 5 minutes (300 seconds)
-                        print(f"[DEBUG] POST request completed with status: {response.status_code}")
-                        print("post request sent")
-                    except requests.exceptions.RequestException as e:
-                        print(f"[DEBUG] POST request failed: {e}")
-                        # Try GET request as fallback
-                        try:
-                            print(f"[DEBUG] Trying GET request as fallback...")
-                            response = requests.get(f'http://{host_ip}:{host_port}', timeout=10)
-                            print(f"[DEBUG] GET request completed with status: {response.status_code}")
-                        except requests.exceptions.RequestException as e2:
-                            print(f"[DEBUG] GET request also failed: {e2}")
-                            response = None
+                    response = _post_to_benchmark_container(cont, host_port, payload)
                 else:
                     print(f"[DEBUG] Skipping HTTP request - container failed to start or host_port not assigned (host_port={host_port}, cont={cont})")
                     response = None
