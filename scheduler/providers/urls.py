@@ -10,6 +10,7 @@ from .views import (
     get_user_id,
     direct_invoke,
     direct_invocation_status,
+    pending_jobs_count,
 )
 # from .views import recover_pending_jobs
 
@@ -27,5 +28,6 @@ urlpatterns = [
     path('get_user_id/', get_user_id, name='get_user_id'),
     path('direct_invoke/', direct_invoke, name='direct_invoke'),
     path('direct_invocation_status/', direct_invocation_status, name='direct_invocation_status'),
+    path('pending_jobs_count/', pending_jobs_count, name='pending_jobs_count'),
     # path('recover_jobs/', recover_pending_jobs, name='recover_jobs')
 ]

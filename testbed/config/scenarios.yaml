@@ -24,9 +24,9 @@ baseline:
 steady_load:
   # Dev-scale: ~6,300 total requests (default)
   # Research-scale: Already supports research scale (2,000-5,000 requests)
-  rps_levels: [10]  # Fixed RPS for uniform long-duration run
-  duration_per_level: 7200  # seconds (2 hours)
-  services: [12, 16, 19]
+  rps_levels: [1]  # Fixed RPS for uniform long-duration run
+  duration_per_level: 100  # seconds (1 minute)
+  services: [13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
   interval: 1.0
   invocations: 1
   # ILP configuration
@@ -94,5 +94,38 @@ chaos_edge:
     max_solve_time: 1.0
     batch_timeout: 5.0
 
-
+fairness_mix:
+  # RQ4: Across heterogeneous service mixes (light/medium/heavy), does ILP scheduling
+  # produce more equitable per-service latency distributions than simpler policies?
+  # Dev-scale: 600 requests (default)
+  # Research-scale: 2,000-3,000 requests (use --research-mode or override)
+  total_requests: 600
+  # Three phases with shifting service-type dominance to stress fairness across categories
+  phases:
+    - name: light_dominant
+      request_count: 200
+      services: [13, 14, 16, 17]        # light: sleep, network-benchmark, server-reply, dynamic-html
+      service_weights: {light: 0.7, medium: 0.2, heavy: 0.1}
+    - name: balanced
+      request_count: 200
+      services: [13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26]
+      service_weights: {light: 0.34, medium: 0.33, heavy: 0.33}
+    - name: heavy_dominant
+      request_count: 200
+      services: [21, 22, 23, 24, 25]    # heavy: graph-pagerank, graph-mst, graph-bfs x2, dna-visualisation
+      service_weights: {light: 0.1, medium: 0.2, heavy: 0.7}
+  # Full service list used across all phases (for per-service latency fairness analysis)
+  services: [13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26]
+  frequency:
+    type: uniform
+    min: 0.5
+    max: 3.0
+  invocations: 1
+  concurrency: 10
+  # ILP configuration
+  ilp_config:
+    expected_batch_size_min: 100
+    expected_batch_size_max: 300
+    max_solve_time: 1.0
+    batch_timeout: 5.0
 

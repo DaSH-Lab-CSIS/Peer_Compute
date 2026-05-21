@@ -1239,6 +1239,38 @@ def direct_invocation_status(request):
         status=200,
     )
 
+def pending_jobs_count(request):
+    """Return the count of dispatched-but-unfinished jobs created since a given timestamp.
+
+    Query parameters:
+        since (required): ISO-8601 UTC timestamp marking experiment start, e.g. 2026-05-15T13:00:00+00:00
+
+    Only counts jobs that were actually dispatched to a provider
+    (assigned_to_provider_time IS NOT NULL) so permanently-failed jobs that
+    never left the scheduler queue are excluded.
+    """
+    from datetime import datetime, timezone as dt_tz
+
+    since_str = request.GET.get("since")
+    if not since_str:
+        return JsonResponse({"error": "since param is required"}, status=400)
+
+    try:
+        since = datetime.fromisoformat(since_str)
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=dt_tz.utc)
+    except ValueError as exc:
+        return JsonResponse({"error": f"Invalid since value: {exc}"}, status=400)
+
+    active = Job.objects.filter(
+        finished=False,
+        assigned_to_provider_time__isnull=False,
+        start_time__gte=since,
+    ).count()
+
+    return JsonResponse({"pending": active})
+
+
 @csrf_exempt
 def get_user_id(request):
     """
