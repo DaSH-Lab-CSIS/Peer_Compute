@@ -13,6 +13,10 @@
     lb_host: "colva2.dashlab.in"
     lb_url: "http://colva2.dashlab.in:9001"
     lb_ssh_user: "peercompute"
+    # Override MQTT broker on the fly: -e mqtt_broker=utorda1.dashlab.in
+    # Leave unset to keep whatever is already in .env on the LB host.
+    mqtt_broker: ""
+    mqtt_port: ""
   tasks:
     - name: Register load balancer delegate host
       add_host:
@@ -86,13 +90,30 @@
       delegate_to: lb_delegate
       when: avg_job_times_local.stat.exists
 
-    - name: Stop stale load balancer process when unhealthy
+    - name: Override MQTT_BROKER in LB .env
+      blockinfile:
+        path: "{{ lb_project_dir }}/.env"
+        marker: "# {mark} ANSIBLE MANAGED MQTT"
+        block: |
+          export MQTT_BROKER={{ mqtt_broker }}
+          export MQTT_PORT={{ mqtt_port | default('1884') }}
+          export MQTT_USERNAME=peercompute
+          export MQTT_PASSWORD=peercompute
+        create: true
+        owner: "{{ lb_ssh_user }}"
+        group: "{{ lb_ssh_user }}"
+        mode: "0600"
+      become: false
+      delegate_to: lb_delegate
+      when: mqtt_broker != ""
+
+    - name: Stop stale load balancer process when unhealthy or broker changed
       shell: "pkill -f 'uvicorn loadbalancer_with_logging:app' || true"
       failed_when: false
       changed_when: false
       become: false
       delegate_to: lb_delegate
-      when: lb_process.stdout != "" and (lb_prehealth.status | default(-1)) != 200
+      when: lb_process.stdout != "" and ((lb_prehealth.status | default(-1)) != 200 or mqtt_broker != "")
 
     - name: Start Load Balancer Script
       shell: |
@@ -103,7 +124,7 @@
         chdir: "{{ lb_project_dir }}/loadbalancer"
       async: 10
       poll: 0
-      when: lb_process.stdout == "" or (lb_prehealth.status | default(-1)) != 200
+      when: lb_process.stdout == "" or (lb_prehealth.status | default(-1)) != 200 or mqtt_broker != ""
       become: false
       delegate_to: lb_delegate
 
@@ -138,7 +159,27 @@
     project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
     venv_python: "{{ project_dir }}/.venv/bin/python"
     cockroach_client_certs_source_dir: "{{ project_dir }}/certs"
+    # Override MQTT broker on the fly: -e mqtt_broker=utorda1.dashlab.in
+    # Leave unset to keep whatever is already in .env on each scheduler node.
+    mqtt_broker: ""
+    mqtt_port: ""
   tasks:
+    - name: Override MQTT_BROKER in scheduler .env
+      blockinfile:
+        path: "{{ project_dir }}/.env"
+        marker: "# {mark} ANSIBLE MANAGED MQTT"
+        block: |
+          export MQTT_BROKER={{ mqtt_broker }}
+          export MQTT_PORT={{ mqtt_port | default('1884') }}
+          export MQTT_USERNAME=peercompute
+          export MQTT_PASSWORD=peercompute
+        create: true
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0600"
+      become_user: "{{ ansible_user }}"
+      when: mqtt_broker != ""
+
     - name: Check if scheduler (Django) is running
       shell: "pgrep -f '[m]anage.py runserver' || true"
       register: scheduler_process
@@ -299,9 +340,29 @@
     iterations: 1
     research_mode: false
     seed: ""
+    no_result_threshold_seconds: 300
+    no_ack_threshold_seconds: 120
   tasks:
     - name: Install testbed pip requirements
       command: "{{ local_project_dir }}/.venv/bin/pip install -r {{ testbed_dir }}/requirements.txt --no-input --index-url https://pypi.org/simple"
+
+    - name: Record experiment start time
+      set_fact:
+        experiment_start_time: "{{ ansible_date_time.iso8601 }}"
+
+    - name: Resolve scheduler host for job drain poll
+      set_fact:
+        scheduler_poll_host: "{{ groups['control'] | first }}"
+      when: scheduler_host is not defined
+
+    - name: Set scheduler_host fact when not already provided
+      set_fact:
+        scheduler_host: "{{ scheduler_poll_host }}"
+      when: scheduler_host is not defined
+
+    - name: Set scheduler_url for drain and enrichment
+      set_fact:
+        scheduler_url: "http://{{ scheduler_host }}:8000"
 
     - name: Build testbed command
       set_fact:
@@ -310,12 +371,11 @@
           --scenario {{ scenario }}
           --load-balancer-url {{ lb_url }}
           --iterations {{ iterations }}
+          --enrich-after-run
+          --scheduler-url {{ scheduler_url }}
+          --enrich-since {{ experiment_start_time }}
           {% if research_mode | bool %} --research-mode{% endif %}
           {% if seed | string | length > 0 %} --seed {{ seed }}{% endif %}
-
-    - name: Record experiment start time
-      set_fact:
-        experiment_start_time: "{{ ansible_date_time.iso8601 }}"
 
     - name: Run testbed experiments via load balancer
       command: "{{ testbed_cmd }}"
@@ -334,27 +394,86 @@
           {{ testbed_run.rc }}
       when: testbed_run is defined
 
-    - name: Resolve scheduler host for job drain poll
-      set_fact:
-        scheduler_poll_host: "{{ groups['control'] | first }}"
-      when: scheduler_host is not defined
-
-    - name: Set scheduler_host fact when not already provided
-      set_fact:
-        scheduler_host: "{{ scheduler_poll_host }}"
-      when: scheduler_host is not defined
-
     - name: Wait for all provider jobs from this experiment to finish
       uri:
-        url: "http://{{ scheduler_host }}:8000/providers/pending_jobs_count/?since={{ experiment_start_time }}"
+        url: "{{ scheduler_url }}/providers/pending_jobs_count/?since={{ experiment_start_time }}"
         method: GET
         return_content: yes
         use_proxy: false
+        status_code: 200
       register: pending_check
       retries: 60
       delay: 10
-      until: (pending_check.json.pending | int) == 0
+      until: pending_check.status == 200 and (((pending_check.json | default({})).pending | default(-1)) | int) == 0
+      failed_when: false
       delegate_to: localhost
+
+    - name: Sweep stale jobs into timeout state
+      uri:
+        url: "{{ scheduler_url }}/providers/timeout_stale_jobs/"
+        method: POST
+        body_format: json
+        body:
+          since: "{{ experiment_start_time }}"
+          no_result_threshold_seconds: "{{ no_result_threshold_seconds }}"
+          no_ack_threshold_seconds: "{{ no_ack_threshold_seconds }}"
+        return_content: yes
+        use_proxy: false
+        status_code: 200
+      register: stale_sweep
+      failed_when: false
+      delegate_to: localhost
+
+    - name: Final pending jobs check after stale sweep
+      uri:
+        url: "{{ scheduler_url }}/providers/pending_jobs_count/?since={{ experiment_start_time }}"
+        method: GET
+        return_content: yes
+        use_proxy: false
+        status_code: 200
+      register: pending_check_final
+      failed_when: false
+      delegate_to: localhost
+
+    - name: Warn if pending jobs still remain after stale sweep
+      debug:
+        msg: >-
+          Warning: pending jobs remain after timeout sweep.
+          pending={{ (pending_check_final.json.pending | default('unknown')) if (pending_check_final.json is defined) else 'unknown' }}
+      when: pending_check_final.status | default(0) != 200 or ((pending_check_final.json | default({})).pending | default(0) | int) != 0
+
+    - name: Find latest enriched JSON report for this scenario
+      shell: "ls -1t {{ testbed_dir }}/results/json/{{ scenario }}_*_jobs_enriched.json 2>/dev/null | head -1"
+      args:
+        executable: /bin/bash
+      register: enriched_report_path
+      changed_when: false
+      failed_when: false
+      delegate_to: localhost
+
+    - name: Read latest enriched outcome breakdown
+      shell: |
+        {{ local_project_dir }}/.venv/bin/python - "{{ enriched_report_path.stdout }}" <<'PY'
+        import json
+        import sys
+        p = sys.argv[1]
+        with open(p, "r") as f:
+            data = json.load(f)
+        print(json.dumps(data.get("outcome_breakdown", {})))
+        PY
+      args:
+        executable: /bin/bash
+      register: enriched_outcome_breakdown
+      changed_when: false
+      failed_when: false
+      when: enriched_report_path.stdout | length > 0
+      delegate_to: localhost
+
+    - name: Print outcome breakdown from enriched report
+      debug:
+        msg: >-
+          outcome_breakdown={{ enriched_outcome_breakdown.stdout | default('{}') }}
+      when: enriched_outcome_breakdown is defined and enriched_outcome_breakdown.stdout is defined
 
 - name: Analyze scheduler profiling
   hosts: control
