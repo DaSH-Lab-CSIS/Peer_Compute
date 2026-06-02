@@ -1216,7 +1216,9 @@ def direct_invocation_status(request):
                 'provider_user_id': str(job.provider.user_id),
                 'service_id': job.service.id if job.service else None,
                 'finished': job.finished,
+                'start_time': job.start_time.isoformat() if job.start_time else None,
                 'ack_time': job.ack_time.isoformat() if job.ack_time else None,
+                'lb_received_time': job.lb_received_time.isoformat() if job.lb_received_time else None,
                 'scheduler_received_time': job.scheduler_received_time.isoformat() if job.scheduler_received_time else None,
                 'assigned_to_provider_time': job.assigned_to_provider_time.isoformat() if job.assigned_to_provider_time else None,
                 'pull_time': job.pull_time,
@@ -1269,6 +1271,190 @@ def pending_jobs_count(request):
     ).count()
 
     return JsonResponse({"pending": active})
+
+
+def jobs_in_window(request):
+    """Return all jobs whose start_time falls within [since, until].
+
+    Query parameters:
+        since  (required): ISO-8601 UTC start of window, e.g. 2026-05-27T14:20:00Z
+        until  (optional): ISO-8601 UTC end of window; defaults to now
+        limit  (optional): max rows to return (default 10000, max 50000)
+        offset (optional): pagination offset (default 0)
+
+    Returns a JSON object:
+        {
+          "job_count": <int>,
+          "since": <str>,
+          "until": <str>,
+          "jobs": [ { job fields ... }, ... ]
+        }
+    """
+    from datetime import datetime, timezone as dt_tz
+
+    since_str = request.GET.get("since")
+    if not since_str:
+        return JsonResponse({"error": "since param is required"}, status=400)
+
+    try:
+        since = datetime.fromisoformat(since_str)
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=dt_tz.utc)
+    except ValueError as exc:
+        return JsonResponse({"error": f"Invalid since value: {exc}"}, status=400)
+
+    until_str = request.GET.get("until")
+    if until_str:
+        try:
+            until = datetime.fromisoformat(until_str)
+            if until.tzinfo is None:
+                until = until.replace(tzinfo=dt_tz.utc)
+        except ValueError as exc:
+            return JsonResponse({"error": f"Invalid until value: {exc}"}, status=400)
+    else:
+        until = datetime.now(tz=dt_tz.utc)
+
+    try:
+        limit = min(int(request.GET.get("limit", 10000)), 50000)
+        offset = int(request.GET.get("offset", 0))
+    except (TypeError, ValueError):
+        return JsonResponse({"error": "limit and offset must be integers"}, status=400)
+
+    qs = (
+        Job.objects.filter(start_time__gte=since, start_time__lte=until)
+        .select_related("provider", "service")
+        .order_by("start_time")[offset: offset + limit]
+    )
+
+    jobs_out = []
+    for job in qs:
+        jobs_out.append({
+            "job_id": job.id,
+            "provider_user_id": str(job.provider.user_id) if job.provider else None,
+            "service_id": job.service.id if job.service else None,
+            "finished": job.finished,
+            "start_time": job.start_time.isoformat() if job.start_time else None,
+            "ack_time": job.ack_time.isoformat() if job.ack_time else None,
+            "lb_received_time": job.lb_received_time.isoformat() if job.lb_received_time else None,
+            "scheduler_received_time": job.scheduler_received_time.isoformat() if job.scheduler_received_time else None,
+            "assigned_to_provider_time": job.assigned_to_provider_time.isoformat() if job.assigned_to_provider_time else None,
+            "pull_time": job.pull_time,
+            "run_time": job.run_time,
+            "total_time": job.total_time,
+            "response": job.response,
+        })
+
+    return JsonResponse({
+        "job_count": len(jobs_out),
+        "since": since.isoformat(),
+        "until": until.isoformat(),
+        "jobs": jobs_out,
+    })
+
+
+@csrf_exempt
+def timeout_stale_jobs(request):
+    """Mark stale dispatched jobs as finished with timeout sentinel response.
+
+    Expects POST body JSON:
+      {
+        "since": "<iso8601>",
+        "no_result_threshold_seconds": 300,
+        "no_ack_threshold_seconds": 120
+      }
+    """
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Only POST is supported'}, status=405)
+
+    try:
+        body = json.loads(request.body.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JsonResponse({'error': 'Invalid JSON payload'}, status=400)
+
+    since_str = body.get("since")
+    if not since_str:
+        return JsonResponse({"error": "since field is required"}, status=400)
+
+    try:
+        no_result_threshold = int(body.get("no_result_threshold_seconds", 300))
+        no_ack_threshold = int(body.get("no_ack_threshold_seconds", 120))
+    except (TypeError, ValueError):
+        return JsonResponse(
+            {"error": "Thresholds must be integers (seconds)"},
+            status=400,
+        )
+
+    if no_result_threshold < 0 or no_ack_threshold < 0:
+        return JsonResponse(
+            {"error": "Thresholds must be non-negative"},
+            status=400,
+        )
+
+    from datetime import datetime, timezone as dt_tz
+    try:
+        since = datetime.fromisoformat(since_str)
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=dt_tz.utc)
+    except ValueError as exc:
+        return JsonResponse({"error": f"Invalid since value: {exc}"}, status=400)
+
+    now = datetime.now(tz=dt_tz.utc)
+    timed_out_no_ack = 0
+    timed_out_no_result = 0
+
+    base_qs = Job.objects.filter(
+        finished=False,
+        assigned_to_provider_time__isnull=False,
+        start_time__gte=since,
+    )
+
+    with transaction.atomic():
+        stale_jobs = list(base_qs.select_for_update())
+        for job in stale_jobs:
+            timeout_kind = None
+            if job.ack_time is None:
+                elapsed = (now - job.assigned_to_provider_time).total_seconds()
+                if elapsed > no_ack_threshold:
+                    timeout_kind = "no_ack"
+            else:
+                elapsed = (now - job.ack_time).total_seconds()
+                if elapsed > no_result_threshold:
+                    timeout_kind = "no_result"
+
+            if timeout_kind is None:
+                continue
+
+            job.finished = True
+            job.response = json.dumps(
+                {
+                    "sweep": "timeout",
+                    "kind": timeout_kind,
+                    "swept_at": now.isoformat(),
+                }
+            )
+            job.save(update_fields=["finished", "response"])
+
+            if timeout_kind == "no_ack":
+                timed_out_no_ack += 1
+            else:
+                timed_out_no_result += 1
+
+    remaining_pending = Job.objects.filter(
+        finished=False,
+        assigned_to_provider_time__isnull=False,
+        start_time__gte=since,
+    ).count()
+
+    return JsonResponse(
+        {
+            "timed_out": {
+                "no_ack": timed_out_no_ack,
+                "no_result": timed_out_no_result,
+            },
+            "remaining_pending": remaining_pending,
+        },
+        status=200,
+    )
 
 
 @csrf_exempt

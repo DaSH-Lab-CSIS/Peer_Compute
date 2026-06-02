@@ -11,6 +11,8 @@ from .views import (
     direct_invoke,
     direct_invocation_status,
     pending_jobs_count,
+    timeout_stale_jobs,
+    jobs_in_window,
 )
 # from .views import recover_pending_jobs
 
@@ -29,5 +31,7 @@ urlpatterns = [
     path('direct_invoke/', direct_invoke, name='direct_invoke'),
     path('direct_invocation_status/', direct_invocation_status, name='direct_invocation_status'),
     path('pending_jobs_count/', pending_jobs_count, name='pending_jobs_count'),
+    path('timeout_stale_jobs/', timeout_stale_jobs, name='timeout_stale_jobs'),
+    path('jobs_in_window/', jobs_in_window, name='jobs_in_window'),
     # path('recover_jobs/', recover_pending_jobs, name='recover_jobs')
 ]
