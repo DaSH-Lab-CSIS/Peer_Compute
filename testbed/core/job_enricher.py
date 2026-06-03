@@ -10,6 +10,7 @@ Two modes:
 In both cases the same output files are produced.
 """
 import csv
+import glob as _glob
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -131,14 +132,39 @@ def _fetch_jobs_by_window(
 # Profile log loader
 # ---------------------------------------------------------------------------
 
-def _load_profile_by_corr(profile_path: str) -> Dict[str, Dict[str, Any]]:
-    """Parse a scheduler profile JSONL and return a per-correlation_id summary dict.
+def _resolve_profile_paths(profile_logs: str) -> List[Path]:
+    """Expand a comma-separated list of paths/globs into concrete file paths."""
+    paths: List[Path] = []
+    for entry in profile_logs.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        expanded = _glob.glob(entry, recursive=True)
+        if expanded:
+            paths.extend(Path(p) for p in expanded)
+        else:
+            paths.append(Path(entry))
+    return [p for p in paths if p.exists()]
+
+
+def _load_profile_by_corr(profile_logs: str) -> Dict[str, Dict[str, Any]]:
+    """Parse one or more scheduler profile JSONL files (comma-separated paths or globs)
+    and return a merged per-correlation_id summary dict.
+
+    Multiple schedulers each produce their own profile file; this merges them all.
+    Each scheduler handles distinct batches so corr_id collisions are impossible.
 
     For each correlation_id the returned dict has keys:
       ilp_solve_ms, fp_total_ms, cost_matrix_ms, delay_dict_ms,
       process_assignments_ms, batch_total_ms, queue_depth_at_dispatch
     """
-    rows = _read_jsonl_file(Path(profile_path))
+    paths = _resolve_profile_paths(profile_logs)
+    if not paths:
+        return {}
+
+    rows: List[Dict[str, Any]] = []
+    for p in paths:
+        rows.extend(_read_jsonl_file(p))
 
     # First pass: group raw rows by correlation_id
     by_corr: Dict[str, List[Dict[str, Any]]] = {}
@@ -313,8 +339,9 @@ def enrich_run(
         until:                   ISO-8601 window end. If omitted, defaults to now on
                                  the scheduler side.
         chunk_size:              Batch size for job-ID mode requests.
-        scheduler_profile_log:   Optional path to scheduler profile JSONL file to join
-                                 per-batch profiling spans against each job's corr_id.
+        scheduler_profile_log:   Optional comma-separated paths or glob patterns pointing
+                                 to scheduler profile JSONL files. All matched files are
+                                 merged — pass one per scheduler node to get full coverage.
     """
     results_root = Path(results_dir)
     metrics_path = results_root / "json" / f"{run_id}_metrics.json"

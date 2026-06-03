@@ -493,7 +493,11 @@ Examples:
     )
     parser.add_argument(
         '--scheduler-profile-log',
-        help='Path to scheduler profile JSONL file to join per-batch profiling spans (e.g. scheduler/logs/scheduler_profile_run_XXXXX.jsonl)'
+        help=(
+            'Comma-separated paths or glob patterns to scheduler profile JSONL files. '
+            'Pass one per scheduler node to get full coverage — all files are merged on corr_id. '
+            'Example: "sched1/logs/scheduler_profile_*.jsonl,sched2/logs/scheduler_profile_*.jsonl"'
+        )
     )
 
     args = parser.parse_args()
