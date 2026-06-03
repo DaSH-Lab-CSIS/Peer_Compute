@@ -128,6 +128,65 @@ def _fetch_jobs_by_window(
 
 
 # ---------------------------------------------------------------------------
+# Profile log loader
+# ---------------------------------------------------------------------------
+
+def _load_profile_by_corr(profile_path: str) -> Dict[str, Dict[str, Any]]:
+    """Parse a scheduler profile JSONL and return a per-correlation_id summary dict.
+
+    For each correlation_id the returned dict has keys:
+      ilp_solve_ms, fp_total_ms, cost_matrix_ms, delay_dict_ms,
+      process_assignments_ms, batch_total_ms, queue_depth_at_dispatch
+    """
+    rows = _read_jsonl_file(Path(profile_path))
+
+    # First pass: group raw rows by correlation_id
+    by_corr: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows:
+        cid = row.get("correlation_id")
+        if not cid:
+            continue
+        by_corr.setdefault(str(cid), []).append(row)
+
+    label_map = {
+        "find_providers-ilp_solve": "ilp_solve_ms",
+        "find_providers-total": "fp_total_ms",
+        "build_cost_matrix-total": "cost_matrix_ms",
+        "build_delay_dict-total": "delay_dict_ms",
+        "process_assignments-total": "process_assignments_ms",
+    }
+
+    result: Dict[str, Dict[str, Any]] = {}
+    for cid, crows in by_corr.items():
+        summary: Dict[str, Any] = {
+            "ilp_solve_ms": None,
+            "fp_total_ms": None,
+            "cost_matrix_ms": None,
+            "delay_dict_ms": None,
+            "process_assignments_ms": None,
+            "batch_total_ms": None,
+            "queue_depth_at_dispatch": None,
+        }
+        for row in crows:
+            label = row.get("label", "")
+            if label in label_map:
+                elapsed = row.get("elapsed_s")
+                if elapsed is not None:
+                    summary[label_map[label]] = round(float(elapsed) * 1000, 3)
+            elif label == "batch-done":
+                t = row.get("total_batch_time")
+                if t is not None:
+                    summary["batch_total_ms"] = round(float(t) * 1000, 3)
+            elif label == "batch-start":
+                qd = row.get("queue_depth")
+                if qd is not None:
+                    summary["queue_depth_at_dispatch"] = qd
+        result[cid] = summary
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Row builder
 # ---------------------------------------------------------------------------
 
@@ -135,6 +194,7 @@ def _build_enriched_row(
     run_id: str,
     job: Dict[str, Any],
     request_row: Optional[Dict[str, Any]] = None,
+    profile_summary: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     request_row = request_row or {}
 
@@ -157,10 +217,15 @@ def _build_enriched_row(
     assigned_time = _parse_iso(job.get("assigned_to_provider_time"))
     ack_time = _parse_iso(job.get("ack_time"))
     start_time = _parse_iso(job.get("start_time"))
+    finish_time = _parse_iso(job.get("finish_time"))
     provider_total_time_ms = int(job.get("total_time") or 0)
     end_time = None
     if start_time and provider_total_time_ms > 0:
         end_time = start_time + timedelta(milliseconds=provider_total_time_ms)
+
+    ps = profile_summary or {}
+    response_val = job.get("response")
+    response_truncated = (str(response_val or ""))[:500]
 
     return {
         "run_id": run_id,
@@ -187,6 +252,24 @@ def _build_enriched_row(
         "request_enqueue_timestamp": request_row.get("enqueue_timestamp"),
         "request_latency": request_row.get("latency"),
         "request_success": request_row.get("success"),
+        # New fields
+        "corr_id": job.get("corr_id"),
+        "response": response_truncated,
+        "cost": job.get("cost"),
+        "finish_time": job.get("finish_time"),
+        "finish_latency_ms": _duration_ms(lb_received_time, finish_time),
+        "memory_usage": job.get("memory_usage"),
+        "cpu_usage": job.get("cpu_usage"),
+        "cpu_efficiency_score": job.get("cpu_efficiency_score"),
+        "memory_efficiency_score": job.get("memory_efficiency_score"),
+        # Profile log columns (None when no profile provided or no match)
+        "ilp_solve_ms": ps.get("ilp_solve_ms"),
+        "fp_total_ms": ps.get("fp_total_ms"),
+        "cost_matrix_ms": ps.get("cost_matrix_ms"),
+        "delay_dict_ms": ps.get("delay_dict_ms"),
+        "process_assignments_ms": ps.get("process_assignments_ms"),
+        "batch_total_ms": ps.get("batch_total_ms"),
+        "queue_depth_at_dispatch": ps.get("queue_depth_at_dispatch"),
     }
 
 
@@ -197,6 +280,12 @@ _FIELDNAMES = [
     "ack_time", "start_time", "lb_to_scheduler_ms", "scheduler_to_dispatch_ms",
     "dispatch_to_ack_ms", "provider_total_time_ms", "end_to_end_ms",
     "request_enqueue_timestamp", "request_latency", "request_success",
+    # New fields
+    "corr_id", "response", "cost", "finish_time", "finish_latency_ms",
+    "memory_usage", "cpu_usage", "cpu_efficiency_score", "memory_efficiency_score",
+    # Profile log columns
+    "ilp_solve_ms", "fp_total_ms", "cost_matrix_ms", "delay_dict_ms",
+    "process_assignments_ms", "batch_total_ms", "queue_depth_at_dispatch",
 ]
 
 
@@ -211,18 +300,21 @@ def enrich_run(
     since: Optional[str] = None,
     until: Optional[str] = None,
     chunk_size: int = 200,
+    scheduler_profile_log: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Enrich run metrics with scheduler-side per-job status.
 
     Args:
-        run_id:        Testbed run identifier (used to locate result files).
-        results_dir:   Root of testbed results tree (contains csv/ and json/).
-        scheduler_url: Base URL of the scheduler, e.g. http://host:8000.
-        since:         ISO-8601 window start for the window-mode fallback.
-                       If omitted, extracted from metrics.json start_time.
-        until:         ISO-8601 window end. If omitted, defaults to now on
-                       the scheduler side.
-        chunk_size:    Batch size for job-ID mode requests.
+        run_id:                  Testbed run identifier (used to locate result files).
+        results_dir:             Root of testbed results tree (contains csv/ and json/).
+        scheduler_url:           Base URL of the scheduler, e.g. http://host:8000.
+        since:                   ISO-8601 window start for the window-mode fallback.
+                                 If omitted, extracted from metrics.json start_time.
+        until:                   ISO-8601 window end. If omitted, defaults to now on
+                                 the scheduler side.
+        chunk_size:              Batch size for job-ID mode requests.
+        scheduler_profile_log:   Optional path to scheduler profile JSONL file to join
+                                 per-batch profiling spans against each job's corr_id.
     """
     results_root = Path(results_dir)
     metrics_path = results_root / "json" / f"{run_id}_metrics.json"
@@ -241,6 +333,13 @@ def enrich_run(
         jid = req.get("job_id")
         if jid is not None:
             requests_by_job_id[int(jid)] = req
+
+    # ------------------------------------------------------------------
+    # Load optional scheduler profile log
+    # ------------------------------------------------------------------
+    profile_by_corr: Dict[str, Dict[str, Any]] = {}
+    if scheduler_profile_log:
+        profile_by_corr = _load_profile_by_corr(scheduler_profile_log)
 
     # ------------------------------------------------------------------
     # Decide which fetching mode to use
@@ -270,7 +369,11 @@ def enrich_run(
         # In window mode there are no per-request correlates, so request_row
         # will always be empty — that's expected.
         enriched_rows = [
-            _build_enriched_row(run_id, job)
+            _build_enriched_row(
+                run_id,
+                job,
+                profile_summary=profile_by_corr.get(str(job.get("corr_id", ""))) if profile_by_corr else None,
+            )
             for job in job_rows
         ]
     else:
@@ -286,6 +389,9 @@ def enrich_run(
                 run_id,
                 jobs_by_id.get(int(r["job_id"]), {}),
                 requests_by_job_id.get(int(r["job_id"])),
+                profile_summary=profile_by_corr.get(
+                    str(jobs_by_id.get(int(r["job_id"]), {}).get("corr_id", ""))
+                ) if profile_by_corr else None,
             )
             for r in job_id_rows
             if r.get("job_id") is not None
