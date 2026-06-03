@@ -1225,6 +1225,13 @@ def direct_invocation_status(request):
                 'run_time': job.run_time,
                 'total_time': job.total_time,
                 'response': job.response,
+                'corr_id': str(job.corr_id) if job.corr_id else None,
+                'cost': job.cost,
+                'finish_time': job.finish_time.isoformat() if job.finish_time else None,
+                'memory_usage': job.memory_usage,
+                'cpu_usage': job.cpu_usage,
+                'cpu_efficiency_score': float(job.cpu_efficiency_score) if job.cpu_efficiency_score else None,
+                'memory_efficiency_score': float(job.memory_efficiency_score) if job.memory_efficiency_score else None,
             }
         )
 
@@ -1342,6 +1349,13 @@ def jobs_in_window(request):
             "run_time": job.run_time,
             "total_time": job.total_time,
             "response": job.response,
+            "corr_id": str(job.corr_id) if job.corr_id else None,
+            "cost": job.cost,
+            "finish_time": job.finish_time.isoformat() if job.finish_time else None,
+            "memory_usage": job.memory_usage,
+            "cpu_usage": job.cpu_usage,
+            "cpu_efficiency_score": float(job.cpu_efficiency_score) if job.cpu_efficiency_score else None,
+            "memory_efficiency_score": float(job.memory_efficiency_score) if job.memory_efficiency_score else None,
         })
 
     return JsonResponse({
@@ -1738,6 +1752,7 @@ def finish_job(data):
             job.response = str(result)
         
         job.finished = True
+        job.finish_time = datetime.now(tz=timezone(TIME_ZONE))
         
         print(f"Job state after update - pull_time: {job.pull_time}, run_time: {job.run_time}, total_time: {job.total_time}, finished: {job.finished}")
         
