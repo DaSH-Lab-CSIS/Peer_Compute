@@ -68,6 +68,7 @@ class Job(models.Model):
     cpu_usage = models.BigIntegerField(null=True, blank=True, help_text="Container CPU usage (total_usage)")
     cpu_efficiency_score = models.DecimalField(null=True, blank=True, max_digits=30, decimal_places=15)
     memory_efficiency_score = models.DecimalField(null=True, blank=True, max_digits=30, decimal_places=15)
+    finish_time = models.DateTimeField(null=True, blank=True, help_text='Timestamp when the scheduler received the provider result and marked the job finished')
 
     # Return the run_time of the latest invocation of this service (job) for a certain provider
     def get_latest_run_time(provider_id, service_id):
