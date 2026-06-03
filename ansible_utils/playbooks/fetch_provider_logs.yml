@@ -1,0 +1,76 @@
+---
+# Fetch provider.log from all managed nodes and store locally under
+# ansible_utils/provider_logs/<provider_user_id>.log
+#
+# Files are overwritten on every run — useful for live debugging during
+# an experiment or post-mortem analysis.
+#
+# Usage (from ansible_utils/):
+#   ./run_playbook.sh -i inventory.ini playbooks/fetch_provider_logs.yml -K --ask-vault-pass
+#   ./run_playbook.sh -i inventory.ini playbooks/fetch_provider_logs.yml -K --ask-vault-pass --limit cortalim1.dashlab.in
+#
+# Output: ansible_utils/provider_logs/<user_id>.log  (one file per node)
+#         ansible_utils/provider_logs/<user_id>.pid   (running PID or "not running")
+
+- name: Fetch provider logs from managed nodes
+  hosts: managed
+  become: no
+  gather_facts: no
+  vars:
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+    user_id_file: "{{ project_dir }}/provider_user_id.txt"
+    provider_log: "{{ project_dir }}/provider.log"
+    local_log_dir: "{{ playbook_dir }}/../provider_logs"
+
+  tasks:
+    - name: Check provider_user_id.txt exists
+      stat:
+        path: "{{ user_id_file }}"
+      register: uid_stat
+
+    - name: Read provider user ID
+      slurp:
+        src: "{{ user_id_file }}"
+      register: slurp_uid
+      when: uid_stat.stat.exists
+
+    - name: Set provider_user_id fact
+      set_fact:
+        provider_user_id: "{{ slurp_uid.content | b64decode | trim }}"
+      when: uid_stat.stat.exists
+
+    - name: Set fallback user ID from hostname when file missing
+      set_fact:
+        provider_user_id: "no_uid_{{ inventory_hostname }}"
+      when: not uid_stat.stat.exists
+
+    - name: Check provider.log exists
+      stat:
+        path: "{{ provider_log }}"
+      register: log_stat
+
+    - name: Fetch provider.log to local provider_logs/<user_id>.log
+      fetch:
+        src: "{{ provider_log }}"
+        dest: "{{ local_log_dir }}/{{ provider_user_id }}.log"
+        flat: yes
+        fail_on_missing: no
+      when: log_stat.stat.exists
+
+    - name: Write empty placeholder when provider.log is missing
+      copy:
+        content: "[{{ inventory_hostname }}] provider.log not found\n"
+        dest: "{{ local_log_dir }}/{{ provider_user_id }}.log"
+      delegate_to: localhost
+      when: not log_stat.stat.exists
+
+    - name: Get running provider PID
+      shell: pgrep -f '[p]rovider/provider1.py' || echo ""
+      register: provider_pid
+      changed_when: false
+
+    - name: Write PID file locally
+      copy:
+        content: "{{ provider_pid.stdout | trim if provider_pid.stdout | trim != '' else 'not running' }}\n"
+        dest: "{{ local_log_dir }}/{{ provider_user_id }}.pid"
+      delegate_to: localhost
