@@ -13,6 +13,7 @@ from .views import (
     pending_jobs_count,
     timeout_stale_jobs,
     jobs_in_window,
+    reset_provider_state,
 )
 # from .views import recover_pending_jobs
 
@@ -33,5 +34,6 @@ urlpatterns = [
     path('pending_jobs_count/', pending_jobs_count, name='pending_jobs_count'),
     path('timeout_stale_jobs/', timeout_stale_jobs, name='timeout_stale_jobs'),
     path('jobs_in_window/', jobs_in_window, name='jobs_in_window'),
+    path('reset_provider_state/', reset_provider_state, name='reset_provider_state'),
     # path('recover_jobs/', recover_pending_jobs, name='recover_jobs')
 ]

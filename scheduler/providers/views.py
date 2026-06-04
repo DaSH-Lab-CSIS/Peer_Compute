@@ -1248,6 +1248,34 @@ def direct_invocation_status(request):
         status=200,
     )
 
+@csrf_exempt
+def reset_provider_state(request):
+    """Reset delay and function_invocations for all active providers.
+
+    Call this before starting a new experiment to ensure the scheduler's
+    per-provider delay estimates and invocation counters don't carry over
+    stale state from a previous run, which would skew ILP assignment decisions.
+
+    POST (no body required).
+
+    Returns:
+        { "reset": <int n_providers>, "providers": [ user_id, ... ] }
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "Only POST is supported"}, status=405)
+
+    providers = User.objects.filter(is_provider=True, active=True)
+    reset_ids = []
+    with transaction.atomic():
+        for p in providers.select_for_update():
+            p.reset_delay()
+            p.function_invocations = {}
+            p.save(update_fields=["delay", "function_invocations"])
+            reset_ids.append(str(p.user_id))
+
+    return JsonResponse({"reset": len(reset_ids), "providers": reset_ids})
+
+
 def pending_jobs_count(request):
     """Return the count of dispatched-but-unfinished jobs created since a given timestamp.
 
