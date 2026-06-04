@@ -236,6 +236,20 @@
           fail:
             msg: "Scheduler did not start on 127.0.0.1:8000. See diagnostics above."
 
+    - name: Reset provider delay and invocation counters before experiment
+      uri:
+        url: "http://127.0.0.1:8000/providers/reset_provider_state/"
+        method: POST
+        return_content: yes
+        use_proxy: false
+        status_code: 200
+      register: reset_result
+      failed_when: false
+
+    - name: Print provider state reset result
+      debug:
+        msg: "Provider state reset: {{ reset_result.json | default({}) }}"
+
 - name: Start Providers
   hosts: managed
   become: yes
