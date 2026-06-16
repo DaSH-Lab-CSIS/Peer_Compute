@@ -123,7 +123,7 @@ DATABASES = {
         "NAME": "peercompute",
         "USER": "root",
         "PASSWORD": "",
-        "HOST": "anjuna2.dashlab.in",   # or HAProxy VIP/host
+        "HOST": "colva2.dashlab.in",   # or HAProxy VIP/host
         "PORT": "26257",
         "OPTIONS": {
             "sslmode": "verify-full",
