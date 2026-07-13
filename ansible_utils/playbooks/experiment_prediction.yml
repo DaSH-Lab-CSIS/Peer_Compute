@@ -1,0 +1,840 @@
+---
+# Prediction-engine experiment playbook for ACM TOIT evaluation.
+#
+# Wraps the standard 5-play structure of experiment.yml and adds:
+#   - placement_mode / prediction_strategy injection into scheduler .env
+#   - Optional Docker image-cache reset between cold-start runs
+#   - --seed / --save-requests / --replay threading into testbed CLI
+#   - Prediction audit log fetch (prediction_audit_*.jsonl)
+#   - Manifest emission for TOIT reproducibility
+#
+# ─── Typical usage ──────────────────────────────────────────────────────────
+#
+#   # STEP 1 — RR trace run (generates replay file; saves requests)
+#   ./run_playbook.sh -i inventory.ini playbooks/experiment_prediction.yml \
+#     -K --ask-vault-pass \
+#     -e "placement_mode=rr prediction_strategy=cpi scenario=steady_load \
+#         seed=42 save_requests=true run_label=rr_trace repetition=1"
+#
+#   # The playbook prints the replay_file path at the end of step 1.
+#   # Use that path for all subsequent -e replay_file=... runs.
+#
+#   # STEP 2-N — One run per policy (same seed, same replay file)
+#   ./run_playbook.sh -i inventory.ini playbooks/experiment_prediction.yml \
+#     -K --ask-vault-pass \
+#     -e "placement_mode=ilp prediction_strategy=cpi scenario=steady_load \
+#         seed=42 replay_file=testbed/results/requests/steady_load_<RUN_ID>_requests.json \
+#         run_label=ilp_cpi repetition=1"
+#
+#   # Repeat with prediction_strategy=scaling, history; also with reset_image_cache=true
+#   # for cold-start condition (runs docker image prune on all managed nodes before providers).
+#
+# ─── Extra vars reference ───────────────────────────────────────────────────
+#   placement_mode        ilp | rr | oracle | drl          (default: ilp)
+#   prediction_strategy   cpi | scaling | history          (default: cpi)
+#   run_label             free-text tag embedded in manifest (default: "")
+#   repetition            integer repetition index 1-5     (default: 1)
+#   seed                  integer random seed              (default: 42)
+#   scenario              steady_load | bursty_load | ...  (default: steady_load)
+#   iterations            testbed iterations per run       (default: 1)
+#   research_mode         true | false                     (default: false)
+#   save_requests         true | false — save request trace on first RR run (default: false)
+#   replay_file           path to saved requests JSON for replay (default: "")
+#   reset_image_cache     true | false — docker image prune on managed nodes (default: false)
+#   no_result_threshold_seconds   (default: 300)
+#   no_ack_threshold_seconds      (default: 120)
+#   run_profile_analysis  true | false (default: true)
+#   mqtt_broker           override MQTT broker (default: "")
+#   mqtt_port             override MQTT port   (default: "")
+# ────────────────────────────────────────────────────────────────────────────
+
+# ============================================================================
+# Play 0 — (Optional) Reset Docker image cache on managed nodes
+# ============================================================================
+- name: Reset Docker image cache on provider nodes
+  hosts: managed
+  become: yes
+  tags: [experiment, cache_reset]
+  vars:
+    reset_image_cache: false
+  tasks:
+    - name: Prune all Docker images (cold-start condition)
+      shell: docker image prune --all --force
+      when: reset_image_cache | bool
+      register: docker_prune
+
+    - name: Report image prune result
+      debug:
+        msg: "Image prune on {{ inventory_hostname }}: {{ docker_prune.stdout | default('skipped') }}"
+      when: reset_image_cache | bool
+
+# ============================================================================
+# Play 1 — Start Load Balancer  (identical to experiment.yml Play 1)
+# ============================================================================
+- name: Start Load Balancer
+  hosts: localhost
+  connection: local
+  become: no
+  tags: experiment
+  vars_files:
+    - secrets.yml
+  vars:
+    local_user: "{{ lookup('env', 'USER') }}"
+    local_project_dir: "/home/{{ local_user }}/Serverless_Scheduler"
+    lb_project_dir: "/home/{{ lb_ssh_user }}/deploy/Serverless_Scheduler"
+    lb_host: "colva2.dashlab.in"
+    lb_url: "http://colva2.dashlab.in:9001"
+    lb_ssh_user: "peercompute"
+    mqtt_broker: ""
+    mqtt_port: ""
+  tasks:
+    - name: Register load balancer delegate host
+      add_host:
+        name: lb_delegate
+        ansible_host: "{{ lb_host }}"
+        ansible_user: "{{ lb_ssh_user }}"
+        ansible_connection: ssh
+        ansible_ssh_private_key_file: "/home/{{ local_user }}/.ssh/id_ed25519"
+      changed_when: false
+      run_once: true
+
+    - name: Verify passwordless SSH access to load balancer host
+      command: >-
+        ssh -o BatchMode=yes -o ConnectTimeout=8
+        {{ lb_ssh_user }}@{{ lb_host }} "echo ssh_ok"
+      register: lb_ssh_check
+      changed_when: false
+      failed_when: false
+      become: false
+      delegate_to: localhost
+      run_once: true
+
+    - name: Fail with SSH key setup instructions when SSH access is missing
+      fail:
+        msg: >-
+          Passwordless SSH to {{ lb_ssh_user }}@{{ lb_host }} is required.
+          Run: ssh-copy-id {{ lb_ssh_user }}@{{ lb_host }}
+      when: lb_ssh_check.rc != 0
+      become: false
+      delegate_to: localhost
+      run_once: true
+
+    - name: Check if Load Balancer Script is running
+      shell: "pgrep -f 'loadbalancer_with_logging' || true"
+      register: lb_process
+      become: false
+      delegate_to: lb_delegate
+
+    - name: Check current load balancer health before restart decision
+      uri:
+        url: "{{ lb_url }}/status"
+        method: GET
+        timeout: 5
+      register: lb_prehealth
+      failed_when: false
+      changed_when: false
+      become: false
+      delegate_to: localhost
+
+    - name: Install loadbalancer pip requirements on lb host
+      command: "{{ lb_project_dir }}/.venv/bin/pip install -r {{ lb_project_dir }}/loadbalancer/requirements.txt --no-input --index-url https://pypi.org/simple"
+      become: false
+      delegate_to: lb_delegate
+
+    - name: Check if avg_job_times.json exists on current node
+      stat:
+        path: "{{ local_project_dir }}/avg_job_times.json"
+      register: avg_job_times_local
+      become: false
+      delegate_to: localhost
+
+    - name: Sync avg_job_times.json to lb host when present locally
+      copy:
+        src: "{{ local_project_dir }}/avg_job_times.json"
+        dest: "{{ lb_project_dir }}/avg_job_times.json"
+        mode: "0644"
+      become: false
+      delegate_to: lb_delegate
+      when: avg_job_times_local.stat.exists
+
+    - name: Override MQTT_BROKER in LB .env
+      blockinfile:
+        path: "{{ lb_project_dir }}/.env"
+        marker: "# {mark} ANSIBLE MANAGED MQTT"
+        block: |
+          export MQTT_BROKER={{ mqtt_broker }}
+          export MQTT_PORT={{ mqtt_port | default('1884') }}
+          export MQTT_USERNAME=peercompute
+          export MQTT_PASSWORD=peercompute
+        create: true
+        owner: "{{ lb_ssh_user }}"
+        group: "{{ lb_ssh_user }}"
+        mode: "0600"
+      become: false
+      delegate_to: lb_delegate
+      when: mqtt_broker != ""
+
+    - name: Stop stale load balancer process when unhealthy or broker changed
+      shell: "pkill -f 'uvicorn loadbalancer_with_logging:app' || true"
+      failed_when: false
+      changed_when: false
+      become: false
+      delegate_to: lb_delegate
+      when: lb_process.stdout != "" and ((lb_prehealth.status | default(-1)) != 200 or mqtt_broker != "")
+
+    - name: Start Load Balancer Script
+      shell: |
+        source "{{ lb_project_dir }}/.env"
+        nohup {{ lb_project_dir }}/.venv/bin/uvicorn loadbalancer_with_logging:app --host 0.0.0.0 --port 9001 > /tmp/lb.log 2>&1 &
+      args:
+        executable: /bin/bash
+        chdir: "{{ lb_project_dir }}/loadbalancer"
+      async: 10
+      poll: 0
+      when: lb_process.stdout == "" or (lb_prehealth.status | default(-1)) != 200 or mqtt_broker != ""
+      become: false
+      delegate_to: lb_delegate
+
+    - name: Wait for Load Balancer port on lb host
+      wait_for:
+        host: 127.0.0.1
+        port: 9001
+        delay: 1
+        timeout: 60
+      become: false
+      delegate_to: lb_delegate
+
+    - name: Wait for Load Balancer to become healthy
+      uri:
+        url: "http://127.0.0.1:9001/status"
+        return_content: yes
+        use_proxy: false
+      register: lb_health
+      retries: 10
+      delay: 3
+      until: lb_health.status == 200
+      become: false
+      delegate_to: lb_delegate
+
+# ============================================================================
+# Play 2 — Start Schedulers (extended: placement_mode + prediction_strategy)
+# ============================================================================
+- name: Start Schedulers
+  hosts: control
+  become: yes
+  tags: experiment
+  vars_files:
+    - secrets.yml
+  vars:
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+    venv_python: "{{ project_dir }}/.venv/bin/python"
+    cockroach_client_certs_source_dir: "{{ project_dir }}/certs"
+    mqtt_broker: ""
+    mqtt_port: ""
+    placement_mode: "ilp"
+    prediction_strategy: "cpi"
+  tasks:
+    - name: Override MQTT_BROKER in scheduler .env
+      blockinfile:
+        path: "{{ project_dir }}/.env"
+        marker: "# {mark} ANSIBLE MANAGED MQTT"
+        block: |
+          export MQTT_BROKER={{ mqtt_broker }}
+          export MQTT_PORT={{ mqtt_port | default('1884') }}
+          export MQTT_USERNAME=peercompute
+          export MQTT_PASSWORD=peercompute
+        create: true
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0600"
+      become_user: "{{ ansible_user }}"
+      when: mqtt_broker != ""
+
+    - name: Write prediction/placement env vars into scheduler .env
+      blockinfile:
+        path: "{{ project_dir }}/.env"
+        marker: "# {mark} ANSIBLE MANAGED PREDICTION"
+        block: |
+          export RUNTIME_PREDICTION_STRATEGY={{ prediction_strategy }}
+          export SCHEDULER_PLACEMENT_MODE={{ placement_mode }}
+        create: true
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0600"
+      become_user: "{{ ansible_user }}"
+
+    - name: Check if scheduler (Django) is running
+      shell: "pgrep -f '[m]anage.py runserver' || true"
+      register: scheduler_process
+      become: false
+
+    - name: Stop running scheduler before restart
+      shell: "pkill -f '[m]anage.py runserver' || true"
+      failed_when: false
+      changed_when: false
+      when: scheduler_process.stdout != ""
+
+    - name: Start scheduler (Django) with prediction env
+      become_user: "{{ ansible_user }}"
+      shell: |
+        source "{{ project_dir }}/.env"
+        nohup {{ venv_python }} manage.py runserver 0.0.0.0:8000 \
+        > /tmp/django.log 2>&1 &
+      environment:
+        DB_SSLROOTCERT: "{{ cockroach_client_certs_source_dir }}/ca.crt"
+        DB_SSLCERT: "{{ cockroach_client_certs_source_dir }}/client.root.crt"
+        DB_SSLKEY: "{{ cockroach_client_certs_source_dir }}/client.root.key"
+      args:
+        chdir: "{{ project_dir }}/scheduler"
+        executable: /bin/bash
+      async: 30
+      poll: 0
+
+    - name: Wait for scheduler port 8000
+      block:
+        - name: Wait for Django port 8000
+          wait_for:
+            host: 127.0.0.1
+            port: 8000
+            delay: 2
+            timeout: 60
+      rescue:
+        - name: Show recent Django log on failed startup
+          shell: "tail -120 /tmp/django.log || echo 'django.log not found'"
+          args:
+            executable: /bin/bash
+          register: django_startup_log
+          changed_when: false
+
+        - name: Print Django startup diagnostics
+          debug:
+            msg: "{{ django_startup_log.stdout }}"
+
+        - name: Fail due to scheduler startup timeout
+          fail:
+            msg: "Scheduler did not start on 127.0.0.1:8000. See diagnostics above."
+
+    - name: Reset provider delay and invocation counters before experiment
+      uri:
+        url: "http://127.0.0.1:8000/providers/reset_provider_state/"
+        method: POST
+        return_content: yes
+        use_proxy: false
+        status_code: 200
+      register: reset_result
+      failed_when: false
+
+    - name: Print provider state reset result
+      debug:
+        msg: "Provider state reset: {{ reset_result.json | default({}) }}"
+
+    - name: Confirm active prediction configuration
+      debug:
+        msg: >-
+          Scheduler started with placement_mode={{ placement_mode }}
+          prediction_strategy={{ prediction_strategy }}
+
+# ============================================================================
+# Play 3 — Start Providers  (identical to experiment.yml Play 3)
+# ============================================================================
+- name: Start Providers
+  hosts: managed
+  become: yes
+  tags: experiment
+  vars_files:
+    - secrets.yml
+  vars:
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+    user_id_file: "{{ project_dir }}/provider_user_id.txt"
+    scheduler_probe_timeout: 60
+    mqtt_broker: ""
+    mqtt_port: ""
+  tasks:
+    - name: Ensure Docker is running
+      service:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Discover scheduler on control group
+      include_tasks: tasks/resolve_scheduler.yml
+      when: scheduler_host is not defined and scheduler_url is not defined
+
+    - name: Default scheduler_url from scheduler_host when passed via -e
+      set_fact:
+        scheduler_url: "http://{{ scheduler_host }}:8000"
+      when: scheduler_host is defined and scheduler_url is not defined
+
+    - name: Read provider user ID from file
+      slurp:
+        src: "{{ user_id_file }}"
+      register: slurp_user_id
+
+    - name: Set provider_user_id fact
+      set_fact:
+        provider_user_id: "{{ slurp_user_id.content | b64decode | trim }}"
+
+    - name: Check if provider script is running
+      shell: "pgrep -f 'provider1.py' || true"
+      register: provider_process
+
+    - name: Resolve provider no-kill override
+      set_fact:
+        provider_no_kill: "{{ (no_kill | default(false) | bool) or (vars.get('no-kill', false) | bool) }}"
+
+    - name: Stop running provider before restart
+      shell: "kill -TERM {{ provider_process.stdout_lines | join(' ') }}"
+      failed_when: false
+      changed_when: provider_process.stdout != ""
+      when:
+        - provider_process.stdout != ""
+        - not provider_no_kill
+
+    - name: Override MQTT_BROKER in project .env
+      blockinfile:
+        path: "{{ project_dir }}/.env"
+        marker: "# {mark} ANSIBLE MANAGED MQTT"
+        block: |
+          export MQTT_BROKER={{ mqtt_broker }}
+          export MQTT_PORT={{ mqtt_port | default('1884') }}
+          export MQTT_USERNAME=peercompute
+          export MQTT_PASSWORD=peercompute
+        create: true
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0600"
+      become_user: "{{ ansible_user }}"
+      when: mqtt_broker != ""
+
+    - name: Ensure provider TrainingData directory exists
+      file:
+        path: "{{ project_dir }}/TrainingData"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0755"
+
+    - name: Start provider script
+      shell: |
+        nohup {{ project_dir }}/.venv/bin/python {{ project_dir }}/provider/provider1.py {{ provider_user_id }} > {{ project_dir }}/provider.log 2>&1 &
+      args:
+        executable: /bin/bash
+      async: 10
+      poll: 0
+      when: provider_process.stdout == "" or not provider_no_kill
+
+# ============================================================================
+# Play 4 — Run Experiments
+# ============================================================================
+- name: Run Experiments
+  hosts: localhost
+  connection: local
+  become: no
+  tags: experiment
+  vars_files:
+    - secrets.yml
+  vars:
+    local_user: "{{ lookup('env', 'USER') }}"
+    local_project_dir: "/home/{{ local_user }}/Serverless_Scheduler"
+    testbed_dir: "{{ local_project_dir }}/testbed"
+    lb_url: "http://colva2.dashlab.in:9001"
+    scenario: "steady_load"
+    iterations: 1
+    research_mode: false
+    seed: 42
+    save_requests: false
+    replay_file: ""
+    no_result_threshold_seconds: 300
+    no_ack_threshold_seconds: 120
+    placement_mode: "ilp"
+    prediction_strategy: "cpi"
+    run_label: ""
+    repetition: 1
+  tasks:
+    - name: Install testbed pip requirements
+      command: "{{ local_project_dir }}/.venv/bin/pip install -r {{ testbed_dir }}/requirements.txt --no-input --index-url https://pypi.org/simple"
+
+    - name: Record experiment start time
+      set_fact:
+        experiment_start_time: "{{ ansible_date_time.iso8601 }}"
+
+    - name: Resolve scheduler host for job drain poll
+      set_fact:
+        scheduler_poll_host: "{{ groups['control'] | first }}"
+      when: scheduler_host is not defined
+
+    - name: Set scheduler_host fact when not already provided
+      set_fact:
+        scheduler_host: "{{ scheduler_poll_host }}"
+      when: scheduler_host is not defined
+
+    - name: Set scheduler_url for drain and enrichment
+      set_fact:
+        scheduler_url: "http://{{ scheduler_host }}:8000"
+
+    - name: Capture git SHA for manifest
+      command: git rev-parse --short HEAD
+      args:
+        chdir: "{{ local_project_dir }}"
+      register: git_sha
+      changed_when: false
+      failed_when: false
+
+    - name: Build testbed command
+      set_fact:
+        testbed_cmd: >-
+          {{ local_project_dir }}/.venv/bin/python main.py
+          --scenario {{ scenario }}
+          --load-balancer-url {{ lb_url }}
+          --iterations {{ iterations }}
+          --seed {{ seed }}
+          {% if research_mode | bool %} --research-mode{% endif %}
+          {% if save_requests | bool %} --save-requests{% endif %}
+          {% if replay_file | string | length > 0 %} --replay {{ replay_file }}{% endif %}
+
+    - name: Print testbed command (for audit log)
+      debug:
+        msg: "Testbed command: {{ testbed_cmd }}"
+
+    - name: Run testbed experiments via load balancer
+      command: "{{ testbed_cmd }}"
+      args:
+        chdir: "{{ testbed_dir }}"
+      register: testbed_run
+
+    - name: Print testbed output
+      debug:
+        msg: |
+          STDOUT:
+          {{ testbed_run.stdout | default('') }}
+          STDERR:
+          {{ testbed_run.stderr | default('') }}
+          RC:
+          {{ testbed_run.rc }}
+      when: testbed_run is defined
+
+    - name: Wait for LB to flush its batch queue to the scheduler
+      uri:
+        url: "{{ lb_url }}/status"
+        method: GET
+        return_content: yes
+        use_proxy: false
+        status_code: 200
+      register: lb_drain_check
+      retries: 120
+      delay: 5
+      until: >-
+        lb_drain_check.status == 200 and
+        (((lb_drain_check.json | default({})).current_batch_size | default(1)) | int) == 0 and
+        ((lb_drain_check.json | default({})).ilp_state | default('progress')) == 'done'
+      failed_when: false
+      delegate_to: localhost
+
+    - name: Wait for all provider jobs from this experiment to finish
+      uri:
+        url: "{{ scheduler_url }}/providers/pending_jobs_count/?since={{ experiment_start_time }}"
+        method: GET
+        return_content: yes
+        use_proxy: false
+        status_code: 200
+      register: pending_check
+      retries: 120
+      delay: 10
+      until: pending_check.status == 200 and (((pending_check.json | default({})).pending | default(-1)) | int) == 0
+      failed_when: false
+      delegate_to: localhost
+
+    - name: Sweep stale jobs into timeout state
+      uri:
+        url: "{{ scheduler_url }}/providers/timeout_stale_jobs/"
+        method: POST
+        body_format: json
+        body:
+          since: "{{ experiment_start_time }}"
+          no_result_threshold_seconds: "{{ no_result_threshold_seconds }}"
+          no_ack_threshold_seconds: "{{ no_ack_threshold_seconds }}"
+        return_content: yes
+        use_proxy: false
+        status_code: 200
+        timeout: 300
+      register: stale_sweep
+      failed_when: false
+      delegate_to: localhost
+
+    - name: Final pending jobs check after stale sweep
+      uri:
+        url: "{{ scheduler_url }}/providers/pending_jobs_count/?since={{ experiment_start_time }}"
+        method: GET
+        return_content: yes
+        use_proxy: false
+        status_code: 200
+      register: pending_check_final
+      failed_when: false
+      delegate_to: localhost
+
+    - name: Warn if pending jobs still remain after stale sweep
+      debug:
+        msg: >-
+          Warning: pending jobs remain after timeout sweep.
+          pending={{ (pending_check_final.json.pending | default('unknown')) if (pending_check_final.json is defined) else 'unknown' }}
+      when: pending_check_final.status | default(0) != 200 or ((pending_check_final.json | default({})).pending | default(0) | int) != 0
+
+    - name: Find latest run_id for this scenario
+      shell: >-
+        ls -1t {{ testbed_dir }}/results/json/{{ scenario }}_*_metrics.json 2>/dev/null |
+        head -1 | xargs -r basename | sed 's/_metrics\.json$//'
+      args:
+        executable: /bin/bash
+      register: latest_run_id
+      changed_when: false
+      failed_when: false
+
+    - name: Enrich run results with scheduler-side job states
+      command: >-
+        {{ local_project_dir }}/.venv/bin/python main.py
+        --enrich {{ latest_run_id.stdout }}
+        --scheduler-url {{ scheduler_url }}
+        --enrich-since {{ experiment_start_time }}
+      args:
+        chdir: "{{ testbed_dir }}"
+      register: enrich_result
+      when: latest_run_id.stdout != ""
+      failed_when: false
+
+    - name: Print enrichment output
+      debug:
+        msg: |
+          STDOUT: {{ enrich_result.stdout | default('') }}
+          STDERR: {{ enrich_result.stderr | default('') }}
+      when: enrich_result is not skipped
+
+    - name: Find latest enriched CSV for this scenario
+      shell: "ls -1t {{ testbed_dir }}/results/csv/{{ scenario }}_*_jobs_enriched.csv 2>/dev/null | head -1"
+      args:
+        executable: /bin/bash
+      register: enriched_csv_path
+      changed_when: false
+      failed_when: false
+
+    - name: Find saved requests file (for replay on subsequent runs)
+      shell: "ls -1t {{ testbed_dir }}/results/requests/{{ scenario }}_*_requests.json 2>/dev/null | head -1"
+      args:
+        executable: /bin/bash
+      register: saved_requests_path
+      changed_when: false
+      failed_when: false
+      when: save_requests | bool
+
+    - name: Print saved requests path (pass this as replay_file= on subsequent runs)
+      debug:
+        msg: >-
+          Saved requests file: {{ saved_requests_path.stdout | default('not found') }}
+          Use -e "replay_file={{ saved_requests_path.stdout | default('') }}" on subsequent runs.
+      when: save_requests | bool
+
+    - name: Ensure manifest directory exists
+      file:
+        path: "{{ testbed_dir }}/results/manifests"
+        state: directory
+        mode: "0755"
+
+    - name: Emit run manifest (TOIT reproducibility artifact)
+      shell: |
+        {{ local_project_dir }}/.venv/bin/python - <<'PY'
+        import json, datetime, os, glob
+        from pathlib import Path
+
+        ts = datetime.datetime.utcnow().isoformat()
+        manifest = {
+          "manifest_version": 1,
+          "ts_utc": ts,
+          "git_sha": "{{ git_sha.stdout | default('unknown') }}",
+          "placement_mode": "{{ placement_mode }}",
+          "prediction_strategy": "{{ prediction_strategy }}",
+          "run_label": "{{ run_label }}",
+          "repetition": {{ repetition }},
+          "scenario": "{{ scenario }}",
+          "seed": {{ seed }},
+          "iterations": {{ iterations }},
+          "research_mode": {{ research_mode | bool }},
+          "save_requests": {{ save_requests | bool }},
+          "replay_file": "{{ replay_file }}",
+          "reset_image_cache": "{{ reset_image_cache | default(false) }}",
+          "experiment_start_time": "{{ experiment_start_time }}",
+          "scheduler_url": "{{ scheduler_url }}",
+          "lb_url": "{{ lb_url }}",
+          "enriched_csv": "{{ enriched_csv_path.stdout | default('') }}",
+          "saved_requests": "{{ saved_requests_path.stdout | default('') if save_requests | bool else '' }}",
+          "fleet": {
+            "control": {{ groups['control'] | to_json }},
+            "managed": {{ groups['managed'] | to_json }},
+          },
+        }
+        label_part = "_{{ run_label }}" if "{{ run_label }}" else ""
+        fname = f"manifest_{{ scenario }}{label_part}_rep{{ repetition }}_{ts[:19].replace(':', '').replace('-', '')}.json"
+        out = Path("{{ testbed_dir }}/results/manifests") / fname
+        out.write_text(json.dumps(manifest, indent=2))
+        print(f"Manifest written: {out}")
+        PY
+      args:
+        executable: /bin/bash
+      register: manifest_result
+      changed_when: true
+
+    - name: Print manifest path
+      debug:
+        msg: "{{ manifest_result.stdout }}"
+
+# ============================================================================
+# Play 5 — Analyze: profile + prediction audit
+# ============================================================================
+- name: Analyze scheduler profiling on control nodes
+  hosts: control
+  become: yes
+  tags: experiment
+  vars_files:
+    - secrets.yml
+  vars:
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+    venv_python: "{{ project_dir }}/.venv/bin/python"
+    run_profile_analysis: true
+    profile_analysis_all: false
+  tasks:
+    - name: Check for scheduler profiling log files
+      find:
+        paths: "{{ project_dir }}/scheduler/logs"
+        patterns: "scheduler_profile_run_*.jsonl"
+      register: profile_logs
+      when: run_profile_analysis | bool
+
+    - name: Build analyze_profile.py command
+      set_fact:
+        analyze_profile_cmd: >-
+          {{ venv_python }} analyze_profile.py
+          {% if profile_analysis_all | bool %} --all{% endif %}
+      when: run_profile_analysis | bool
+
+    - name: Run analyze_profile.py on scheduler host
+      become_user: "{{ ansible_user }}"
+      command: "{{ analyze_profile_cmd }}"
+      args:
+        chdir: "{{ project_dir }}"
+      register: profile_analysis
+      when:
+        - run_profile_analysis | bool
+        - profile_logs.matched | default(0) > 0
+
+    - name: Print profile analysis output
+      debug:
+        msg: "{{ profile_analysis.stdout_lines | default([]) }}"
+      when:
+        - profile_analysis is defined
+        - profile_analysis.stdout is defined
+
+    - name: Note when profile analysis was skipped
+      debug:
+        msg: >-
+          No scheduler_profile_run_*.jsonl under {{ project_dir }}/scheduler/logs
+          (skip with -e run_profile_analysis=false to silence)
+      when:
+        - run_profile_analysis | bool
+        - profile_logs.matched | default(0) == 0
+
+- name: Fetch scheduler profile and prediction audit logs
+  hosts: control
+  become: no
+  gather_facts: no
+  tags: [experiment, fetch_logs]
+  vars_files:
+    - secrets.yml
+  vars:
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+    log_dir: "{{ project_dir }}/scheduler/logs"
+    local_log_dir: "{{ playbook_dir }}/../scheduler_logs"
+    since_run_code: ""
+  tasks:
+    - name: Ensure local scheduler_logs directory exists
+      file:
+        path: "{{ local_log_dir }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      run_once: true
+
+    - name: Check scheduler logs directory exists on remote
+      stat:
+        path: "{{ log_dir }}"
+      register: log_dir_stat
+
+    - name: List scheduler profile JSONL files
+      find:
+        paths: "{{ log_dir }}"
+        patterns: "scheduler_profile_*.jsonl"
+        file_type: file
+      register: profile_files
+      when: log_dir_stat.stat.exists
+
+    - name: Set empty profile file list when logs dir missing
+      set_fact:
+        profile_files:
+          files: []
+      when: not log_dir_stat.stat.exists
+
+    - name: Filter profile files by since_run_code
+      set_fact:
+        filtered_profile_files: >-
+          {{ profile_files.files
+             | selectattr('path', 'search', since_run_code)
+             | list
+             if since_run_code != ''
+             else profile_files.files }}
+
+    - name: Fetch each profile JSONL to local scheduler_logs/
+      fetch:
+        src: "{{ item.path }}"
+        dest: "{{ local_log_dir }}/{{ inventory_hostname }}_{{ item.path | basename }}"
+        flat: yes
+        fail_on_missing: no
+      loop: "{{ filtered_profile_files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+
+    - name: List prediction audit JSONL files
+      find:
+        paths: "{{ log_dir }}"
+        patterns: "prediction_audit_*.jsonl"
+        file_type: file
+      register: audit_files
+      when: log_dir_stat.stat.exists
+
+    - name: Set empty audit file list when logs dir missing
+      set_fact:
+        audit_files:
+          files: []
+      when: not log_dir_stat.stat.exists
+
+    - name: Filter audit files by since_run_code
+      set_fact:
+        filtered_audit_files: >-
+          {{ audit_files.files
+             | selectattr('path', 'search', since_run_code)
+             | list
+             if since_run_code != ''
+             else audit_files.files }}
+
+    - name: Fetch each prediction audit JSONL to local scheduler_logs/
+      fetch:
+        src: "{{ item.path }}"
+        dest: "{{ local_log_dir }}/{{ inventory_hostname }}_{{ item.path | basename }}"
+        flat: yes
+        fail_on_missing: no
+      loop: "{{ filtered_audit_files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+
+    - name: Report fetched log counts
+      debug:
+        msg: >-
+          {{ inventory_hostname }}:
+          {{ filtered_profile_files | length }} profile file(s),
+          {{ filtered_audit_files | length }} prediction audit file(s) fetched.
