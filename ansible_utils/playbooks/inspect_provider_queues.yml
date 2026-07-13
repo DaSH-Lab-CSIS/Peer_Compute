@@ -1,0 +1,172 @@
+---
+# Print delay queues and unfinished jobs directly from provider nodes in tabular format.
+#
+# Uses a Python script on each node: reads Docker running containers (active jobs)
+# and scans provider.log for recent pending_jobs activity.
+#
+# Usage (from ansible_utils/):
+#   ./run_playbook.sh -i inventory.ini playbooks/inspect_provider_queues.yml -K --ask-vault-pass
+#   ./run_playbook.sh -i inventory.ini playbooks/inspect_provider_queues.yml -K --ask-vault-pass --limit cortalim1.dashlab.in
+#
+# Optional overrides:
+#   -e log_tail=300    lines of provider.log to scan for pending activity (default: 200)
+
+- name: Inspect delay queues and unfinished jobs on provider nodes
+  hosts: managed
+  become: no
+  gather_facts: no
+  vars_files:
+    - secrets.yml
+  vars:
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+    venv_python: "{{ project_dir }}/.venv/bin/python"
+    provider_log: "{{ project_dir }}/provider.log"
+    log_tail: 200
+    _script: "/tmp/_inspect_queues_{{ inventory_hostname_short }}.py"
+
+  tasks:
+    - name: Write inspection script
+      copy:
+        dest: "{{ _script }}"
+        mode: "0600"
+        content: |
+          import subprocess, re, sys, os
+          from datetime import datetime
+
+          HOST       = "{{ inventory_hostname }}"
+          LOG_PATH   = "{{ provider_log }}"
+          LOG_TAIL   = {{ log_tail }}
+
+          W = 72  # total table width
+
+          def hdr(title):
+              print()
+              print("=" * W)
+              print(f"  {title}")
+              print("=" * W)
+
+          def row(*cols, widths):
+              print("  " + "  ".join(str(c).ljust(w) for c, w in zip(cols, widths)))
+
+          def divider(widths):
+              print("  " + "  ".join("-" * w for w in widths))
+
+          # ── 1. Provider process ────────────────────────────────────────────
+          hdr(f"PROVIDER PROCESS  [{HOST}]")
+          r = subprocess.run(["pgrep", "-f", "provider/provider1.py"],
+                             capture_output=True, text=True)
+          pids = r.stdout.strip().splitlines()
+          if pids:
+              print(f"  Status : RUNNING")
+              print(f"  PID(s) : {', '.join(pids)}")
+          else:
+              print("  Status : NOT RUNNING")
+
+          # ── 2. Running Docker containers (active jobs) ─────────────────────
+          hdr(f"ACTIVE JOBS (running Docker containers)  [{HOST}]")
+          try:
+              import docker
+              client = docker.from_env()
+              containers = client.containers.list(filters={"status": "running"})
+              if containers:
+                  cw = [36, 12, 18]
+                  row("CONTAINER NAME", "STATUS", "IMAGE", widths=cw)
+                  divider(cw)
+                  for c in containers:
+                      row(c.name, c.status, c.image.tags[0] if c.image.tags else c.short_id,
+                          widths=cw)
+              else:
+                  print("  (no running containers)")
+          except Exception as e:
+              print(f"  docker error: {e}")
+
+          # ── 3. Pending-jobs queue from provider.log ────────────────────────
+          hdr(f"DELAY QUEUE  (last {LOG_TAIL} lines of provider.log)  [{HOST}]")
+
+          pattern = re.compile(
+              r"(?P<ts>\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})"
+              r".*?(?P<event>Pending jobs (?:incremented|decremented)|No pending jobs)"
+              r"(?:.*?:\s*(?P<count>\d+))?",
+              re.IGNORECASE,
+          )
+
+          if not os.path.exists(LOG_PATH):
+              print(f"  provider.log not found at {LOG_PATH}")
+          else:
+              try:
+                  result = subprocess.run(
+                      ["tail", f"-{LOG_TAIL}", LOG_PATH],
+                      capture_output=True, text=True, errors="replace"
+                  )
+                  lines = result.stdout.splitlines()
+              except Exception as e:
+                  lines = []
+                  print(f"  could not read log: {e}")
+
+              # Fallback: parse lines without a leading timestamp too
+              pattern_notimestamp = re.compile(
+                  r"(?P<event>Pending jobs (?:incremented|decremented)|No pending jobs)"
+                  r"(?:.*?:\s*(?P<count>\d+))?",
+                  re.IGNORECASE,
+              )
+
+              entries = []
+              for line in lines:
+                  m = pattern.search(line) or pattern_notimestamp.search(line)
+                  if m:
+                      entries.append({
+                          "ts":    m.group("ts") if "ts" in m.groupdict() and m.group("ts") else "",
+                          "event": m.group("event"),
+                          "count": m.group("count") if m.group("count") else "",
+                      })
+
+              if entries:
+                  pw = [20, 40, 8]
+                  row("TIMESTAMP", "EVENT", "COUNT", widths=pw)
+                  divider(pw)
+                  for e in entries:
+                      row(e["ts"], e["event"], e["count"], widths=pw)
+                  print()
+                  last_count = next(
+                      (e["count"] for e in reversed(entries) if e["count"]),
+                      "unknown",
+                  )
+                  print(f"  Current pending_jobs counter : {last_count}")
+              else:
+                  print(f"  No pending-jobs entries found in last {LOG_TAIL} lines.")
+
+          print()
+          print("=" * W)
+
+      delegate_to: localhost
+
+    - name: Push script to provider node
+      copy:
+        src: "{{ _script }}"
+        dest: "{{ _script }}"
+        mode: "0600"
+
+    - name: Run inspection script on provider node
+      command: "{{ venv_python }} {{ _script }}"
+      register: inspect_out
+      changed_when: false
+
+    - name: Print results
+      debug:
+        msg: "{{ inspect_out.stdout_lines }}"
+
+    - name: Print stderr if non-empty
+      debug:
+        msg: "STDERR: {{ inspect_out.stderr_lines }}"
+      when: inspect_out.stderr | trim | length > 0
+
+    - name: Remove script from provider node
+      file:
+        path: "{{ _script }}"
+        state: absent
+
+    - name: Remove script from localhost
+      file:
+        path: "{{ _script }}"
+        state: absent
+      delegate_to: localhost
