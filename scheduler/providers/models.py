@@ -70,6 +70,12 @@ class Job(models.Model):
     memory_efficiency_score = models.DecimalField(null=True, blank=True, max_digits=30, decimal_places=15)
     finish_time = models.DateTimeField(null=True, blank=True, help_text='Timestamp when the scheduler received the provider result and marked the job finished')
 
+    # Prediction fields — populated at scheduling time by process_assignments()
+    predicted_runtime_ms = models.IntegerField(null=True, blank=True, help_text="Predicted runtime in ms passed to ILP at scheduling time")
+    prediction_strategy = models.CharField(max_length=32, null=True, blank=True, help_text="Strategy name (e.g. 'cpi', 'scaling') that produced predicted_runtime_ms")
+    prediction_source = models.CharField(max_length=16, null=True, blank=True, help_text="How the prediction was produced: 'history' (DB fast-path), 'model' (strategy), 'fallback' (DEFAULT_RUNTIME)")
+    cache_state = models.CharField(max_length=8, null=True, blank=True, help_text="Image cache state at execution time reported by provider: 'memory', 'disk', or 'cold'")
+
     # Return the run_time of the latest invocation of this service (job) for a certain provider
     def get_latest_run_time(provider_id, service_id):
         latest_job = Job.objects.filter(

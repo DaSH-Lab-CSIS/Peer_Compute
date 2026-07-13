@@ -26,6 +26,7 @@ from profiles.models import *
 from providers.models import *
 from random import randint 
 from scheduler.settings import USE_FABRIC
+from django.conf import settings as django_settings
 import fabric.views as fabric
 import csv
 import random
@@ -35,9 +36,18 @@ from providers.prediction import (
     ServicePredInput,
     predict as predict_runtimes,
 )
+from providers.prediction.cpi_strategy import CPIStrategy as _CPIStrategy
+from providers.prediction.scaling_strategy import ScalingFactorStrategy as _ScalingFactorStrategy
+
+# Module-level shadow strategy instances (stateless, thread-safe)
+_SHADOW_STRATEGIES = {
+    "cpi": _CPIStrategy(),
+    "scaling": _ScalingFactorStrategy(),
+}
 from providers import profiling as scheduler_profiling
 from developers.models import Services
 import threading
+import itertools as _itertools
 import requests
 import queue as _queue_mod
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -52,6 +62,10 @@ _request_queue: _queue_mod.Queue = _queue_mod.Queue()
 
 ILP_BATCH_SIZE = 50           # max services per ILP solve
 ILP_QUEUE_POLL_INTERVAL = 0.5  # seconds between drain checks
+
+# Round-robin placement state — persists across batches for true RR distribution.
+_rr_lock = threading.Lock()
+_rr_counter = _itertools.count(0)
 
 
 def _prof(label: str, t0: float, **extra) -> float:
@@ -1232,6 +1246,9 @@ def direct_invocation_status(request):
                 'cpu_usage': job.cpu_usage,
                 'cpu_efficiency_score': float(job.cpu_efficiency_score) if job.cpu_efficiency_score else None,
                 'memory_efficiency_score': float(job.memory_efficiency_score) if job.memory_efficiency_score else None,
+                'predicted_runtime_ms': job.predicted_runtime_ms,
+                'prediction_strategy': job.prediction_strategy,
+                'prediction_source': job.prediction_source,
             }
         )
 
@@ -1384,6 +1401,9 @@ def jobs_in_window(request):
             "cpu_usage": job.cpu_usage,
             "cpu_efficiency_score": float(job.cpu_efficiency_score) if job.cpu_efficiency_score else None,
             "memory_efficiency_score": float(job.memory_efficiency_score) if job.memory_efficiency_score else None,
+            "predicted_runtime_ms": job.predicted_runtime_ms,
+            "prediction_strategy": job.prediction_strategy,
+            "prediction_source": job.prediction_source,
         })
 
     return JsonResponse({
@@ -1794,8 +1814,8 @@ def finish_job(data):
                 # In a real implementation, this would come from the provider's report
                 provider = job.provider
                 service_id = job.service.id
-                cache_location = 'memory'  # Default assumption - provider would report actual location
-                
+                cache_location = data.get('cache_state', 'memory')
+
                 # Update the cache state in the provider's model
                 if hasattr(provider, 'update_cache_state'):
                     provider.update_cache_state(service_id, cache_location)
@@ -2132,6 +2152,12 @@ def _build_prediction_input(provider, services_needing_prediction, service_rows_
                 "memory_footprint",
                 "memory_bytes_per_second",
                 "reference_stats",
+                "ref_runtime_ms",
+                "w_cpu",
+                "w_mem",
+                "w_disk",
+                "w_net",
+                "image_size_mb",
             )
         }
     svc_inputs = []
@@ -2147,6 +2173,12 @@ def _build_prediction_input(provider, services_needing_prediction, service_rows_
                 memory_footprint=row.memory_footprint,
                 memory_bytes_per_second=row.memory_bytes_per_second,
                 reference_stats=row.reference_stats,
+                ref_runtime_ms=getattr(row, "ref_runtime_ms", None),
+                w_cpu=getattr(row, "w_cpu", None),
+                w_mem=getattr(row, "w_mem", None),
+                w_disk=getattr(row, "w_disk", None),
+                w_net=getattr(row, "w_net", None),
+                image_size_mb=getattr(row, "image_size_mb", None),
             )
         )
     return PredictionInput(
@@ -2156,6 +2188,12 @@ def _build_prediction_input(provider, services_needing_prediction, service_rows_
         clock_hz=getattr(provider, "clock_hz", None),
         cpu_efficiency_score=getattr(provider, "cpu_efficiency_score", None),
         memory_efficiency_score=getattr(provider, "memory_efficiency_score", None),
+        r_cpu=getattr(provider, "r_cpu", None),
+        r_mem=getattr(provider, "r_mem", None),
+        r_disk=getattr(provider, "r_disk", None),
+        r_net=getattr(provider, "r_net", None),
+        s_disk_mbps=getattr(provider, "s_disk_mbps", None),
+        s_net_mbps=getattr(provider, "s_net_mbps", None),
         services=svc_inputs,
     )
 
@@ -2295,6 +2333,11 @@ def build_cost_matrix(providers, services):
         if services_needing_prediction:
             provider_services_map[provider] = services_needing_prediction
     t_db_elapsed = time.time() - t_db_outer
+    # Source tracking: all DB-history-derived runtimes start as 'history'
+    prediction_source_map = {
+        prov.id: {sid: 'history' for sid in runtimes}
+        for prov, runtimes in per_provider_runtimes.items()
+    }
     _prof(
         "build_cost_matrix-db_pass",
         t_db_outer,
@@ -2324,6 +2367,12 @@ def build_cost_matrix(providers, services):
                     "memory_footprint",
                     "memory_bytes_per_second",
                     "reference_stats",
+                    "ref_runtime_ms",
+                    "w_cpu",
+                    "w_mem",
+                    "w_disk",
+                    "w_net",
+                    "image_size_mb",
                 )
             }
     _prof("build_cost_matrix-prefetch_service_rows", t_prefetch,
@@ -2363,14 +2412,17 @@ def build_cost_matrix(providers, services):
             t_merge = time.time()
             n_predicted = 0
             n_defaulted = 0
+            provider_src = prediction_source_map.setdefault(provider.id, {})
             for service_id, _ in provider_services_map[provider]:
                 val = runtimes.get(service_id)
                 if val is not None and val > 0:
                     predicted_runtimes[service_id] = int(val)
                     n_predicted += 1
+                    provider_src[service_id] = 'model'
                 else:
                     predicted_runtimes[service_id] = DEFAULT_RUNTIME
                     n_defaulted += 1
+                    provider_src[service_id] = 'fallback'
             sum_predict_merge_defaults_s += time.time() - t_merge
             _profile_note(
                 "build_cost_matrix-merge_defaults_provider",
@@ -2378,6 +2430,58 @@ def build_cost_matrix(providers, services):
                 predicted=n_predicted,
                 defaulted=n_defaulted,
             )
+
+            # Shadow evaluation: run all static strategies against the same pred_input
+            # and emit one prediction_audit record per (provider, service).
+            # This is the Axis-P dataset for offline accuracy scoring.
+            try:
+                _active_name = django_settings.RUNTIME_PREDICTION_STRATEGY
+                _shadow_outputs: dict[str, dict] = {}
+                for _s_name, _s_inst in _SHADOW_STRATEGIES.items():
+                    try:
+                        _shadow_outputs[_s_name] = _s_inst.predict(pred_input).runtimes_ms
+                    except Exception:
+                        _shadow_outputs[_s_name] = {}
+                for _sid, _svc_obj in provider_services_map[provider]:
+                    _audit_rec: dict = {
+                        "provider_id": provider.id,
+                        "service_id": _sid,
+                        "active_strategy": _active_name,
+                        "active_output_ms": runtimes.get(_sid),
+                        "prediction_source": provider_src.get(_sid),
+                        "cpi_output_ms": _shadow_outputs.get("cpi", {}).get(_sid),
+                        "scaling_output_ms": _shadow_outputs.get("scaling", {}).get(_sid),
+                        # Provider CPI features
+                        "f_cpi": float(pred_input.cpi) if pred_input.cpi is not None else None,
+                        "f_clock_hz": pred_input.clock_hz,
+                        "f_memory_bandwidth": float(pred_input.memory_bandwidth) if pred_input.memory_bandwidth is not None else None,
+                        "f_r_cpu": pred_input.r_cpu,
+                        "f_r_mem": pred_input.r_mem,
+                        "f_r_disk": pred_input.r_disk,
+                        "f_r_net": pred_input.r_net,
+                    }
+                    # Append per-service features
+                    _svc_feats = next((s for s in pred_input.services if s.service_id == _sid), None)
+                    if _svc_feats is not None:
+                        _audit_rec.update({
+                            "f_cpu_cycles_required": _svc_feats.cpu_cycles_required,
+                            "f_memory_footprint": _svc_feats.memory_footprint,
+                            "f_ref_runtime_ms": _svc_feats.ref_runtime_ms,
+                            "f_w_cpu": _svc_feats.w_cpu,
+                            "f_w_mem": _svc_feats.w_mem,
+                            "f_w_disk": _svc_feats.w_disk,
+                            "f_w_net": _svc_feats.w_net,
+                            "f_image_size_mb": _svc_feats.image_size_mb,
+                            "f_ema_runtime_ms": _svc_feats.ema_runtime_ms,
+                            "f_observation_count": _svc_feats.observation_count,
+                            "f_cache_state": _svc_feats.cache_state,
+                        })
+                    try:
+                        scheduler_profiling.persist_prediction_audit_row(**_audit_rec)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
         ctim = get_predicted_runtimes_cache_pass(
             provider, compatible_services, predicted_runtimes, DEFAULT_RUNTIME,
@@ -2435,7 +2539,7 @@ def build_cost_matrix(providers, services):
     _prof("build_cost_matrix-total", t0,
           n_providers=n_providers, n_services=n_services,
           matrix_entries=n_providers * n_services)
-    return cost_matrix
+    return cost_matrix, prediction_source_map
 
 # NOTE This is for when services would have requirements. Function unused for now.
 def get_suitable_providers(services):
@@ -2541,7 +2645,7 @@ def build_delay_dict(providers):
     _prof("build_delay_dict-total", t0, n_providers=len(providers))
     return delay
 
-def process_assignments(assignment, cost_matrix, request_data_map=None):
+def process_assignments(assignment, cost_matrix, request_data_map=None, prediction_source_map=None):
     """
     Process job assignments and create Job objects.
     
@@ -2603,7 +2707,24 @@ def process_assignments(assignment, cost_matrix, request_data_map=None):
                         print(f"Error parsing scheduler_received_time: {e}")
                         pass
             
-            # Create a Job instance with CREATED status and timestamps
+            # Resolve predicted_runtime from cost_matrix before creating the Job row
+            try:
+                if isinstance(key, tuple) and (i, service) in cost_matrix.get(provider, {}):
+                    predicted_runtime = cost_matrix[provider][(i, service)]
+                elif service in cost_matrix.get(provider, {}):
+                    predicted_runtime = cost_matrix[provider][service]
+                elif service.id in cost_matrix.get(provider, {}):
+                    predicted_runtime = cost_matrix[provider][service.id]
+                else:
+                    print(f"Warning: Could not find runtime prediction for service {service.id} in cost matrix")
+                    predicted_runtime = 1000
+            except Exception as e:
+                print(f"Error accessing cost matrix: {str(e)}")
+                predicted_runtime = 1000
+
+            _pred_source = (prediction_source_map or {}).get(provider.id, {}).get(service.id, 'fallback')
+
+            # Create a Job instance with CREATED status, timestamps, and prediction fields
             job = Job.objects.create(
                 provider=provider,
                 service=service,
@@ -2611,7 +2732,10 @@ def process_assignments(assignment, cost_matrix, request_data_map=None):
                 finished=False,
                 lb_received_time=lb_received_time,
                 scheduler_received_time=scheduler_received_time,
-                assigned_to_provider_time=assigned_time
+                assigned_to_provider_time=assigned_time,
+                predicted_runtime_ms=int(predicted_runtime) if predicted_runtime is not None else None,
+                prediction_strategy=django_settings.RUNTIME_PREDICTION_STRATEGY,
+                prediction_source=_pred_source,
             )
             print(f"Created job with ID: {job.id}")
             if lb_received_time:
@@ -2619,25 +2743,6 @@ def process_assignments(assignment, cost_matrix, request_data_map=None):
             if scheduler_received_time:
                 print(f"  Scheduler received: {scheduler_received_time}")
             print(f"  Assigned to provider: {assigned_time}")
-            
-            # Get predicted runtime from cost_matrix if available
-            try:
-                # First try to get it from the cost matrix with the tuple key
-                if isinstance(key, tuple) and (i, service) in cost_matrix.get(provider, {}):
-                    predicted_runtime = cost_matrix[provider][(i, service)]
-                # Then try with just the service
-                elif service in cost_matrix.get(provider, {}):
-                    predicted_runtime = cost_matrix[provider][service]
-                # If service.id works as a key
-                elif service.id in cost_matrix.get(provider, {}):
-                    predicted_runtime = cost_matrix[provider][service.id]
-                else:
-                    # Use a default value if not found
-                    print(f"Warning: Could not find runtime prediction for service {service.id} in cost matrix")
-                    predicted_runtime = 1000  # Default value in milliseconds
-            except Exception as e:
-                print(f"Error accessing cost matrix: {str(e)}")
-                predicted_runtime = 1000  # Default value
                 
             print(f"Predicted runtime: {predicted_runtime}")
             print(f"Current provider delay state: {provider.delay}")
@@ -2766,7 +2871,7 @@ def find_providers(services, jobs=None, request_data_map=None):
                       n_providers=len(suitable_providers))
 
                 t_cm = time.time()
-                cost_matrix = build_cost_matrix(suitable_providers, services)
+                cost_matrix, prediction_source_map = build_cost_matrix(suitable_providers, services)
                 _prof("find_providers-build_cost_matrix", t_cm,
                       n_providers=len(suitable_providers), n_services=len(services))
 
@@ -2794,11 +2899,28 @@ def find_providers(services, jobs=None, request_data_map=None):
             )
 
             try:
-                assignment, total_cost = minimize_total_cost(
-                    suitable_providers, indexed_services, cost_matrix, delay
-                )
-                _prof("find_providers-ilp_solve", t_ilp,
-                      n_vars=n_vars, total_cost=total_cost)
+                if django_settings.SCHEDULER_PLACEMENT_MODE == "rr":
+                    # Round-robin: assign each (index, service) cyclically across
+                    # suitable_providers.  The counter is module-level so RR
+                    # distribution is maintained across the entire experiment,
+                    # not just within a single batch.
+                    with _rr_lock:
+                        start = next(_rr_counter)
+                    assignment = {}
+                    for batch_idx, (i, service) in enumerate(indexed_services):
+                        provider = suitable_providers[
+                            (start + batch_idx) % len(suitable_providers)
+                        ]
+                        assignment[(i, service)] = provider
+                    total_cost = 0
+                    _prof("find_providers-rr_assign", t_ilp,
+                          n_services=len(indexed_services), rr_start=start)
+                else:
+                    assignment, total_cost = minimize_total_cost(
+                        suitable_providers, indexed_services, cost_matrix, delay
+                    )
+                    _prof("find_providers-ilp_solve", t_ilp,
+                          n_vars=n_vars, total_cost=total_cost)
                 main_processing_succeeded = False
 
                 if assignment is None:
@@ -2810,7 +2932,7 @@ def find_providers(services, jobs=None, request_data_map=None):
                 # ------------------------------------------------------------------
                 t_tx2 = time.time()
                 with transaction.atomic():
-                    process_assignments(assignment, cost_matrix, request_data_map)
+                    process_assignments(assignment, cost_matrix, request_data_map, prediction_source_map)
                 _prof("find_providers-tx2_process_assignments", t_tx2,
                       n_assignments=len(assignment))
                 main_processing_succeeded = True
@@ -2884,7 +3006,7 @@ def find_providers(services, jobs=None, request_data_map=None):
                     
                         # Process the assignment with the updated cost_matrix
                         print(f"Using fallback cost matrix entry: {cost_matrix[provider][(0, service)]}")
-                        process_assignments(assignment, cost_matrix, request_data_map)
+                        process_assignments(assignment, cost_matrix, request_data_map, prediction_source_map)
                         
                         # Handle job mapping if needed
                         if jobs is not None and len(jobs) == 1:

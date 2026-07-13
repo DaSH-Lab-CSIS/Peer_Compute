@@ -80,6 +80,39 @@
       loop_control:
         label: "{{ item.path | basename }}"
 
+    - name: List prediction audit JSONL files
+      find:
+        paths: "{{ log_dir }}"
+        patterns: "prediction_audit_*.jsonl"
+        file_type: file
+      register: audit_files
+      when: log_dir_stat.stat.exists
+
+    - name: Set empty audit file list when logs dir missing
+      set_fact:
+        audit_files:
+          files: []
+      when: not log_dir_stat.stat.exists
+
+    - name: Filter audit files by since_run_code (when provided)
+      set_fact:
+        filtered_audit_files: >-
+          {{ audit_files.files
+             | selectattr('path', 'search', since_run_code)
+             | list
+             if since_run_code != ''
+             else audit_files.files }}
+
+    - name: Fetch each prediction audit JSONL to local scheduler_logs/<hostname>_<filename>
+      fetch:
+        src: "{{ item.path }}"
+        dest: "{{ local_log_dir }}/{{ inventory_hostname }}_{{ item.path | basename }}"
+        flat: yes
+        fail_on_missing: no
+      loop: "{{ filtered_audit_files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+
     - name: Get running scheduler PID
       shell: pgrep -f 'manage.py runserver' || pgrep -f 'gunicorn.*scheduler' || echo ""
       register: scheduler_pid
@@ -93,4 +126,4 @@
 
     - name: Report fetched files
       debug:
-        msg: "Fetched {{ filtered_files | length }} profile file(s) from {{ inventory_hostname }}"
+        msg: "Fetched {{ filtered_files | length }} profile file(s) and {{ filtered_audit_files | length }} prediction audit file(s) from {{ inventory_hostname }}"

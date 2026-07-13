@@ -533,7 +533,7 @@ def run_docker(body, container_name, inputData=None):
     start_pull_time = time.time()
     #image = client.images.pull(body)
     print("inside run_docker with body : " + body)
-    image = imagePuller.request_image(body)
+    image, _cache_state = imagePuller.request_image(body)
     print("Out of Hybrid Caching manager and inside run_docker again")
     print(image)
     pull_time = int((time.time() - start_pull_time) *1000)
@@ -843,7 +843,7 @@ def run_and_invoke_docker(body, container_name) -> dict:
         #image = client.images.pull(body)
         print("inside run_and_invoke_docker with body : " + body)
         print(f"[DEBUG] Requesting image: {body}")
-        image = imagePuller.request_image(body)
+        image, cache_state = imagePuller.request_image(body)
         print("Out of Hybrid Caching manager and inside run_and_invoke_docker again")
         print(f"[DEBUG] Image obtained: {image}")
         pull_time = int((time.time() - start_pull_time) *1000)
@@ -1032,7 +1032,7 @@ def run_and_invoke_docker(body, container_name) -> dict:
                 print(f"[DEBUG] Exception stopping/removing container: {e}")
             
             print(f"[DEBUG] run_and_invoke_docker completed successfully for container: {container_name}")
-            return result, pull_time, run_time, container_name, run_vars
+            return result, pull_time, run_time, container_name, run_vars, cache_state
     except Exception as e:
         import traceback
         error_trace = traceback.format_exc()
@@ -1108,9 +1108,9 @@ def on_request(json_data) :
 
     print("[on_request] in provider1.py")
     try:
-        r, pull_time, run_time, container_name, run_vars = run_and_invoke_docker(json_data['task_link'], str(str(json_data['job_id'])+"_container_")) #TODO
-        total_time = math.ceil(((pull_time + run_time)/100.0))*100 
-        print(f"[DEBUG] pull_time: {pull_time}, run_time: {run_time}, total_time: {total_time}")
+        r, pull_time, run_time, container_name, run_vars, cache_state = run_and_invoke_docker(json_data['task_link'], str(str(json_data['job_id'])+"_container_")) #TODO
+        total_time = math.ceil(((pull_time + run_time)/100.0))*100
+        print(f"[DEBUG] pull_time: {pull_time}, run_time: {run_time}, total_time: {total_time}, cache_state: {cache_state}")
     except Exception as e:
         print(f"[DEBUG] Exception in run_and_invoke_docker: {e}")
         # Set default values to ensure MQTT sending still happens
@@ -1120,6 +1120,7 @@ def on_request(json_data) :
         container_name = f"{json_data['job_id']}_container_"
         total_time = 0
         run_vars = None
+        cache_state = 'cold'
     # HF_set_time(str(json_data['job_id']), total_time)
     # HF_invoke_balance_transfer(str(json_data['provider_id']), str(json_data['task_developer']))
 
@@ -1141,7 +1142,7 @@ def on_request(json_data) :
     print(f"[DEBUG] delete_container_and_image completed for container: {container_name}")
     
     print(f"[DEBUG] Creating response object for job_id: {json_data['job_id']}")
-    response = {'stage': "dockerrun", 'Result': r, 'pull_time': pull_time, 'run_time': run_time, 'total_time': total_time, 'job_id': json_data['job_id']}
+    response = {'stage': "dockerrun", 'Result': r, 'pull_time': pull_time, 'run_time': run_time, 'total_time': total_time, 'job_id': json_data['job_id'], 'cache_state': cache_state}
     if run_vars:
         for key in ('memory_usage', 'cpu_usage', 'cpu_efficiency_score', 'memory_efficiency_score'):
             if key in run_vars:
@@ -1216,7 +1217,7 @@ def calc_benchmark_stats():
     print("calculating bench mark stats")
     bench_container_name = "benchTest"
     bench_image = "satyam098/testimage_largeruntime"
-    image = imagePuller.request_image(bench_image)
+    image, _ = imagePuller.request_image(bench_image)
     try:
         cont = client.containers.run(image, name=bench_container_name)
     except Exception as e:
@@ -1280,7 +1281,7 @@ def set_reference_stats_for_service(service_id):
     safe_name = service_id.replace("/", "_").replace(":", "_")
     container_name = safe_name + "_reference_stats_"
     print(container_name)
-    img = imagePuller.request_image(service_id)
+    img, _ = imagePuller.request_image(service_id)
     global client
     # Remove any existing container with this name (e.g. from a previous run or crash) to avoid 409 Conflict
     try:

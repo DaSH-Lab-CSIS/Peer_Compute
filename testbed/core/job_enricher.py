@@ -103,7 +103,7 @@ def _fetch_jobs_by_window(
     scheduler_url: str,
     since: str,
     until: str,
-    timeout: float = 60.0,
+    timeout: float = 300.0,
 ) -> List[Dict[str, Any]]:
     """Fetch all jobs whose start_time is in [since, until], paginating as needed."""
     base = scheduler_url.rstrip("/")
@@ -288,6 +288,29 @@ def _build_enriched_row(
         "cpu_usage": job.get("cpu_usage"),
         "cpu_efficiency_score": job.get("cpu_efficiency_score"),
         "memory_efficiency_score": job.get("memory_efficiency_score"),
+        # Prediction fields
+        "predicted_runtime_ms": job.get("predicted_runtime_ms"),
+        "prediction_strategy": job.get("prediction_strategy"),
+        "prediction_source": job.get("prediction_source"),
+        # Derived prediction accuracy (only for successful finished jobs)
+        "abs_error_ms": (
+            abs(job["predicted_runtime_ms"] - job["run_time"])
+            if job.get("predicted_runtime_ms") is not None
+            and job.get("run_time") and job.get("finished")
+            else None
+        ),
+        "abs_pct_error": (
+            abs(job["predicted_runtime_ms"] - job["run_time"]) / job["run_time"] * 100
+            if job.get("predicted_runtime_ms") is not None
+            and job.get("run_time") and job.get("finished")
+            else None
+        ),
+        "signed_error_ms": (
+            job["predicted_runtime_ms"] - job["run_time"]
+            if job.get("predicted_runtime_ms") is not None
+            and job.get("run_time") is not None and job.get("finished")
+            else None
+        ),
         # Profile log columns (None when no profile provided or no match)
         "ilp_solve_ms": ps.get("ilp_solve_ms"),
         "fp_total_ms": ps.get("fp_total_ms"),
@@ -309,6 +332,9 @@ _FIELDNAMES = [
     # New fields
     "corr_id", "response", "cost", "finish_time", "finish_latency_ms",
     "memory_usage", "cpu_usage", "cpu_efficiency_score", "memory_efficiency_score",
+    # Prediction fields
+    "predicted_runtime_ms", "prediction_strategy", "prediction_source",
+    "abs_error_ms", "abs_pct_error", "signed_error_ms",
     # Profile log columns
     "ilp_solve_ms", "fp_total_ms", "cost_matrix_ms", "delay_dict_ms",
     "process_assignments_ms", "batch_total_ms", "queue_depth_at_dispatch",
@@ -327,6 +353,7 @@ def enrich_run(
     until: Optional[str] = None,
     chunk_size: int = 200,
     scheduler_profile_log: Optional[str] = None,
+    fetch_timeout: float = 300.0,
 ) -> Dict[str, Any]:
     """Enrich run metrics with scheduler-side per-job status.
 
@@ -342,6 +369,7 @@ def enrich_run(
         scheduler_profile_log:   Optional comma-separated paths or glob patterns pointing
                                  to scheduler profile JSONL files. All matched files are
                                  merged — pass one per scheduler node to get full coverage.
+        fetch_timeout:           HTTP timeout in seconds for each scheduler request (default 300).
     """
     results_root = Path(results_dir)
     metrics_path = results_root / "json" / f"{run_id}_metrics.json"
@@ -392,6 +420,7 @@ def enrich_run(
             scheduler_url=scheduler_url,
             since=since,
             until=until or "",
+            timeout=fetch_timeout,
         )
         # In window mode there are no per-request correlates, so request_row
         # will always be empty — that's expected.
@@ -409,6 +438,7 @@ def enrich_run(
             scheduler_url=scheduler_url,
             job_ids=job_ids,
             chunk_size=chunk_size,
+            timeout=fetch_timeout,
         )
         jobs_by_id = {int(j["job_id"]): j for j in jobs if j.get("job_id") is not None}
         enriched_rows = [
