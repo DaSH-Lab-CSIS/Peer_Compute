@@ -478,6 +478,13 @@ Examples:
         help='ISO-8601 window end for enrichment window query (defaults to now on scheduler side)'
     )
     parser.add_argument(
+        '--enrich-timeout',
+        type=float,
+        default=300.0,
+        metavar='SECONDS',
+        help='HTTP timeout in seconds for each scheduler request during enrichment (default: 300)'
+    )
+    parser.add_argument(
         '--upload-to-drive',
         action='store_true',
         help='After enrichment, upload artefacts to Google Drive under peercomp_runs/<run_id>/'
