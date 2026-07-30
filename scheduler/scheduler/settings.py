@@ -124,7 +124,7 @@ DATABASES = {
         "NAME": "peercompute",
         "USER": "root",
         "PASSWORD": "",
-        "HOST": "colva2.dashlab.in",   # or HAProxy VIP/host
+        "HOST": "colva3.dashlab.in",   # colva2 down 2026-07-30; failover to colva3
         "PORT": "26257",
         "OPTIONS": {
             "sslmode": "verify-full",
