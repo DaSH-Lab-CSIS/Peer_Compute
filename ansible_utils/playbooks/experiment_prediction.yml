@@ -82,8 +82,8 @@
     local_user: "{{ lookup('env', 'USER') }}"
     local_project_dir: "/home/{{ local_user }}/Serverless_Scheduler"
     lb_project_dir: "/home/{{ lb_ssh_user }}/deploy/Serverless_Scheduler"
-    lb_host: "colva2.dashlab.in"
-    lb_url: "http://colva2.dashlab.in:9001"
+    lb_host: "colva3.dashlab.in"
+    lb_url: "http://colva3.dashlab.in:9001"
     lb_ssh_user: "peercompute"
     mqtt_broker: ""
     mqtt_port: ""
@@ -437,7 +437,7 @@
     local_user: "{{ lookup('env', 'USER') }}"
     local_project_dir: "/home/{{ local_user }}/Serverless_Scheduler"
     testbed_dir: "{{ local_project_dir }}/testbed"
-    lb_url: "http://colva2.dashlab.in:9001"
+    lb_url: "http://colva3.dashlab.in:9001"
     scenario: "steady_load"
     iterations: 1
     research_mode: false
