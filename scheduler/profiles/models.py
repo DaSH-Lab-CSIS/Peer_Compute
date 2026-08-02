@@ -30,6 +30,14 @@ class User(models.Model):
     cpi = models.DecimalField(null=True, blank=True, max_digits=10, decimal_places=4)
     memory_bandwidth = models.DecimalField(null=True, blank=True, max_digits=20, decimal_places=4)
     clock_hz = models.BigIntegerField(null=True, blank=True)
+    # ScalingFactor performance ratios — populated by ingest_benchmarks management command.
+    # r_i(m) = S_i(BEM_baseline) / S_i(m): >1 means slower than baseline, <1 means faster.
+    r_cpu = models.FloatField(null=True, blank=True, help_text="CPU performance ratio vs BEM baseline")
+    r_mem = models.FloatField(null=True, blank=True, help_text="Memory bandwidth ratio vs BEM baseline")
+    r_disk = models.FloatField(null=True, blank=True, help_text="Disk throughput ratio vs BEM baseline")
+    r_net = models.FloatField(null=True, blank=True, help_text="Network throughput ratio vs BEM baseline")
+    s_disk_mbps = models.FloatField(null=True, blank=True, help_text="Absolute disk throughput MB/s")
+    s_net_mbps = models.FloatField(null=True, blank=True, help_text="Absolute network throughput MB/s")
     # network_bandwidth = models.DecimalField(null=True, max_digits=30, decimal_places=15)
     # gpu_available = models.BooleanField(default=False)
 

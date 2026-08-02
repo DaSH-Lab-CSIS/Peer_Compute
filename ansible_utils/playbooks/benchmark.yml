@@ -1,0 +1,184 @@
+---
+# Benchmarking playbook for the ScalingFactorStrategy.
+#
+# Three phases:
+#   1. [managed] Run machine benchmark on every provider node in parallel.
+#                Produces: <local_results_dir>/machine_bench_<hostname>.json
+#   2. [localhost] Run service benchmark (BEM only — needs Docker + optional sudo for w_net).
+#                Produces: <local_results_dir>/function_bench.json
+#   3. [localhost] Load results into scheduler DB via the scheduler API.
+#                NOTE: The API endpoint for loading benchmark results does not exist yet.
+#                      Enable RUNTIME_PREDICTION_STRATEGY=scaling in .env
+#                      only after that wiring is complete.
+#
+# Usage:
+#   # Full run (machine + service + load):
+#   ansible-playbook -i inventory.ini benchmark.yml -e scheduler_host=utorda1.dashlab.in
+#
+#   # Only run machine benchmarks on providers:
+#   ansible-playbook -i inventory.ini benchmark.yml --tags machine
+#
+#   # Only run service benchmark locally:
+#   ansible-playbook -i inventory.ini benchmark.yml --tags service
+#
+#   # Dry-run (no Docker execution, prints plan):
+#   ansible-playbook -i inventory.ini benchmark.yml -e dry_run=true --tags machine,service
+#
+#   # Limit to a subset of providers:
+#   ansible-playbook -i inventory.ini benchmark.yml --limit cortalim1.dashlab.in --tags machine
+
+- name: Machine benchmark — all provider nodes
+  hosts: managed
+  become: yes
+  tags: machine
+  vars_files:
+    - secrets.yml
+  vars:
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+    user_id_file: "{{ project_dir }}/provider_user_id.txt"
+    remote_bench_out: "/tmp/machine_bench_{{ inventory_hostname }}.json"
+    local_results_dir: "{{ lookup('env', 'HOME') }}/Serverless_Scheduler/benchmark_results"
+    dry_run: false
+    probes: ""  # empty = all four (cpu,mem,disk,net). Example: "cpu,mem"
+  tasks:
+    - name: Ensure Docker is running
+      service:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Read provider user_id
+      slurp:
+        src: "{{ user_id_file }}"
+      register: slurp_uid
+
+    - name: Set provider_user_id fact
+      set_fact:
+        provider_user_id: "{{ slurp_uid.content | b64decode | trim }}"
+
+    - name: Install benchmark script dependencies on provider
+      command: >-
+        {{ project_dir }}/.venv/bin/pip install
+        docker requests
+        --no-input --index-url https://pypi.org/simple
+      become_user: "{{ ansible_user }}"
+
+    - name: Run machine benchmark
+      become_user: "{{ ansible_user }}"
+      command: >-
+        {{ project_dir }}/.venv/bin/python
+        {{ project_dir }}/scripts/benchmarks/benchmark.py
+        provider
+        --provider-id {{ provider_user_id }}
+        --out {{ remote_bench_out }}
+        {% if dry_run | bool %} --dry-run{% endif %}
+        {% if probes | length > 0 %} --probes {{ probes }}{% endif %}
+      args:
+        chdir: "{{ project_dir }}"
+      register: machine_bench_run
+
+    - name: Print machine benchmark output
+      debug:
+        msg: "{{ machine_bench_run.stdout_lines }}"
+
+    - name: Fetch machine_bench.json back to local results directory
+      fetch:
+        src: "{{ remote_bench_out }}"
+        dest: "{{ local_results_dir }}/machine_bench_{{ inventory_hostname }}.json"
+        flat: yes
+      when: not (dry_run | bool)
+
+- name: Service benchmark — BEM (local machine)
+  hosts: localhost
+  connection: local
+  become: no
+  tags: service
+  vars:
+    local_user: "{{ lookup('env', 'USER') }}"
+    local_project_dir: "/home/{{ local_user }}/Serverless_Scheduler"
+    local_results_dir: "{{ local_project_dir }}/benchmark_results"
+    function_bench_out: "{{ local_results_dir }}/function_bench.json"
+    dry_run: false
+    # Override to benchmark only specific services: "110,311"
+    services: ""
+    # Number of warmup+timing runs
+    B: 5
+    B_prime: 3
+    theta: 0.5
+    # Skip network throttling (requires root). Set to false and run with sudo to get w_net.
+    skip_net: true
+  tasks:
+    - name: Create local results directory
+      file:
+        path: "{{ local_results_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Install benchmark script dependencies locally
+      command: >-
+        {{ local_project_dir }}/.venv/bin/pip install
+        docker requests
+        --no-input --index-url https://pypi.org/simple
+
+    - name: Run service benchmark (BEM)
+      command: >-
+        {{ local_project_dir }}/.venv/bin/python
+        {{ local_project_dir }}/scripts/benchmarks/benchmark.py
+        service
+        --provider-id bem-{{ local_user }}
+        --out {{ function_bench_out }}
+        --B {{ B }}
+        --B-prime {{ B_prime }}
+        --theta {{ theta }}
+        {% if services | length > 0 %} --services {{ services }}{% endif %}
+        {% if skip_net | bool %} --skip-dims net{% endif %}
+        {% if dry_run | bool %} --dry-run{% endif %}
+      args:
+        chdir: "{{ local_project_dir }}"
+      register: service_bench_run
+
+    - name: Print service benchmark output
+      debug:
+        msg: "{{ service_bench_run.stdout_lines }}"
+
+    - name: Show path to results
+      debug:
+        msg: "Results written to {{ function_bench_out }}"
+
+- name: Load benchmark results into scheduler DB
+  hosts: localhost
+  connection: local
+  become: no
+  tags: load
+  vars:
+    local_user: "{{ lookup('env', 'USER') }}"
+    local_project_dir: "/home/{{ local_user }}/Serverless_Scheduler"
+    local_results_dir: "{{ local_project_dir }}/benchmark_results"
+    function_bench_out: "{{ local_results_dir }}/function_bench.json"
+    scheduler_host: ""
+    scheduler_url: "http://{{ scheduler_host }}:8000"
+  tasks:
+    - name: Resolve scheduler if scheduler_host not provided
+      include_tasks: tasks/resolve_scheduler.yml
+      when: scheduler_host == ""
+
+    - name: NOTE — machine benchmark DB loading not yet implemented
+      debug:
+        msg: >-
+          The scheduler has no endpoint yet to ingest machine_bench_*.json files
+          (r_cpu, r_mem, s_disk_mbps, s_net_mbps fields on User model) or
+          function_bench.json (ref_runtime_ms, w_cpu/mem/disk/net on Services model).
+          _build_prediction_input() in views.py also does not read these fields yet.
+          Until that is wired, RUNTIME_PREDICTION_STRATEGY=scaling will fall back
+          to DEFAULT_RUNTIME (1000ms) for all predictions.
+          Benchmark JSON files are available in {{ local_results_dir }}.
+
+    - name: Find all fetched machine benchmark files
+      find:
+        paths: "{{ local_results_dir }}"
+        patterns: "machine_bench_*.json"
+      register: machine_bench_files
+
+    - name: Summarise fetched machine benchmark files
+      debug:
+        msg: "Found {{ machine_bench_files.files | length }} machine benchmark files: {{ machine_bench_files.files | map(attribute='path') | list }}"

@@ -5,7 +5,14 @@
   vars_files:
     - secrets.yml
   vars:
-    repo_url: "https://{{ github_pat }}@github.com/aalhadsawane/Serverless_Scheduler"
+    # Override these with -e to test a personal fork/branch without going through
+    # the push -> PR -> sync-to-aalhad chain. Defaults match production (aalhad/main).
+    #   ansible-playbook sync_repo.yml -e "repo_owner=sn34kyp3t3 repo_branch=my-feature"
+    # If the target fork is private and needs a different token, also pass:
+    #   -e "github_pat=<token-with-access-to-that-fork>"
+    repo_owner: "aalhadsawane"
+    repo_branch: "main"
+    repo_url: "https://{{ github_pat }}@github.com/{{ repo_owner }}/Serverless_Scheduler"
     project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
   tasks:
     - name: Bootstrap python3-apt
@@ -26,9 +33,9 @@
         group: "{{ ansible_user }}"
         mode: "0755"
 
-    - name: Sync repository to latest main
+    - name: Sync repository to latest {{ repo_owner }}/{{ repo_branch }}
       git:
         repo: "{{ repo_url }}"
         dest: "{{ project_dir }}"
-        version: main
+        version: "{{ repo_branch }}"
         force: yes

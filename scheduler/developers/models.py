@@ -32,6 +32,13 @@ class Services(models.Model):
     cpu_cycles_required = models.BigIntegerField(null=True, blank=True)
     memory_footprint = models.BigIntegerField(null=True, blank=True)
     memory_bytes_per_second = models.BigIntegerField(null=True, blank=True)
+    # ScalingFactor function weights — populated by ingest_benchmarks management command.
+    ref_runtime_ms = models.IntegerField(null=True, blank=True, help_text="Median runtime on BEM reference machine (ms)")
+    w_cpu = models.FloatField(null=True, blank=True, help_text="CPU weight for scaling formula")
+    w_mem = models.FloatField(null=True, blank=True, help_text="Memory weight for scaling formula")
+    w_disk = models.FloatField(null=True, blank=True, help_text="Disk I/O weight for scaling formula")
+    w_net = models.FloatField(null=True, blank=True, help_text="Network weight for scaling formula")
+    image_size_mb = models.FloatField(null=True, blank=True, help_text="Docker image size in MB (drives pull-time estimate)")
 
     class Meta:
         # Each developer can only have one service with a specific name

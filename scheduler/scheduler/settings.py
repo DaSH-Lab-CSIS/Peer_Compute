@@ -64,6 +64,7 @@ CONTROLLER_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE2OTM5NzE5NTM
 # Name of the strategy resolved by ``providers.prediction.registry.get_strategy``.
 # See ``providers/prediction/__init__.py`` for the plug-and-play contract.
 RUNTIME_PREDICTION_STRATEGY = os.environ.get("RUNTIME_PREDICTION_STRATEGY", "cpi")
+SCHEDULER_PLACEMENT_MODE = os.environ.get("SCHEDULER_PLACEMENT_MODE", "ilp")
 
 CORS_ORIGIN_ALLOW_ALL = True
 
@@ -123,7 +124,7 @@ DATABASES = {
         "NAME": "peercompute",
         "USER": "root",
         "PASSWORD": "",
-        "HOST": "anjuna2.dashlab.in",   # or HAProxy VIP/host
+        "HOST": "colva3.dashlab.in",   # colva2 down 2026-07-30; failover to colva3
         "PORT": "26257",
         "OPTIONS": {
             "sslmode": "verify-full",
@@ -199,6 +200,10 @@ AUTH_PASSWORD_VALIDATORS = [
 LANGUAGE_CODE = 'en-us'
 
 TIME_ZONE = 'UTC'
+
+# Scheduler profiling — writes one JSONL per Django startup under BASE_DIR/logs/
+SCHEDULER_PROFILE_LOG_DIR = os.path.join(BASE_DIR, "logs")
+SCHEDULER_PROFILE_LOG_ENABLED = True
 
 USE_I18N = True
 
