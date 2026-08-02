@@ -122,8 +122,13 @@ class LoadBalancerClient:
                         result['response'] = response.json()
                         result['success'] = True
                         
-                        # Extract batch metadata from response if available
                         if isinstance(result['response'], dict):
+                            # Promote job_id to top-level for easy tracking/export
+                            job_id = result['response'].get('job_id')
+                            if job_id is not None:
+                                result['job_id'] = job_id
+
+                            # Extract batch metadata from response if available
                             batch_metadata = result['response'].get('batch_metadata', {})
                             if batch_metadata:
                                 result['batch_metadata'] = {

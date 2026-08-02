@@ -344,6 +344,50 @@ t4: Provider completes execution
 4. **Total System Delay**: `assigned_to_provider_time - lb_received_time`
    - End-to-end delay from request to assignment
 
+## Outcome Tracking for Experiments
+
+When running experiments via `ansible_utils/playbooks/experiment.yml`, request acceptance and
+provider completion are now tracked as a two-step process:
+
+1. **Per-request to job linkage** (already present)
+   - Testbed records `request_id -> job_id` in `testbed/results/json/<run_id>_job_ids.jsonl`
+   - This linkage is created from load balancer HTTP responses
+
+2. **Post-run job enrichment** (new)
+   - Testbed calls scheduler endpoint `POST /providers/direct_invocation_status/` in chunks
+   - Joins scheduler-side fields (`finished`, `run_time`, timestamps, provider id) back to each request
+   - Writes:
+     - `testbed/results/csv/<run_id>_jobs_enriched.csv`
+     - `testbed/results/json/<run_id>_jobs_enriched.json`
+   - Adds `outcome_breakdown` into `<run_id>_metrics.json`
+
+### Outcome Classification Rule
+
+For experiment reporting, outcomes are classified as:
+
+- `success`: `finished=True` and `run_time > 0`
+- `error`: `finished=True` and `run_time == 0` (non-timeout)
+- `timeout`: scheduler timeout sweep sentinel in `response`
+- `pending`: `finished=False`
+
+### Stale Job Sweep
+
+To prevent experiment drain from hanging indefinitely when providers crash, scheduler exposes:
+
+- `POST /providers/timeout_stale_jobs/`
+
+This endpoint marks stale dispatched jobs as `finished=True` with a timeout sentinel response:
+
+```json
+{
+  "sweep": "timeout",
+  "kind": "no_ack | no_result",
+  "swept_at": "..."
+}
+```
+
+Ansible runs this sweep after the normal pending-job drain wait, then performs a final pending check.
+
 ## Error Handling
 
 - **No Providers Available**: `find_providers()` returns `None`, error returned to load balancer

@@ -1,0 +1,129 @@
+---
+# Fetch scheduler profile JSONL logs from all control nodes (scheduler hosts)
+# and store them locally under ansible_utils/scheduler_logs/.
+#
+# Each scheduler writes one JSONL per Django process startup:
+#   <project_dir>/scheduler/logs/scheduler_profile_<RUN_CODE>.jsonl
+#
+# Files are fetched flat and renamed to <hostname>_<filename> so globs
+# like "scheduler_logs/utorda1_*" or "scheduler_logs/*" cover all nodes.
+# Pass them directly to --scheduler-profile-log in the enricher:
+#
+#   ../.venv/bin/python main.py --enrich <run_id> \
+#       --scheduler-url http://utorda1.dashlab.in:8000 \
+#       --scheduler-profile-log "ansible_utils/scheduler_logs/*.jsonl"
+#
+# Usage (from ansible_utils/):
+#   ./run_playbook.sh -i inventory.ini playbooks/fetch_scheduler_logs.yml -K --ask-vault-pass
+#   ./run_playbook.sh -i inventory.ini playbooks/fetch_scheduler_logs.yml -K --ask-vault-pass --limit utorda1.dashlab.in
+#
+# Optional vars:
+#   since_run_code  - only fetch files newer than this RUN_CODE prefix (e.g. run_20260527)
+#                     leave unset to fetch all logs
+#
+# Output: ansible_utils/scheduler_logs/<hostname>_scheduler_profile_<RUN_CODE>.jsonl
+
+- name: Fetch scheduler profile logs from control nodes
+  hosts: control
+  become: no
+  gather_facts: no
+  vars:
+    project_dir: "/home/{{ ansible_user }}/Serverless_Scheduler"
+    log_dir: "{{ project_dir }}/scheduler/logs"
+    local_log_dir: "{{ playbook_dir }}/../scheduler_logs"
+    since_run_code: ""
+
+  tasks:
+    - name: Ensure local scheduler_logs directory exists
+      file:
+        path: "{{ local_log_dir }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      run_once: true
+
+    - name: Check scheduler logs directory exists on remote
+      stat:
+        path: "{{ log_dir }}"
+      register: log_dir_stat
+
+    - name: List scheduler profile JSONL files
+      find:
+        paths: "{{ log_dir }}"
+        patterns: "scheduler_profile_*.jsonl"
+        file_type: file
+      register: profile_files
+      when: log_dir_stat.stat.exists
+
+    - name: Set empty file list when logs dir missing
+      set_fact:
+        profile_files:
+          files: []
+      when: not log_dir_stat.stat.exists
+
+    - name: Filter by since_run_code (when provided)
+      set_fact:
+        filtered_files: >-
+          {{ profile_files.files
+             | selectattr('path', 'search', since_run_code)
+             | list
+             if since_run_code != ''
+             else profile_files.files }}
+
+    - name: Fetch each profile JSONL to local scheduler_logs/<hostname>_<filename>
+      fetch:
+        src: "{{ item.path }}"
+        dest: "{{ local_log_dir }}/{{ inventory_hostname }}_{{ item.path | basename }}"
+        flat: yes
+        fail_on_missing: no
+      loop: "{{ filtered_files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+
+    - name: List prediction audit JSONL files
+      find:
+        paths: "{{ log_dir }}"
+        patterns: "prediction_audit_*.jsonl"
+        file_type: file
+      register: audit_files
+      when: log_dir_stat.stat.exists
+
+    - name: Set empty audit file list when logs dir missing
+      set_fact:
+        audit_files:
+          files: []
+      when: not log_dir_stat.stat.exists
+
+    - name: Filter audit files by since_run_code (when provided)
+      set_fact:
+        filtered_audit_files: >-
+          {{ audit_files.files
+             | selectattr('path', 'search', since_run_code)
+             | list
+             if since_run_code != ''
+             else audit_files.files }}
+
+    - name: Fetch each prediction audit JSONL to local scheduler_logs/<hostname>_<filename>
+      fetch:
+        src: "{{ item.path }}"
+        dest: "{{ local_log_dir }}/{{ inventory_hostname }}_{{ item.path | basename }}"
+        flat: yes
+        fail_on_missing: no
+      loop: "{{ filtered_audit_files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+
+    - name: Get running scheduler PID
+      shell: pgrep -f 'manage.py runserver' || pgrep -f 'gunicorn.*scheduler' || echo ""
+      register: scheduler_pid
+      changed_when: false
+
+    - name: Write PID file locally
+      copy:
+        content: "{{ scheduler_pid.stdout | trim if scheduler_pid.stdout | trim != '' else 'not running' }}\n"
+        dest: "{{ local_log_dir }}/{{ inventory_hostname }}.pid"
+      delegate_to: localhost
+
+    - name: Report fetched files
+      debug:
+        msg: "Fetched {{ filtered_files | length }} profile file(s) and {{ filtered_audit_files | length }} prediction audit file(s) from {{ inventory_hostname }}"

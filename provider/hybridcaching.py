@@ -61,7 +61,7 @@ class HybridImageManager:
         if image_id in self.memory_cache:
             self._update_frequency(image_id)
             print(f"[request_image] Found {image_id} in memory.")
-            return self.memory_cache[image_id][0]  # Return the Docker image object directly
+            return self.memory_cache[image_id][0], 'memory'
 
         # Check in disk cache
         cached_image_data = self.cache.get(image_id)
@@ -72,7 +72,7 @@ class HybridImageManager:
             image = self._load_image_from_tar(cached_image_data['tar_path'])
             if image:
                 self._store_in_memory(image_id, image)  # Store in memory for faster future access
-            return image  # Return the loaded Docker image object directly
+            return image, 'disk'
 
         # Pull from Docker Hub and store in memory and disk cache
         print(f"[request_image] Pulling image {image_id}...")
@@ -82,7 +82,7 @@ class HybridImageManager:
         if image is not None:
             image_size = self._get_image_size(image)  # Use updated method to get size
             print(f"[request_image] Image size: {image_size} bytes")
-            
+
             # Free up memory space if necessary
             self._evict_memory_cache(image_size)
 
@@ -92,7 +92,7 @@ class HybridImageManager:
             else:
                 print(f"[request_image] Image {image_id} exceeds memory limit of {self.memory_limit} bytes and will not be cached.")
 
-        return image
+        return image, 'cold'
 
     def _pull_from_hub(self, image_id):
         print(f"[pull_from_hub] Pulling image {image_id} from Docker Hub...")

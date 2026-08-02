@@ -337,7 +337,7 @@ class MetricsCollector:
         
         # CSV for request-level metrics
         fieldnames = [
-            'request_id', 'service_id', 'enqueue_timestamp', 'enqueue_time',
+            'request_id', 'job_id', 'service_id', 'enqueue_timestamp', 'enqueue_time',
             'success', 'status_code', 'latency', 'error'
         ]
         
@@ -348,6 +348,7 @@ class MetricsCollector:
             for req in self.requests:
                 row = {
                     'request_id': req.get('request_id', ''),
+                    'job_id': req.get('job_id', ''),
                     'service_id': req.get('service_id', ''),
                     'enqueue_timestamp': req.get('enqueue_timestamp', ''),
                     'enqueue_time': req.get('enqueue_time', ''),
@@ -401,6 +402,44 @@ class MetricsCollector:
         
         return str(output_path)
     
+    def export_job_ids(self, output_dir: str) -> str:
+        """
+        Write a JSONL file mapping each request to its scheduler job_id.
+
+        One line per request that received a job_id, format:
+            {"run_id": ..., "request_id": ..., "job_id": ..., "service_id": ..., "enqueue_timestamp": ...}
+
+        Also writes a plain-text companion (<run_id>_job_ids.txt) with one job_id
+        per line for easy grep / shell piping.
+
+        Returns the path to the JSONL file.
+        """
+        jsonl_path = Path(output_dir) / "json" / f"{self.run_id}_job_ids.jsonl"
+        txt_path = Path(output_dir) / "json" / f"{self.run_id}_job_ids.txt"
+        jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+
+        rows = [
+            {
+                "run_id": self.run_id,
+                "request_id": req.get("request_id", ""),
+                "job_id": req.get("job_id"),
+                "service_id": req.get("service_id", ""),
+                "enqueue_timestamp": req.get("enqueue_timestamp", ""),
+            }
+            for req in self.requests
+            if req.get("job_id") is not None
+        ]
+
+        with open(jsonl_path, "w") as f:
+            for row in rows:
+                f.write(json.dumps(row) + "\n")
+
+        with open(txt_path, "w") as f:
+            for row in rows:
+                f.write(str(row["job_id"]) + "\n")
+
+        return str(jsonl_path)
+
     def get_summary(self) -> str:
         """Get a text summary of metrics."""
         if not self.aggregate_metrics:

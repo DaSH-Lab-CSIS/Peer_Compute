@@ -116,3 +116,59 @@ def persist_profile_row(label: str, elapsed_s: float | None = None, **fields) ->
             continue
         rec[k] = round(v, 6) if isinstance(v, float) else v
     _write_record(rec)
+
+
+# ---------------------------------------------------------------------------
+# Prediction audit stream (separate file: prediction_audit_<RUN_CODE>.jsonl)
+# ---------------------------------------------------------------------------
+
+_audit_path: Path | None = None
+_audit_path_lock = threading.Lock()
+
+
+def _get_audit_path() -> Path | None:
+    """Return (and cache) the prediction audit .jsonl path for this run."""
+    global _audit_path
+    if _audit_path is not None:
+        return _audit_path
+    with _audit_path_lock:
+        if _audit_path is not None:
+            return _audit_path
+        try:
+            from django.conf import settings
+        except ImportError:
+            return None
+        log_dir_raw = getattr(settings, "SCHEDULER_PROFILE_LOG_DIR", None)
+        if not log_dir_raw:
+            legacy = getattr(settings, "SCHEDULER_PROFILE_JSONL_PATH", None)
+            if legacy:
+                log_dir_raw = str(Path(legacy).parent)
+            else:
+                return None
+        log_dir = Path(log_dir_raw)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        _audit_path = log_dir / f"prediction_audit_{RUN_CODE}.jsonl"
+        return _audit_path
+
+
+def persist_prediction_audit_row(**fields) -> None:
+    """Append one prediction audit record; safe from batch worker threads.
+
+    Each record captures every static strategy's output for one
+    (provider_id, service_id) pair so that offline Axis-P accuracy scoring
+    can evaluate all predictors against the same ground-truth actuals.
+    """
+    if not _profile_enabled():
+        return
+    path = _get_audit_path()
+    if path is None:
+        return
+    rec: dict = {"run_code": RUN_CODE, "ts_utc": datetime.now(timezone.utc).isoformat()}
+    cid = get_profile_correlation_id()
+    if cid is not None:
+        rec["correlation_id"] = cid
+    rec.update({k: v for k, v in fields.items() if v is not None})
+    line = json.dumps(rec, default=str, separators=(",", ":")) + "\n"
+    with _lock:
+        with path.open("a", encoding="utf-8") as f:
+            f.write(line)

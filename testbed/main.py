@@ -22,6 +22,8 @@ from utils.config_loader import get_scenario_config, get_services_config, load_y
 from utils.logger import setup_logger
 from analysis.report_generator import ReportGenerator
 from analysis.visualizer import MetricsVisualizer
+from core.job_enricher import enrich_run
+from core.drive_uploader import upload_run_artefacts
 
 # Paths relative to this file so `python main.py` works from repo root or from testbed/
 _TESTBED_DIR = Path(__file__).resolve().parent
@@ -122,7 +124,14 @@ async def run_scenario(
     seed: Optional[int] = None,
     save_requests: bool = False,
     replay_file: Optional[str] = None,
-    save_only: bool = False
+    save_only: bool = False,
+    enrich_after_run: bool = False,
+    scheduler_url: Optional[str] = None,
+    enrich_since: Optional[str] = None,
+    enrich_until: Optional[str] = None,
+    upload_to_drive: bool = False,
+    drive_credentials: Optional[str] = None,
+    scheduler_profile_log: Optional[str] = None,
 ) -> MetricsCollector:
     """
     Run a single scenario.
@@ -142,7 +151,9 @@ async def run_scenario(
         config_dir = _DEFAULT_CONFIG_DIR
     if output_dir is None:
         output_dir = _DEFAULT_RESULTS_DIR
-    logger = setup_logger("main")
+    _log_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    _log_filename = f"testbed_{scenario_name}_{_log_ts}.log"
+    logger = setup_logger("main", log_file=_log_filename, log_dir=str(Path(output_dir) / "logs"))
     
     if scenario_name not in SCENARIO_CLASSES:
         raise ValueError(f"Unknown scenario: {scenario_name}. Available: {list(SCENARIO_CLASSES.keys())}")
@@ -223,9 +234,27 @@ async def run_scenario(
             # Export metrics
             json_path = metrics.export_json(output_dir)
             csv_path = metrics.export_csv(output_dir)
+            job_ids_path = metrics.export_job_ids(output_dir)
             
             logger.info(f"Metrics exported: {json_path}, {csv_path}")
+            logger.info(f"Job IDs written: {job_ids_path}")
             logger.info(metrics.get_summary())
+
+            if enrich_after_run:
+                if not scheduler_url:
+                    raise ValueError("scheduler_url is required when enrich_after_run is enabled")
+                enrich_result = enrich_run(
+                    run_id=metrics.run_id,
+                    results_dir=output_dir,
+                    scheduler_url=scheduler_url,
+                    since=enrich_since,
+                    until=enrich_until,
+                    scheduler_profile_log=scheduler_profile_log,
+                )
+                logger.info(f"Enriched job metrics: {enrich_result['json_path']}")
+                logger.info(f"Outcome breakdown: {enrich_result['outcome_breakdown']}")
+                if upload_to_drive:
+                    _upload_artefacts(metrics.run_id, output_dir, drive_credentials, logger)
             
         except Exception as e:
             logger.error(f"Scenario execution failed: {e}", exc_info=True)
@@ -291,6 +320,57 @@ def analyze_results(run_id: str, output_dir: Optional[str] = None):
         logger.info(f"Visualizations created: {viz_paths}")
     except Exception as e:
         logger.error(f"Failed to create visualizations: {e}")
+
+
+def run_enrichment(
+    run_id: str,
+    output_dir: str,
+    scheduler_url: str,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    upload_to_drive: bool = False,
+    drive_credentials: Optional[str] = None,
+    scheduler_profile_log: Optional[str] = None,
+):
+    """Run standalone enrichment for an existing run_id."""
+    logger = setup_logger("main")
+    logger.info(f"Enriching run {run_id} using scheduler {scheduler_url}")
+    result = enrich_run(
+        run_id=run_id,
+        results_dir=output_dir,
+        scheduler_url=scheduler_url,
+        since=since,
+        until=until,
+        scheduler_profile_log=scheduler_profile_log,
+    )
+    logger.info(f"Mode: {result['mode']}")
+    logger.info(f"Enriched CSV: {result['csv_path']}")
+    logger.info(f"Enriched JSON: {result['json_path']}")
+    logger.info(f"Outcome breakdown: {result['outcome_breakdown']}")
+
+    if upload_to_drive:
+        _upload_artefacts(run_id, output_dir, drive_credentials, logger)
+
+
+def _upload_artefacts(
+    run_id: str,
+    output_dir: str,
+    drive_credentials: Optional[str],
+    logger,
+):
+    """Upload enriched artefacts to Google Drive and log the result."""
+    logger.info(f"Uploading artefacts for {run_id} to Google Drive (peercomp_runs/{run_id}/)...")
+    try:
+        info = upload_run_artefacts(
+            run_id=run_id,
+            results_dir=output_dir,
+            credentials_file=drive_credentials,
+        )
+        logger.info(f"Drive folder: {info['folder_link']}")
+        for f in info["uploaded"]:
+            logger.info(f"  Uploaded: {f['name']}  ->  {f['link']}")
+    except Exception as exc:
+        logger.error(f"Drive upload failed: {exc}")
 
 
 def main():
@@ -376,16 +456,88 @@ Examples:
         action='store_true',
         help='Only save requests without sending them (useful for generating test data)'
     )
-    
+    parser.add_argument(
+        '--enrich',
+        help='Enrich an existing run ID with scheduler-side job states'
+    )
+    parser.add_argument(
+        '--scheduler-url',
+        help='Scheduler base URL for enrichment (example: http://host:8000)'
+    )
+    parser.add_argument(
+        '--enrich-after-run',
+        action='store_true',
+        help='After each run, enrich metrics with scheduler-side job states'
+    )
+    parser.add_argument(
+        '--enrich-since',
+        help='ISO-8601 window start for enrichment window query (overrides auto-detected start_time)'
+    )
+    parser.add_argument(
+        '--enrich-until',
+        help='ISO-8601 window end for enrichment window query (defaults to now on scheduler side)'
+    )
+    parser.add_argument(
+        '--enrich-timeout',
+        type=float,
+        default=300.0,
+        metavar='SECONDS',
+        help='HTTP timeout in seconds for each scheduler request during enrichment (default: 300)'
+    )
+    parser.add_argument(
+        '--upload-to-drive',
+        action='store_true',
+        help='After enrichment, upload artefacts to Google Drive under peercomp_runs/<run_id>/'
+    )
+    parser.add_argument(
+        '--upload-only',
+        metavar='RUN_ID',
+        help='Upload existing enriched artefacts for RUN_ID to Drive (skip re-enrichment)'
+    )
+    parser.add_argument(
+        '--drive-credentials',
+        help='Path to Google OAuth client credentials JSON (default: ~/.config/peercomp/credentials.json)'
+    )
+    parser.add_argument(
+        '--scheduler-profile-log',
+        help=(
+            'Comma-separated paths or glob patterns to scheduler profile JSONL files. '
+            'Pass one per scheduler node to get full coverage — all files are merged on corr_id. '
+            'Example: "sched1/logs/scheduler_profile_*.jsonl,sched2/logs/scheduler_profile_*.jsonl"'
+        )
+    )
+
     args = parser.parse_args()
-    
+
     if args.analyze:
         analyze_results(args.analyze, args.output_dir)
         return
-    
+
+    if args.upload_only:
+        logger = setup_logger("main")
+        _upload_artefacts(args.upload_only, args.output_dir, args.drive_credentials, logger)
+        return
+
+    if args.enrich:
+        if not args.scheduler_url:
+            parser.error("--scheduler-url is required when using --enrich")
+        run_enrichment(
+            args.enrich,
+            args.output_dir,
+            args.scheduler_url,
+            since=args.enrich_since,
+            until=args.enrich_until,
+            upload_to_drive=args.upload_to_drive,
+            drive_credentials=args.drive_credentials,
+            scheduler_profile_log=args.scheduler_profile_log,
+        )
+        return
+
     if not args.scenario and not args.all:
         parser.error("Must specify --scenario or --all")
-    
+    if args.enrich_after_run and not args.scheduler_url:
+        parser.error("--scheduler-url is required when using --enrich-after-run")
+
     # Run scenarios
     if args.all:
         asyncio.run(run_all_scenarios(
@@ -408,7 +560,14 @@ Examples:
             seed=args.seed,
             save_requests=args.save_requests,
             replay_file=args.replay,
-            save_only=args.save_only
+            save_only=args.save_only,
+            enrich_after_run=args.enrich_after_run,
+            scheduler_url=args.scheduler_url,
+            enrich_since=args.enrich_since,
+            enrich_until=args.enrich_until,
+            upload_to_drive=args.upload_to_drive,
+            drive_credentials=args.drive_credentials,
+            scheduler_profile_log=args.scheduler_profile_log,
         ))
         
         # Auto-analyze if single iteration
