@@ -2206,8 +2206,9 @@ def get_predicted_runtimes(provider, services):
     """
     DEFAULT_RUNTIME = 1000
     print("Entering get_predicted_runtimes")
+    force_model = getattr(settings, 'PREDICTION_FORCE_MODEL', False)
     predicted_runtimes, services_needing_prediction, _db_timings = get_predicted_runtimes_db_pass(
-        provider, services
+        provider, services, run_time_map={} if force_model else None
     )
     if services_needing_prediction:
         pred_input = _build_prediction_input(provider, services_needing_prediction)
@@ -2311,6 +2312,8 @@ def build_cost_matrix(providers, services):
     } - {None})
     run_time_map  = Job.bulk_latest_run_time(provider_ids, service_ids)
     pull_time_map = Job.bulk_latest_pull_time(provider_ids, service_ids)
+    force_model = getattr(settings, 'PREDICTION_FORCE_MODEL', False)
+    effective_run_time_map = {} if force_model else run_time_map
     _prof(
         "build_cost_matrix-bulk_prefetch",
         t_bulk,
@@ -2327,15 +2330,16 @@ def build_cost_matrix(providers, services):
     for provider in providers:
         predicted_runtimes, services_needing_prediction, t_db_inner = (
             get_predicted_runtimes_db_pass(provider, compatible_services,
-                                           run_time_map=run_time_map)
+                                           run_time_map=effective_run_time_map)
         )
         per_provider_runtimes[provider] = predicted_runtimes
         if services_needing_prediction:
             provider_services_map[provider] = services_needing_prediction
     t_db_elapsed = time.time() - t_db_outer
-    # Source tracking: all DB-history-derived runtimes start as 'history'
+    # Source tracking: DB-history runtimes start as 'history'; forced-model start as 'model'
+    _initial_source = 'model' if force_model else 'history'
     prediction_source_map = {
-        prov.id: {sid: 'history' for sid in runtimes}
+        prov.id: {sid: _initial_source for sid in runtimes}
         for prov, runtimes in per_provider_runtimes.items()
     }
     _prof(

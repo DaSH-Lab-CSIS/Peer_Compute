@@ -257,6 +257,7 @@
         block: |
           export RUNTIME_PREDICTION_STRATEGY={{ prediction_strategy }}
           export SCHEDULER_PLACEMENT_MODE={{ placement_mode }}
+          export PREDICTION_FORCE_MODEL={{ force_model | default(false) | bool | lower }}
         create: true
         owner: "{{ ansible_user }}"
         group: "{{ ansible_user }}"
@@ -651,6 +652,7 @@
           "git_sha": "{{ git_sha.stdout | default('unknown') }}",
           "placement_mode": "{{ placement_mode }}",
           "prediction_strategy": "{{ prediction_strategy }}",
+          "force_model": {{ force_model | default(false) | bool | lower }},
           "run_label": "{{ run_label }}",
           "repetition": {{ repetition }},
           "scenario": "{{ scenario }}",

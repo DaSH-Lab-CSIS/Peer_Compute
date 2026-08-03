@@ -65,6 +65,7 @@ CONTROLLER_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE2OTM5NzE5NTM
 # See ``providers/prediction/__init__.py`` for the plug-and-play contract.
 RUNTIME_PREDICTION_STRATEGY = os.environ.get("RUNTIME_PREDICTION_STRATEGY", "cpi")
 SCHEDULER_PLACEMENT_MODE = os.environ.get("SCHEDULER_PLACEMENT_MODE", "ilp")
+PREDICTION_FORCE_MODEL = os.environ.get("PREDICTION_FORCE_MODEL", "false").lower() == "true"
 
 CORS_ORIGIN_ALLOW_ALL = True
 
