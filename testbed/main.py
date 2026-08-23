@@ -18,6 +18,7 @@ from scenarios.bursty_load import BurstyLoadScenario
 from scenarios.stress_soak import StressSoakScenario
 from scenarios.chaos_edge import ChaosEdgeScenario
 from scenarios.fairness_mix import FairnessMixScenario
+from scenarios.smoke_test import SmokeTestScenario
 from utils.config_loader import get_scenario_config, get_services_config, load_yaml
 from utils.logger import setup_logger
 from analysis.report_generator import ReportGenerator
@@ -38,6 +39,7 @@ SCENARIO_CLASSES = {
     'stress_soak': StressSoakScenario,
     'chaos_edge': ChaosEdgeScenario,
     'fairness_mix': FairnessMixScenario,
+    'smoke': SmokeTestScenario,
 }
 
 

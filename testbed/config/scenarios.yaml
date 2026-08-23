@@ -1,3 +1,9 @@
+smoke:
+  # 3 requests to known-good services — quick end-to-end sanity check.
+  # Excludes services 19/20/24/25 (stdout format bug, 0% success rate).
+  total_requests: 3
+  services: [13, 14, 17]
+
 baseline:
   # Dev-scale: 100 requests (default)
   # Research-scale: 500 requests (use --research-mode or override)

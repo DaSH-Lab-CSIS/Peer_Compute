@@ -1656,70 +1656,27 @@ def request_handler(data, service, start_time, run_async=False):
                 else:
                     raise Exception("Could not find suitable providers after multiple attempts")
             
-            # Process each service-provider assignment
+            # Jobs were already created and dispatched in find_providers → process_assignments.
+            # Build results from the assignment dict — no DB round-trips needed here.
+            assignment_by_svc_id = {}
+            for key, assigned_provider in assignment.items():
+                if isinstance(key, tuple) and len(key) == 2:
+                    _, assigned_svc = key
+                    assignment_by_svc_id[assigned_svc.id] = assigned_provider
+
             results = []
-            for i, svc in enumerate(services):
-                try:
-                    # Find the provider for this service
-                    provider = None
-                    for assignment_key, assigned_provider in assignment.items():
-                        # Handle both direct service objects and (index, service) tuples
-                        if isinstance(assignment_key, tuple) and len(assignment_key) == 2:
-                            idx, assigned_svc = assignment_key
-                            if assigned_svc.id == svc.id:
-                                provider = assigned_provider
-                                break
-                    
-                    if not provider:
-                        print(f"Warning: No provider assigned for service {svc.id}")
-                        results.append((None, None, 0, None))
-                        continue
-                    
-                    # Get the job created during assignment
-                    job = Job.objects.filter(
-                        provider=provider,
-                        service=svc,
-                        finished=False
-                    ).order_by('-start_time').first()
-    
-                    if not job:
-                        print(f"Warning: No job found for service {svc.id} and provider {provider.id}")
-                        results.append((None, None, 0, None))
-                        continue
-    
-                    if USE_FABRIC:
-                        r = fabric.invoke_new_job(str(job.id), str(svc.id), str(svc.developer_id),
-                                                str(provider.id), provider_org="Org1")
-                        if 'jwt expired' in r.text or 'jwt malformed' in r.text or 'User was not found' in r.text:
-                            token = fabric.register_user()
-                            r = fabric.invoke_new_job(str(job.id), str(svc.id), str(svc.developer_id),
-                                                    str(provider.id), provider_org="Org1",token=token)
-    
-                    req_data = data_items[i]
-                    task_link = svc.docker_container 
-                    task_developer = svc.developer
-                    input_val = req_data.get('input', 'None')
-                    
-                    # Job already sent by find_providers -> process_assignments
-                    # Just refresh and save the job
-                    try:
-                        job.refresh_from_db()
-                        job.save()
-                        print(f"Job {job.id} already sent to provider {provider.user_id} by process_assignments")
-                    except Exception as mqtt_error:
-                        print(f"Error refreshing job: {str(mqtt_error)}")
-                        # This will be handled by the recovery process - job stays in CREATED status
-                    
-                    # Calculate providing time for response
-                    providing_time = 0
-                    if job.ack_time:
-                        providing_time = int(((job.ack_time - job.start_time)/timedelta(microseconds=1))/1000)
-                    
-                    response_decoded = {"Result": "Request sent to provider", "pull_time": 0, "run_time": 0, "total_time": 0}
-                    results.append((response_decoded, provider.user_id, providing_time, job.id))
-                
-                except Exception as service_error:
-                    print(f"Error processing service {svc.id}: {str(service_error)}")
+            for svc in services:
+                provider = assignment_by_svc_id.get(svc.id)
+                if provider:
+                    print(f"Job dispatched to provider {provider.user_id} for service {svc.id}")
+                    results.append((
+                        {"Result": "Request sent to provider", "pull_time": 0, "run_time": 0, "total_time": 0},
+                        provider.user_id,
+                        0,
+                        None,
+                    ))
+                else:
+                    print(f"Warning: No provider assigned for service {svc.id}")
                     results.append((None, None, 0, None))
             
             # If this was a single request, return just that result

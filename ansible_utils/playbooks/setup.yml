@@ -6,9 +6,9 @@
   vars_files:
     - secrets.yml 
   vars:
-    repo_owner: "aalhadsawane"
+    repo_owner: "DaSH-Lab-CSIS"
     repo_branch: "main"
-    repo_url: "https://{{ github_pat }}@github.com/{{ repo_owner }}/Serverless_Scheduler"
+    repo_url: "https://{{ github_pat }}@github.com/{{ repo_owner }}/Peer_Compute"
     project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
     miniforge_path: "/home/{{ ansible_user }}/miniforge3"
     venv_python: "{{ project_dir }}/.venv/bin/python"
@@ -112,9 +112,9 @@
       command: "{{ project_dir }}/.venv/bin/pip install -r {{ project_dir }}/loadbalancer/requirements.txt --no-input --index-url https://pypi.org/simple"
       become_user: "{{ ansible_user }}"
 
-    - name: Kill any existing Django server
+    - name: Kill any existing scheduler server
       tags: [debug, debug-django]
-      shell: pkill -f "[m]anage.py runserver" || true
+      shell: pkill -f "[g]unicorn.*scheduler.wsgi" || pkill -f "[m]anage.py runserver" || true
       args:
         executable: /bin/bash
 
@@ -160,12 +160,16 @@
       loop: "{{ cockroach_cert_stats.results }}"
 
 
-    - name: Start Django server
+    - name: Start scheduler (gunicorn, 1 worker 4 threads)
       tags: [debug, debug-django]
       become_user: "{{ ansible_user }}"
       shell: |
-        nohup {{ venv_python }} manage.py runserver 0.0.0.0:8000 \
-        > django.log 2>&1 &
+        source "{{ project_dir }}/.env"
+        nohup {{ project_dir }}/.venv/bin/gunicorn \
+          --workers 1 --threads 4 --worker-class gthread \
+          --bind 0.0.0.0:8000 --timeout 120 \
+          scheduler.wsgi:application \
+          > /tmp/django.log 2>&1 &
       environment:
         DB_SSLROOTCERT: "{{ cockroach_client_certs_source_dir }}/ca.crt"
         DB_SSLCERT: "{{ cockroach_client_certs_source_dir }}/client.root.crt"
@@ -229,9 +233,9 @@
   vars_files:
     - secrets.yml
   vars:
-    repo_owner: "aalhadsawane"
+    repo_owner: "DaSH-Lab-CSIS"
     repo_branch: "main"
-    repo_url: "https://{{ github_pat }}@github.com/{{ repo_owner }}/Serverless_Scheduler"
+    repo_url: "https://{{ github_pat }}@github.com/{{ repo_owner }}/Peer_Compute"
     project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
   tasks:
     # NOTE: this is commented as it is obsolete wifi connection code
@@ -279,7 +283,7 @@
   vars_files:
     - secrets.yml
   vars:
-    repo_url: "https://{{ github_pat }}@github.com/parasmittal099/Serverless_Scheduler"
+    repo_url: "https://{{ github_pat }}@github.com/DaSH-Lab-CSIS/Peer_Compute"
     project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
     miniforge_path: "/home/{{ ansible_user }}/miniforge3"
     # scheduler_host / scheduler_url: from -e, or discovered via tasks/resolve_scheduler.yml
