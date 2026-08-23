@@ -44,3 +44,4 @@ ansible_utils/playbooks/setupResolverCortalims.yml
 ansible_utils/playbooks/setupResolverPalolems.yml
 certs/
 testbed/results/*
+paper/
