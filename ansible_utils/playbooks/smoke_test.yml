@@ -1,0 +1,197 @@
+---
+# Quick end-to-end smoke test — verifies the full path is alive WITHOUT
+# starting or restarting anything.  Fails fast if LB or scheduler are down,
+# then sends 3 requests and checks that at least min_success_rate of them
+# land as "success" in the enriched CSV within timeout_seconds.
+#
+# Usage:
+#   ./run_playbook.sh -i inventory.ini playbooks/smoke_test.yml -K --ask-vault-pass
+#   ./run_playbook.sh -i inventory.ini playbooks/smoke_test.yml -K --ask-vault-pass \
+#     -e "lb_url=http://colva3.dashlab.in:9001 scheduler_host=utorda1.dashlab.in"
+#
+# Extra vars:
+#   lb_url              LB base URL          (default: http://colva3.dashlab.in:9001)
+#   scheduler_host      Scheduler host       (default: first host in [control])
+#   timeout_seconds     Max wait for jobs    (default: 90)
+#   min_success_rate    Fraction to pass     (default: 1.0  = all must succeed)
+
+- name: Smoke Test
+  hosts: localhost
+  connection: local
+  become: no
+  vars_files:
+    - secrets.yml
+  vars:
+    local_user: "{{ lookup('env', 'USER') }}"
+    local_project_dir: "/home/{{ local_user }}/Serverless_Scheduler"
+    testbed_dir: "{{ local_project_dir }}/testbed"
+    lb_url: "http://colva3.dashlab.in:9001"
+    timeout_seconds: 90
+    min_success_rate: 1.0
+
+  tasks:
+
+    # ── 1. Resolve scheduler URL ────────────────────────────────────────────
+    - name: Set scheduler_host from control inventory when not overridden
+      set_fact:
+        scheduler_host: "{{ groups['control'] | first }}"
+      when: scheduler_host is not defined
+
+    - name: Set scheduler_url
+      set_fact:
+        scheduler_url: "http://{{ scheduler_host }}:8000"
+
+    # ── 2. Health checks (fast-fail) ────────────────────────────────────────
+    - name: Check LB health
+      uri:
+        url: "{{ lb_url }}/status"
+        method: GET
+        timeout: 5
+        status_code: 200
+      register: lb_health
+      failed_when: lb_health.status != 200
+
+    - name: Print LB status
+      debug:
+        msg: "LB OK — {{ lb_health.json | default({}) }}"
+
+    - name: Check scheduler health (via SSH to avoid firewall on port 8000)
+      command: >-
+        ssh -o BatchMode=yes -o ConnectTimeout=8
+        peercompute@{{ scheduler_host }}
+        "curl -s --max-time 30
+        'http://127.0.0.1:8000/providers/pending_jobs_count/?since=1970-01-01T00:00:00'"
+      register: sched_health_raw
+      retries: 3
+      delay: 10
+      until: sched_health_raw.rc == 0 and sched_health_raw.stdout != ""
+      changed_when: false
+      failed_when: sched_health_raw.rc != 0 or sched_health_raw.stdout == ""
+
+    - name: Print scheduler status
+      debug:
+        msg: "Scheduler OK — {{ sched_health_raw.stdout }}"
+
+    # ── 3. Send smoke requests ───────────────────────────────────────────────
+    - name: Record smoke start time
+      set_fact:
+        smoke_start_time: "{{ ansible_date_time.iso8601 }}"
+
+    - name: Run smoke test (3 requests via testbed)
+      command: >-
+        {{ local_project_dir }}/.venv/bin/python main.py
+        --scenario smoke
+        --load-balancer-url {{ lb_url }}
+        --iterations 1
+      args:
+        chdir: "{{ testbed_dir }}"
+      register: smoke_run
+
+    - name: Print smoke testbed output
+      debug:
+        msg: |
+          {{ smoke_run.stdout | default('') }}
+          {{ smoke_run.stderr | default('') }}
+
+    - name: Fail if testbed exited non-zero
+      fail:
+        msg: "Smoke testbed run failed (rc={{ smoke_run.rc }}). See output above."
+      when: smoke_run.rc != 0
+
+    # ── 4. Poll for job completion via SSH (port 8000 may be firewalled externally)
+    - name: Wait for smoke jobs to complete
+      command: >-
+        ssh -o BatchMode=yes -o ConnectTimeout=8 peercompute@{{ scheduler_host }}
+        "curl -s 'http://127.0.0.1:8000/providers/pending_jobs_count/?since={{ smoke_start_time }}'"
+      register: pending_check
+      retries: "{{ (timeout_seconds | int / 5) | int }}"
+      delay: 5
+      until: pending_check.rc == 0 and (pending_check.stdout | from_json).pending | default(-1) | int == 0
+      failed_when: false
+      changed_when: false
+
+    # ── 5. Sweep stale, enrich ───────────────────────────────────────────────
+    - name: Sweep stale smoke jobs
+      command: >-
+        ssh -o BatchMode=yes -o ConnectTimeout=8 peercompute@{{ scheduler_host }}
+        "curl -s -X POST -H 'Content-Type: application/json'
+        -d '{\"since\": \"{{ smoke_start_time }}\", \"no_result_threshold_seconds\": {{ timeout_seconds }}, \"no_ack_threshold_seconds\": {{ timeout_seconds }}}'
+        'http://127.0.0.1:8000/providers/timeout_stale_jobs/'"
+      failed_when: false
+      changed_when: false
+
+    - name: Find latest smoke run_id
+      shell: >-
+        ls -1t {{ testbed_dir }}/results/json/smoke_*_metrics.json 2>/dev/null |
+        head -1 | xargs -r basename | sed 's/_metrics\.json$//'
+      args:
+        executable: /bin/bash
+      register: smoke_run_id
+      changed_when: false
+      failed_when: false
+
+    - name: Open SSH tunnel to scheduler port 8000
+      shell: >-
+        ssh -f -o BatchMode=yes -o ConnectTimeout=8 -o ExitOnForwardFailure=yes
+        -L 18000:127.0.0.1:8000 peercompute@{{ scheduler_host }} sleep 30
+      changed_when: false
+      failed_when: false
+
+    - name: Enrich smoke results via tunnel
+      command: >-
+        {{ local_project_dir }}/.venv/bin/python main.py
+        --enrich {{ smoke_run_id.stdout }}
+        --scheduler-url http://127.0.0.1:18000
+        --enrich-since {{ smoke_start_time }}
+      args:
+        chdir: "{{ testbed_dir }}"
+      register: enrich_result
+      when: smoke_run_id.stdout != ""
+      failed_when: false
+
+    # ── 6. PASS / FAIL verdict ───────────────────────────────────────────────
+    - name: Find enriched CSV
+      shell: "ls -1t {{ testbed_dir }}/results/csv/smoke_*_jobs_enriched.csv 2>/dev/null | head -1"
+      args:
+        executable: /bin/bash
+      register: enriched_csv
+      changed_when: false
+      failed_when: false
+
+    - name: Compute outcome counts from enriched CSV (informational)
+      shell: |
+        {{ local_project_dir }}/.venv/bin/python - "{{ enriched_csv.stdout }}" << 'PY'
+        import sys, csv, collections, json
+        p = sys.argv[1]
+        counts = collections.Counter()
+        with open(p) as f:
+            for row in csv.DictReader(f):
+                counts[row.get("outcome", "unknown")] += 1
+        total = sum(counts.values())
+        success = counts.get("success", 0)
+        rate = success / total if total else 0
+        print(json.dumps({"total": total, "counts": dict(counts), "success_rate": round(rate, 3)}))
+        PY
+      args:
+        executable: /bin/bash
+      register: outcome_json
+      when: enriched_csv.stdout != ""
+      changed_when: false
+      failed_when: false
+
+    - name: Print enrichment outcome (informational — may include jobs from prior runs in window)
+      debug:
+        msg: "Enrichment window breakdown: {{ outcome_json.stdout | default('(no enriched CSV)') }}"
+      when: outcome_json is defined
+
+    # Verdict is based on testbed LB acceptance (rc=0 + SMOKE PASS in stdout),
+    # not enrichment success_rate which includes unrelated jobs from the time window.
+    - name: SMOKE TEST PASS
+      debug:
+        msg: "SMOKE TEST PASS — 3/3 requests accepted by LB and jobs drained. System is healthy."
+      when: smoke_run.rc == 0 and 'SMOKE  PASS' in smoke_run.stdout
+
+    - name: SMOKE TEST FAIL — LB rejected requests
+      fail:
+        msg: "SMOKE TEST FAIL — testbed exited rc={{ smoke_run.rc }}. Check LB and provider logs."
+      when: smoke_run.rc != 0

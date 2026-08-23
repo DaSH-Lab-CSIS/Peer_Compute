@@ -1,4 +1,5 @@
 asgiref
+gunicorn
 asttokens
 async-timeout
 certifi

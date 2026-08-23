@@ -180,23 +180,26 @@
       become_user: "{{ ansible_user }}"
       when: mqtt_broker != ""
 
-    - name: Check if scheduler (Django) is running
-      shell: "pgrep -f '[m]anage.py runserver' || true"
+    - name: Check if scheduler is running
+      shell: "pgrep -f '[g]unicorn.*scheduler.wsgi' || pgrep -f '[m]anage.py runserver' || true"
       register: scheduler_process
       become: false
 
     - name: Stop running scheduler before restart
-      shell: "pkill -f '[m]anage.py runserver' || true"
+      shell: "pkill -f '[g]unicorn.*scheduler.wsgi' || pkill -f '[m]anage.py runserver' || true"
       failed_when: false
       changed_when: false
       when: scheduler_process.stdout != ""
 
-    - name: Start scheduler (Django)
+    - name: Start scheduler (gunicorn, 1 worker 4 threads)
       become_user: "{{ ansible_user }}"
       shell: |
         source "{{ project_dir }}/.env"
-        nohup {{ venv_python }} manage.py runserver 0.0.0.0:8000 \
-        > /tmp/django.log 2>&1 &
+        nohup {{ project_dir }}/.venv/bin/gunicorn \
+          --workers 1 --threads 4 --worker-class gthread \
+          --bind 0.0.0.0:8000 --timeout 120 \
+          scheduler.wsgi:application \
+          > /tmp/django.log 2>&1 &
       environment:
         DB_SSLROOTCERT: "{{ cockroach_client_certs_source_dir }}/ca.crt"
         DB_SSLCERT: "{{ cockroach_client_certs_source_dir }}/client.root.crt"

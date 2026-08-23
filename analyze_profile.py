@@ -109,6 +109,13 @@ def to_df(raw: list[dict]) -> pd.DataFrame:
 # Build per-batch summary
 # ---------------------------------------------------------------------------
 
+def _col(df: pd.DataFrame, col: str, default=0.0):
+    """Return df[col].fillna(default) if col exists, else a scalar default."""
+    if col in df.columns:
+        return df[col].fillna(default)
+    return default
+
+
 def build_batch_df(df: pd.DataFrame) -> pd.DataFrame:
     """Pivot the flat event rows into one row per completed batch."""
     batches = []
@@ -169,19 +176,20 @@ def build_batch_df(df: pd.DataFrame) -> pd.DataFrame:
     bdf["batch_index"] = range(1, len(bdf) + 1)
 
     # Derived columns - raw elapsed pointers
-    bdf["db_pass_s"]         = bdf.get("build_cost_matrix-db_pass__elapsed_s", 0).fillna(0)
-    bdf["pull_time_query_s"] = bdf.get("pull_time_query_s", 0).fillna(0)
-    bdf["delay_dict_s"]      = bdf.get("build_delay_dict-total__elapsed_s", 0).fillna(0)
-    bdf["ilp_solve_s"]       = bdf.get("find_providers-ilp_solve__elapsed_s", 0).fillna(0)
-    bdf["job_create_s"]      = bdf.get("process_assignments-tx1_job_create__elapsed_s", 0).fillna(0)
-    bdf["mqtt_publish_s"]    = bdf.get("process_assignments-mqtt_publish_jobs__elapsed_s", 0).fillna(0)
+    bdf["db_pass_s"]         = _col(bdf, "build_cost_matrix-db_pass__elapsed_s")
+    bdf["pull_time_query_s"] = _col(bdf, "pull_time_query_s")
+    bdf["delay_dict_s"]      = _col(bdf, "build_delay_dict-total__elapsed_s")
+    bdf["ilp_solve_s"]       = _col(bdf, "find_providers-ilp_solve__elapsed_s")
+    bdf["job_create_s"]      = _col(bdf, "process_assignments-tx1_job_create__elapsed_s")
+    bdf["mqtt_publish_s"]    = _col(bdf, "process_assignments-mqtt_publish_jobs__elapsed_s")
 
     accounted = bdf[["db_pass_s","pull_time_query_s","delay_dict_s",
                       "ilp_solve_s","job_create_s","mqtt_publish_s"]].sum(axis=1)
     bdf["other_s"] = (bdf["total_batch_time"] - accounted).clip(lower=0)
 
     # Per-service normalization
-    bdf["n_services"] = bdf.get("n_services", 50).fillna(50).astype(float)
+    bdf["n_services"] = (bdf["n_services"].fillna(50).astype(float)
+                         if "n_services" in bdf.columns else 50.0)
     bdf["total_s_per_service"] = bdf["total_batch_time"] / bdf["n_services"].replace(0, 1)
     bdf["db_s_per_service"]    = bdf["db_pass_s"]         / bdf["n_services"].replace(0, 1)
     bdf["pull_s_per_service"]  = bdf["pull_time_query_s"] / bdf["n_services"].replace(0, 1)
