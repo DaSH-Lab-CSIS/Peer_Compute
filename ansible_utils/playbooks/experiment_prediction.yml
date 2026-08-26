@@ -264,7 +264,6 @@
       become_user: "{{ ansible_user }}"
 
     - name: Pull latest scheduler code from git
-      become_user: "{{ ansible_user }}"
       shell: git -C "{{ project_dir }}" pull --ff-only
       register: git_pull_result
       changed_when: "'Already up to date' not in git_pull_result.stdout"
