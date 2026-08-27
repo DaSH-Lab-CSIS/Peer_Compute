@@ -276,6 +276,10 @@
       become_user: "{{ ansible_user }}"
       changed_when: false
 
+    - name: Run Django migrations
+      shell: "cd {{ project_dir }}/scheduler && {{ project_dir }}/.venv/bin/python manage.py migrate --no-input"
+      become_user: "{{ ansible_user }}"
+
     - name: Check if scheduler is running
       shell: "pgrep -f '[g]unicorn.*scheduler.wsgi' || pgrep -f '[m]anage.py runserver' || true"
       register: scheduler_process
