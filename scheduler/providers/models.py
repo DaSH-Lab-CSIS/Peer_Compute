@@ -101,14 +101,12 @@ class Job(models.Model):
 
     @classmethod
     def bulk_latest_run_time(cls, provider_ids, service_ids):
-        """Return {(provider_id, service_id): run_time} for all pairs in ONE query.
-
-        Uses DISTINCT ON (provider_id, service_id) ORDER BY start_time DESC so we get
-        the run_time from the most-recently-started job per pair — same semantics as
-        calling get_latest_run_time() in a loop but with a single round-trip.
-        """
+        """Return {(provider_id, service_id): run_time} for all pairs in ONE query."""
         if not provider_ids or not service_ids:
             return {}
+        from django.utils import timezone as dj_tz
+        import datetime as _dt
+        cutoff = dj_tz.now() - _dt.timedelta(days=90)
         qs = (
             cls.objects
             .filter(
@@ -116,6 +114,7 @@ class Job(models.Model):
                 service_id__in=service_ids,
                 finished=True,
                 run_time__gt=0,
+                start_time__gte=cutoff,
             )
             .order_by('provider_id', 'service_id', '-start_time')
             .distinct('provider_id', 'service_id')
@@ -125,14 +124,13 @@ class Job(models.Model):
 
     @classmethod
     def bulk_latest_pull_time(cls, provider_ids, service_ids):
-        """Return {(provider_id, service_id): pull_time} for all pairs in ONE query.
-
-        Uses MAX(pull_time) per pair — same semantics as calling get_latest_pull_time()
-        (which uses .latest('pull_time') = largest pull_time value) in a loop.
-        """
+        """Return {(provider_id, service_id): pull_time} for all pairs in ONE query."""
         if not provider_ids or not service_ids:
             return {}
         from django.db.models import Max
+        from django.utils import timezone as dj_tz
+        import datetime as _dt
+        cutoff = dj_tz.now() - _dt.timedelta(days=90)
         qs = (
             cls.objects
             .filter(
@@ -140,11 +138,20 @@ class Job(models.Model):
                 service_id__in=service_ids,
                 finished=True,
                 pull_time__gt=0,
+                start_time__gte=cutoff,
             )
             .values('provider_id', 'service_id')
             .annotate(pull_time=Max('pull_time'))
         )
         return {(r['provider_id'], r['service_id']): r['pull_time'] for r in qs}
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['provider_id', 'service_id', '-start_time'], name='job_prov_svc_start_idx'),
+            models.Index(fields=['provider_id', 'service_id', '-pull_time'], name='job_prov_svc_pull_idx'),
+            models.Index(fields=['provider_id', '-start_time'], name='job_prov_start_idx'),
+            models.Index(fields=['finished', 'provider_id', 'service_id'], name='job_finished_prov_svc_idx'),
+        ]
 
     # override the save and clean method for enforcing constraints at model level processes
     def save(self, *args, **kwargs):

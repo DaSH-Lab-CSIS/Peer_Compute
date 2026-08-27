@@ -2524,9 +2524,11 @@ def build_delay_dict(providers):
     # one round-trip per provider (~60ms × N_providers saved).
     t_bulk = time.time()
     provider_id_list = [p.id for p in providers]
+    from datetime import timedelta
+    cutoff = datetime.now(tz=timezone(TIME_ZONE)) - timedelta(days=90)
     bulk_rows = (
         Job.objects
-        .filter(provider_id__in=provider_id_list)
+        .filter(provider_id__in=provider_id_list, start_time__gte=cutoff)
         .values('provider_id')
         .annotate(last_start=Max('start_time'))
     )
