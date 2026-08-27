@@ -2609,7 +2609,7 @@ def build_delay_dict(providers):
 def process_assignments(assignment, cost_matrix, request_data_map=None, prediction_source_map=None):
     """
     Process job assignments and create Job objects.
-    
+
     Args:
         assignment: Dictionary mapping (index, service) to provider
         cost_matrix: Cost matrix for ILP
@@ -2618,163 +2618,102 @@ def process_assignments(assignment, cost_matrix, request_data_map=None, predicti
     t0 = time.time()
     n_assignments = len(assignment)
     _profile_note("process_assignments-start", n_assignments=n_assignments)
-    jobs_to_send = []
     assigned_time = datetime.now(tz=timezone(TIME_ZONE))
 
+    # Pre-compute all data before touching the DB so the transaction is as short as possible.
+    pending = []          # list of (Job instance, provider, service)
+    providers_seen = {}   # provider.id -> provider instance (accumulates delay/invocation changes)
+
+    for key, provider in assignment.items():
+        i, service = key if isinstance(key, tuple) and len(key) == 2 else (0, key)
+
+        lb_received_time = None
+        scheduler_received_time = None
+        if request_data_map and service.id in request_data_map:
+            req_data = request_data_map[service.id]
+            if '_lb_received_time' in req_data:
+                try:
+                    lb_received_time = datetime.fromisoformat(
+                        req_data['_lb_received_time'].replace('Z', '+00:00')
+                    ).astimezone(timezone(TIME_ZONE))
+                except Exception as e:
+                    print(f"Error parsing lb_received_time: {e}")
+            if '_scheduler_received_time' in req_data:
+                try:
+                    scheduler_received_time = datetime.fromisoformat(
+                        req_data['_scheduler_received_time'].replace('Z', '+00:00')
+                    ).astimezone(timezone(TIME_ZONE))
+                except Exception as e:
+                    print(f"Error parsing scheduler_received_time: {e}")
+
+        try:
+            if isinstance(key, tuple) and (i, service) in cost_matrix.get(provider, {}):
+                predicted_runtime = cost_matrix[provider][(i, service)]
+            elif service in cost_matrix.get(provider, {}):
+                predicted_runtime = cost_matrix[provider][service]
+            elif service.id in cost_matrix.get(provider, {}):
+                predicted_runtime = cost_matrix[provider][service.id]
+            else:
+                print(f"Warning: Could not find runtime prediction for service {service.id} in cost matrix")
+                predicted_runtime = 1000
+        except Exception as e:
+            print(f"Error accessing cost matrix: {str(e)}")
+            predicted_runtime = 1000
+
+        _pred_source = (prediction_source_map or {}).get(provider.id, {}).get(service.id, 'fallback')
+
+        job = Job(
+            provider=provider,
+            service=service,
+            developer=service.developer,
+            finished=False,
+            lb_received_time=lb_received_time,
+            scheduler_received_time=scheduler_received_time,
+            assigned_to_provider_time=assigned_time,
+            predicted_runtime_ms=int(predicted_runtime) if predicted_runtime is not None else None,
+            prediction_strategy=django_settings.RUNTIME_PREDICTION_STRATEGY,
+            prediction_source=_pred_source,
+        )
+        pending.append((job, provider, service))
+
+        # Accumulate provider state changes (one provider may serve multiple services)
+        if provider.id not in providers_seen:
+            providers_seen[provider.id] = provider
+        try:
+            provider.add_delay(predicted_runtime)
+        except Exception as e:
+            print(f"Error adding delay: {e}")
+            provider.delay = provider.delay or 0
+        service_key = str(service.id)
+        provider.function_invocations[service_key] = provider.function_invocations.get(service_key, 0) + 1
+
+    # Single bulk INSERT for all jobs + single bulk UPDATE for all providers.
     t_tx1 = time.time()
     with transaction.atomic():
-        for key, provider in assignment.items():
-            # Extract service from the assignment key
-            if isinstance(key, tuple) and len(key) == 2:
-                i, service = key
-            else:
-                # Fallback if key is not a tuple (shouldn't normally happen)
-                service = key
-                i = 0
-                
-            print(f"\nProcessing assignment - Service: {service.id}, Provider: {provider.user_id}")
-            
-            # Provider is already locked by get_ready_providers(), so we can use it directly
-            # No need to lock again - this was causing self-deadlock
-            print(f"Using provider: {provider.user_id} (already locked)")
-            
-            # Extract timestamps from request data if available
-            lb_received_time = None
-            scheduler_received_time = None
-            
-            if request_data_map and service.id in request_data_map:
-                req_data = request_data_map[service.id]
-                # Parse timestamps from ISO format strings
-                if '_lb_received_time' in req_data:
-                    try:
-                        # Handle ISO format with timezone (replace Z with +00:00 for Python <3.11)
-                        time_str = req_data['_lb_received_time'].replace('Z', '+00:00')
-                        lb_received_time = datetime.fromisoformat(time_str)
-                        # Convert to local timezone if needed
-                        if lb_received_time.tzinfo:
-                            lb_received_time = lb_received_time.astimezone(timezone(TIME_ZONE))
-                    except Exception as e:
-                        print(f"Error parsing lb_received_time: {e}")
-                        pass
-                if '_scheduler_received_time' in req_data:
-                    try:
-                        # Handle ISO format with timezone
-                        time_str = req_data['_scheduler_received_time'].replace('Z', '+00:00')
-                        scheduler_received_time = datetime.fromisoformat(time_str)
-                        # Convert to local timezone if needed
-                        if scheduler_received_time.tzinfo:
-                            scheduler_received_time = scheduler_received_time.astimezone(timezone(TIME_ZONE))
-                    except Exception as e:
-                        print(f"Error parsing scheduler_received_time: {e}")
-                        pass
-            
-            # Resolve predicted_runtime from cost_matrix before creating the Job row
-            try:
-                if isinstance(key, tuple) and (i, service) in cost_matrix.get(provider, {}):
-                    predicted_runtime = cost_matrix[provider][(i, service)]
-                elif service in cost_matrix.get(provider, {}):
-                    predicted_runtime = cost_matrix[provider][service]
-                elif service.id in cost_matrix.get(provider, {}):
-                    predicted_runtime = cost_matrix[provider][service.id]
-                else:
-                    print(f"Warning: Could not find runtime prediction for service {service.id} in cost matrix")
-                    predicted_runtime = 1000
-            except Exception as e:
-                print(f"Error accessing cost matrix: {str(e)}")
-                predicted_runtime = 1000
-
-            _pred_source = (prediction_source_map or {}).get(provider.id, {}).get(service.id, 'fallback')
-
-            # Create a Job instance with CREATED status, timestamps, and prediction fields
-            job = Job.objects.create(
-                provider=provider,
-                service=service,
-                developer=service.developer,
-                finished=False,
-                lb_received_time=lb_received_time,
-                scheduler_received_time=scheduler_received_time,
-                assigned_to_provider_time=assigned_time,
-                predicted_runtime_ms=int(predicted_runtime) if predicted_runtime is not None else None,
-                prediction_strategy=django_settings.RUNTIME_PREDICTION_STRATEGY,
-                prediction_source=_pred_source,
-            )
-            print(f"Created job with ID: {job.id}")
-            if lb_received_time:
-                print(f"  LB received: {lb_received_time}")
-            if scheduler_received_time:
-                print(f"  Scheduler received: {scheduler_received_time}")
-            print(f"  Assigned to provider: {assigned_time}")
-                
-            print(f"Predicted runtime: {predicted_runtime}")
-            print(f"Current provider delay state: {provider.delay}")
-            
-            try:
-                provider.add_delay(predicted_runtime)
-                print("Successfully added delay")
-            except Exception as e:
-                print(f"Error adding delay: {str(e)}")
-                print(f"Type of predicted_runtime: {type(predicted_runtime)}")
-                print(f"Value of predicted_runtime: {predicted_runtime}")
-                # Don't raise, just continue with default delay
-                provider.delay = provider.delay or 0
-
-            print(f"Updated provider delay state: {provider.delay}")
-            
-            # Update function invocations
-            service_key = str(service.id)
-            current_invocations = provider.function_invocations.get(service_key, 0)
-            provider.function_invocations[service_key] = current_invocations + 1
-            
-            try:
-                provider.save()
-                print("Successfully saved provider")
-            except Exception as e:
-                print(f"Error saving provider: {str(e)}")
-                print(f"Provider state at save: {provider.__dict__}")
-                raise
-
-            # Store job information for sending after transaction commits
-            jobs_to_send.append({
-                'job': job,
-                'provider': provider,
-                'service': service
-            })
-
-    # Send jobs to providers after the transaction has committed
+        created_jobs = Job.objects.bulk_create([p[0] for p in pending])
+        Provider.objects.bulk_update(
+            list(providers_seen.values()), ['delay', 'function_invocations']
+        )
     _prof("process_assignments-tx1_job_create", t_tx1, n_jobs=n_assignments)
 
+    # MQTT dispatch after the transaction has committed
     t_send = time.time()
     n_sent = 0
     n_send_errors = 0
-    for job_info in jobs_to_send:
-        job = job_info['job']
-        provider = job_info['provider']
-        service = job_info['service']
-
+    for created_job, (_, provider, service) in zip(created_jobs, pending):
         try:
-            job_data = {
-                'runMultipleInvocations': False,
-                'numberOfInvocations': 1,
-                'chained': False,
-                'input': 'None'
-            }
-            print(f"Sending job {job.id} to provider {provider.user_id}")
+            print(f"Sending job {created_job.id} to provider {provider.user_id}")
             publish_to_topic_mqtt(
-                job_data['runMultipleInvocations'],
-                job_data['numberOfInvocations'],
-                job_data['chained'],
-                job_data['input'],
+                False, 1, False, 'None',
                 provider,
                 service.docker_container,
                 service.developer,
-                job.id
+                created_job.id
             )
-            job.refresh_from_db()
-            job.save()
-            print(f"Job {job.id} successfully sent to provider {provider.user_id}")
+            print(f"Job {created_job.id} successfully sent to provider {provider.user_id}")
             n_sent += 1
         except Exception as e:
-            print(f"Failed to send job {job.id} to provider {provider.user_id}: {str(e)}")
+            print(f"Failed to send job {created_job.id} to provider {provider.user_id}: {str(e)}")
             n_send_errors += 1
 
     _prof("process_assignments-mqtt_publish_jobs", t_send,
