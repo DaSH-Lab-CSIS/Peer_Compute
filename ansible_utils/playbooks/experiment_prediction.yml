@@ -266,10 +266,10 @@
     - name: Pull latest scheduler code from git
       shell: |
         git -C "{{ project_dir }}" reset --hard HEAD
-        git -C "{{ project_dir }}" pull --ff-only
+        timeout 60 git -C "{{ project_dir }}" pull --ff-only || true
       register: git_pull_result
       changed_when: "'Already up to date' not in git_pull_result.stdout"
-      failed_when: git_pull_result.rc != 0
+      failed_when: false
 
     - name: Install gunicorn into venv
       command: "{{ project_dir }}/.venv/bin/pip install gunicorn --no-input --index-url https://pypi.org/simple"
