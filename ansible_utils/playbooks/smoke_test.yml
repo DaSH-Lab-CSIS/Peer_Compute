@@ -7,10 +7,10 @@
 # Usage:
 #   ./run_playbook.sh -i inventory.ini playbooks/smoke_test.yml -K --ask-vault-pass
 #   ./run_playbook.sh -i inventory.ini playbooks/smoke_test.yml -K --ask-vault-pass \
-#     -e "lb_url=http://colva3.dashlab.in:9001 scheduler_host=utorda1.dashlab.in"
+#     -e "lb_url=http://colva2.dashlab.in:9001 scheduler_host=utorda1.dashlab.in"
 #
 # Extra vars:
-#   lb_url              LB base URL          (default: http://colva3.dashlab.in:9001)
+#   lb_url              LB base URL          (default: http://colva2.dashlab.in:9001)
 #   scheduler_host      Scheduler host       (default: first host in [control])
 #   timeout_seconds     Max wait for jobs    (default: 90)
 #   min_success_rate    Fraction to pass     (default: 1.0  = all must succeed)
@@ -25,7 +25,7 @@
     local_user: "{{ lookup('env', 'USER') }}"
     local_project_dir: "/home/{{ local_user }}/Serverless_Scheduler"
     testbed_dir: "{{ local_project_dir }}/testbed"
-    lb_url: "http://colva3.dashlab.in:9001"
+    lb_url: "http://colva2.dashlab.in:9001"
     timeout_seconds: 90
     min_success_rate: 1.0
 
