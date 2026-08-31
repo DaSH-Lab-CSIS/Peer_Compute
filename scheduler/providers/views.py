@@ -2693,7 +2693,7 @@ def process_assignments(assignment, cost_matrix, request_data_map=None, predicti
     t_tx1 = time.time()
     with transaction.atomic():
         created_jobs = Job.objects.bulk_create([p[0] for p in pending])
-        Provider.objects.bulk_update(
+        User.objects.bulk_update(
             list(providers_seen.values()), ['delay', 'function_invocations']
         )
     _prof("process_assignments-tx1_job_create", t_tx1, n_jobs=n_assignments)
