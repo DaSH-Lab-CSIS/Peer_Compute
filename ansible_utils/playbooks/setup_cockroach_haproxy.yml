@@ -1,0 +1,74 @@
+---
+# Installs HAProxy on scheduler nodes (utorda1, utorda2) as a local CockroachDB
+# connection load balancer. Each scheduler connects to 127.0.0.1:26257 and HAProxy
+# round-robins to all three CockroachDB nodes (anjuna2, colva3, colva2).
+#
+# Run once: ./run_playbook.sh -i inventory.ini playbooks/setup_cockroach_haproxy.yml --ask-vault-pass -vvv
+# After running, update scheduler/scheduler/settings.py HOST to "127.0.0.1".
+
+- name: Setup CockroachDB HAProxy on scheduler nodes
+  hosts: control
+  vars:
+    haproxy_cfg_src: "{{ playbook_dir }}/../haproxy_cockroach.cfg"
+    haproxy_cfg_dest: /etc/haproxy/haproxy.cfg
+    project_dir: /home/peercompute/deploy/Serverless_Scheduler
+    local_project_dir: "{{ playbook_dir }}/../.."
+
+  tasks:
+    - name: Deploy updated settings.py (HAProxy host change)
+      copy:
+        src: "{{ local_project_dir }}/scheduler/scheduler/settings.py"
+        dest: "{{ project_dir }}/scheduler/scheduler/settings.py"
+        owner: root
+        group: root
+        mode: '0644'
+      become: true
+    - name: Install HAProxy
+      apt:
+        name: haproxy
+        state: present
+        update_cache: yes
+      become: true
+
+    - name: Deploy CockroachDB HAProxy config
+      copy:
+        src: "{{ haproxy_cfg_src }}"
+        dest: "{{ haproxy_cfg_dest }}"
+        owner: root
+        group: root
+        mode: '0644'
+      become: true
+      notify: Restart HAProxy
+
+    - name: Enable and restart HAProxy
+      systemd:
+        name: haproxy
+        enabled: true
+        state: restarted
+      become: true
+
+    - name: Verify HAProxy is listening on 127.0.0.1:26257
+      wait_for:
+        host: 127.0.0.1
+        port: 26257
+        timeout: 15
+        state: started
+
+    - name: Test CockroachDB connection through HAProxy
+      shell: >
+        cockroach sql
+        --url "postgresql://root@127.0.0.1:26257/peercompute?sslmode=verify-full&sslrootcert=/etc/cockroach/certs/ca.crt&sslcert=/etc/cockroach/certs/client.root.crt&sslkey=/etc/cockroach/certs/client.root.key"
+        -e "SELECT node_id();"
+      register: crdb_test
+      changed_when: false
+
+    - name: Show connected node
+      debug:
+        msg: "Connected via HAProxy to node: {{ crdb_test.stdout }}"
+
+  handlers:
+    - name: Restart HAProxy
+      systemd:
+        name: haproxy
+        state: restarted
+      become: true
