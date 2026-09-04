@@ -85,8 +85,8 @@
     lb_host: "colva2.dashlab.in"
     lb_url: "http://colva2.dashlab.in:9001"
     lb_ssh_user: "peercompute"
-    mqtt_broker: ""
-    mqtt_port: ""
+    mqtt_broker: "utorda1.dashlab.in"
+    mqtt_port: "1884"
   tasks:
     - name: Register load balancer delegate host
       add_host:
@@ -228,8 +228,8 @@
     project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
     venv_python: "{{ project_dir }}/.venv/bin/python"
     cockroach_client_certs_source_dir: "{{ project_dir }}/certs"
-    mqtt_broker: ""
-    mqtt_port: ""
+    mqtt_broker: "utorda1.dashlab.in"
+    mqtt_port: "1884"
     placement_mode: "ilp"
     prediction_strategy: "cpi"
   tasks:
@@ -270,6 +270,12 @@
       register: git_pull_result
       changed_when: "'Already up to date' not in git_pull_result.stdout"
       failed_when: false
+
+    - name: Overlay local scheduler fixes (survives git pull from stale remote)
+      copy:
+        src: "{{ playbook_dir }}/../../scheduler/providers/views.py"
+        dest: "{{ project_dir }}/scheduler/providers/views.py"
+      become: true
 
     - name: Install gunicorn into venv
       command: "{{ project_dir }}/.venv/bin/pip install gunicorn --no-input --index-url https://pypi.org/simple"
@@ -367,8 +373,8 @@
     project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
     user_id_file: "{{ project_dir }}/provider_user_id.txt"
     scheduler_probe_timeout: 60
-    mqtt_broker: ""
-    mqtt_port: ""
+    mqtt_broker: "utorda1.dashlab.in"
+    mqtt_port: "1884"
   tasks:
     - name: Ensure Docker is running
       service:
