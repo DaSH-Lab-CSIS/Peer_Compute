@@ -370,7 +370,7 @@ def send_heartbeat(mqtt_client, scheduler_name):
                 payload="SCHEDULER_PONG:" + json.dumps(heartbeat_payload),
                 qos=1
             )
-            time.sleep(30)  # Send heartbeat every 10 seconds
+            time.sleep(10)  # Heartbeat every 10s: keeps LB last_seen well under its 60s TTL even if the worker briefly stalls
         except Exception as e:
             print(f"Error sending heartbeat: {e}")
             time.sleep(5)
@@ -1461,8 +1461,8 @@ def timeout_stale_jobs(request):
         return JsonResponse({"error": f"Invalid since value: {exc}"}, status=400)
 
     now = datetime.now(tz=dt_tz.utc)
-    timed_out_no_ack = 0
-    timed_out_no_result = 0
+
+    from django.db import OperationalError
 
     base_qs = Job.objects.filter(
         finished=False,
@@ -1470,36 +1470,53 @@ def timeout_stale_jobs(request):
         start_time__gte=since,
     )
 
-    with transaction.atomic():
-        stale_jobs = list(base_qs.select_for_update())
-        for job in stale_jobs:
-            timeout_kind = None
-            if job.ack_time is None:
-                elapsed = (now - job.assigned_to_provider_time).total_seconds()
-                if elapsed > no_ack_threshold:
-                    timeout_kind = "no_ack"
-            else:
-                elapsed = (now - job.ack_time).total_seconds()
-                if elapsed > no_result_threshold:
-                    timeout_kind = "no_result"
+    # Read candidates WITHOUT locking and decide timeouts in Python. This keeps each
+    # write transaction tiny and short-lived, so it does not collide with the many
+    # concurrent job-completion writes on these same rows — the collision is what made
+    # the old single-transaction select_for_update sweep abort with a CockroachDB
+    # RETRY_SERIALIZABLE error.
+    candidates = base_qs.values("id", "ack_time", "assigned_to_provider_time")
 
-            if timeout_kind is None:
-                continue
+    no_ack_ids = []
+    no_result_ids = []
+    for row in candidates:
+        if row["ack_time"] is None:
+            elapsed = (now - row["assigned_to_provider_time"]).total_seconds()
+            if elapsed > no_ack_threshold:
+                no_ack_ids.append(row["id"])
+        else:
+            elapsed = (now - row["ack_time"]).total_seconds()
+            if elapsed > no_result_threshold:
+                no_result_ids.append(row["id"])
 
-            job.finished = True
-            job.response = json.dumps(
-                {
-                    "sweep": "timeout",
-                    "kind": timeout_kind,
-                    "swept_at": now.isoformat(),
-                }
-            )
-            job.save(update_fields=["finished", "response"])
+    def _bulk_timeout(ids, kind, batch_size=500, max_retries=5):
+        """Mark jobs finished in small batches, retrying CockroachDB serializable conflicts."""
+        response_value = json.dumps(
+            {"sweep": "timeout", "kind": kind, "swept_at": now.isoformat()}
+        )
+        updated = 0
+        for start in range(0, len(ids), batch_size):
+            chunk = ids[start:start + batch_size]
+            for attempt in range(max_retries):
+                try:
+                    with transaction.atomic():
+                        # Re-check finished=False so a job that completed for real
+                        # between the read above and now is never clobbered.
+                        n = (
+                            Job.objects
+                            .filter(id__in=chunk, finished=False)
+                            .update(finished=True, response=response_value)
+                        )
+                    updated += n
+                    break
+                except OperationalError:
+                    if attempt == max_retries - 1:
+                        raise
+                    time.sleep(0.1 * (2 ** attempt))
+        return updated
 
-            if timeout_kind == "no_ack":
-                timed_out_no_ack += 1
-            else:
-                timed_out_no_result += 1
+    timed_out_no_ack = _bulk_timeout(no_ack_ids, "no_ack")
+    timed_out_no_result = _bulk_timeout(no_result_ids, "no_result")
 
     remaining_pending = Job.objects.filter(
         finished=False,
@@ -2757,18 +2774,26 @@ def find_providers(services, jobs=None, request_data_map=None):
             # ------------------------------------------------------------------
             t_tx1_start = time.time()
             with transaction.atomic():
+                # Time from entering transaction to query execution start
+                t_lock_wait_start = time.time()
+                _prof("find_providers-pre_lock_overhead", t_tx1_start)
+
                 suitable_providers = get_ready_providers()
-                t_pr = time.time()
-                for provider in suitable_providers:
-                    print(provider)
-                _prof(
-                    "find_providers-print_ready_providers_rows",
-                    t_pr,
-                    n_providers=len(suitable_providers),
-                )
-                if not suitable_providers:
+
+                # Force QuerySet evaluation — this is where SELECT FOR UPDATE executes
+                # and lock contention blocks if another scheduler holds the rows.
+                t_eval_start = time.time()
+                _prof("find_providers-qs_build_overhead", t_lock_wait_start)
+
+                suitable_providers_list = list(suitable_providers)
+                _prof("find_providers-select_for_update_eval", t_eval_start,
+                      n_providers=len(suitable_providers_list))
+
+                if not suitable_providers_list:
                     print("No ready providers available.")
                     return None
+
+                suitable_providers = suitable_providers_list
                 _prof("find_providers-get_ready_providers", t_tx1_start,
                       n_providers=len(suitable_providers))
 
