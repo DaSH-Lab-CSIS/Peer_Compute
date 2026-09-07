@@ -440,6 +440,13 @@
         group: "{{ ansible_user }}"
         mode: "0755"
 
+    - name: Rotate provider log (cap at 0 before each run)
+      shell: truncate -s 0 {{ project_dir }}/provider.log
+      args:
+        executable: /bin/bash
+      become_user: "{{ ansible_user }}"
+      failed_when: false
+
     - name: Start provider script
       shell: |
         nohup {{ project_dir }}/.venv/bin/python {{ project_dir }}/provider/provider1.py {{ provider_user_id }} > {{ project_dir }}/provider.log 2>&1 &

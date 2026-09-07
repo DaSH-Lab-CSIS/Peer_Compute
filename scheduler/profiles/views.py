@@ -14,12 +14,16 @@ from scheduler.settings import USE_FABRIC
 def register_user(request):
     if request.method == 'POST':
         data = json.loads(request.body)
+        location = data.get('location', data['location'])
+        existing = User.objects.filter(location=location).first()
+        if existing:
+            return JsonResponse({'message': 'User already registered', 'user_id': existing.user_id})
         user = User(
             is_provider=data.get('is_provider', data['is_provider']),
             is_developer=data.get('is_developer', data['is_developer']),
             active=data.get('active', data['active']),
             ready=data.get('ready', data['ready']),
-            location=data.get('location', data['location']),
+            location=location,
             ram=data.get('ram', data['ram']),
             cpu=data.get('cpu', data['cpu'])
         )
