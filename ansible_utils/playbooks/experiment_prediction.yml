@@ -594,6 +594,23 @@
       failed_when: false
       delegate_to: localhost
 
+    - name: Pre-drain stale sweep (clears jobs on dead providers before polling)
+      uri:
+        url: "{{ scheduler_url }}/providers/timeout_stale_jobs/"
+        method: POST
+        body_format: json
+        body:
+          since: "{{ experiment_start_time }}"
+          no_result_threshold_seconds: "{{ no_result_threshold_seconds }}"
+          no_ack_threshold_seconds: "{{ no_ack_threshold_seconds }}"
+        return_content: yes
+        use_proxy: false
+        status_code: 200
+        timeout: 60
+      register: pre_drain_sweep
+      failed_when: false
+      delegate_to: localhost
+
     - name: Wait for all provider jobs from this experiment to finish
       uri:
         url: "{{ scheduler_url }}/providers/pending_jobs_count/?since={{ experiment_start_time }}"
