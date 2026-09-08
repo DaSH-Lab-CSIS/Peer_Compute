@@ -40,9 +40,12 @@ def main():
 
     pid_file = "djpid.txt"
 
-    if not os.path.exists(pid_file):
-        with open(pid_file, "w") as file:
-            file.write(str(pid))
+    try:
+        if not os.path.exists(pid_file):
+            with open(pid_file, "w") as file:
+                file.write(str(pid))
+    except OSError:
+        pass  # pid file is optional; don't abort manage.py on permission errors
     # Print the PID
     print(f"PID: {pid}")
     execute_from_command_line(sys.argv)

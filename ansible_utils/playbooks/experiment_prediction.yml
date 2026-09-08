@@ -273,9 +273,18 @@
 
     - name: Overlay local scheduler fixes (survives git pull from stale remote)
       copy:
-        src: "{{ playbook_dir }}/../../scheduler/providers/views.py"
-        dest: "{{ project_dir }}/scheduler/providers/views.py"
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
       become: true
+      loop:
+        - src: "{{ playbook_dir }}/../../scheduler/providers/views.py"
+          dest: "{{ project_dir }}/scheduler/providers/views.py"
+        - src: "{{ playbook_dir }}/../../scheduler/providers/mincost.py"
+          dest: "{{ project_dir }}/scheduler/providers/mincost.py"
+        - src: "{{ playbook_dir }}/../../scheduler/profiles/models.py"
+          dest: "{{ project_dir }}/scheduler/profiles/models.py"
+        - src: "{{ playbook_dir }}/../../scheduler/manage.py"
+          dest: "{{ project_dir }}/scheduler/manage.py"
 
     - name: Install gunicorn into venv
       command: "{{ project_dir }}/.venv/bin/pip install gunicorn --no-input --index-url https://pypi.org/simple"

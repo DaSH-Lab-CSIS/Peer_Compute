@@ -31,7 +31,15 @@ def minimize_total_cost(workers, jobs, cost_matrix, delay):
     # the if statement are so that 1 taken because if a worker has taken more than 1 jobs it the delay should still
     # be multiplied with 1 and not the number of jobs.
 
-    prob += pulp.lpSum(x[worker, job] * cost_matrix[worker][job] for worker in workers for job in jobs) + pulp.lpSum(delay[worker] * (pulp.lpSum(x[(worker, job)] for job in jobs) if pulp.lpSum(x[(worker, job)] for job in jobs) <= 1 else 1) for worker in workers)
+    # Objective: minimise total runtime cost + queued delay penalty.
+    # delay[worker] * (jobs assigned to worker) makes the solver avoid
+    # already-busy providers proportionally — a valid linear term.
+    prob += (
+        pulp.lpSum(x[worker, job] * cost_matrix[worker][job]
+                   for worker in workers for job in jobs)
+        + pulp.lpSum(delay[worker] * pulp.lpSum(x[(worker, job)] for job in jobs)
+                     for worker in workers)
+    )
 
     
     # Constraints: each job must be assigned to exactly one worker

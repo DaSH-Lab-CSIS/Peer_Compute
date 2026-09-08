@@ -156,27 +156,21 @@ class User(models.Model):
 
         print("Exiting add_delay\n")
 
-    #NOTE It is assummed that this is the case pertaining to "just before job completion".
-    def calculate_current_delay(self, time_of_last_startjob):
-        """
-        This calculation is only done when needed (i.e. just before job creation)
+    def calculate_current_delay(self, time_of_last_startjob=None):
+        """Return total estimated queued work (ms) for this provider.
+
+        Uses the sum of predicted runtimes for all inflight jobs.  The
+        elapsed-time correction is intentionally omitted: time_of_last_startjob
+        was stored as an ISO string after JSON round-trips, making the
+        isinstance(…, datetime) guard always False and the old formula always
+        return 0.  Summing inflight runtimes gives the ILP a real load signal
+        without relying on a persisted datetime.
         """
         self._ensure_delay_shape()
-        if not self.delay["inflight_jobs"]:
-            print(f"No inflight jobs for {self.user_id}")
+        inflight = self.delay.get("inflight_jobs", [])
+        if not inflight:
             return 0
-
-        # elapsed time since the last job started
-        current_time = datetime.now()
-        if not isinstance(self.delay["time_of_last_startjob"], datetime):
-            return 0
-        elapsed_time = (current_time - self.delay["time_of_last_startjob"]).total_seconds()
-
-        remaining_time_for_current_job = max(0, self.delay["time_of_last_startjob"] - elapsed_time)
-
-        total_delay =  + sum(self.delay["inflight_jobs"][:]) - remaining_time_for_current_job
-
-        return total_delay
+        return sum(v for v in inflight if isinstance(v, (int, float)))
 
     def update_delay_after_completion(self, time_of_last_startjob):
         """
