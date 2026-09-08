@@ -522,6 +522,12 @@ def on_message(mqtt_client, userdata, msg):
     if payload_str == "ILP_DONE":
         logger.info("Received ILP_DONE signal, setting ilp_state to 'done'")
         ilp_state = "done"
+        # Resolve any in-flight batch response — the scheduler acks batches via ILP_DONE,
+        # not via BATCH_RESPONSE, so we must unblock the pending_responses wait loop here.
+        for corr_id in list(pending_responses.keys()):
+            if pending_responses[corr_id] is None:
+                pending_responses[corr_id] = {"status": "ok", "correlation_id": corr_id}
+                logger.debug(f"Resolved pending response for correlation_id: {corr_id}")
         return
     
     # Keep other existing message handlers if needed
