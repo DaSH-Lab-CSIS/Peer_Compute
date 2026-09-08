@@ -496,10 +496,6 @@
     - name: Install testbed pip requirements
       command: "{{ local_project_dir }}/.venv/bin/pip install -r {{ testbed_dir }}/requirements.txt --no-input --index-url https://pypi.org/simple"
 
-    - name: Record experiment start time
-      set_fact:
-        experiment_start_time: "{{ ansible_date_time.iso8601 }}"
-
     - name: Resolve scheduler host for job drain poll
       set_fact:
         scheduler_poll_host: "{{ groups['control'] | first }}"
@@ -537,6 +533,32 @@
     - name: Print testbed command (for audit log)
       debug:
         msg: "Testbed command: {{ testbed_cmd }}"
+
+    - name: Expire all pending jobs from previous runs before starting testbed
+      uri:
+        url: "{{ scheduler_url }}/providers/timeout_stale_jobs/"
+        method: POST
+        body_format: json
+        body:
+          since: "1970-01-01T00:00:00Z"
+          no_result_threshold_seconds: 1
+          no_ack_threshold_seconds: 1
+        return_content: yes
+        use_proxy: false
+        status_code: 200
+        timeout: 300
+      register: pre_run_sweep
+      failed_when: false
+      delegate_to: localhost
+
+    - name: Record experiment start time (UTC, just before testbed sends requests)
+      command: date -u +"%Y-%m-%dT%H:%M:%SZ"
+      register: start_time_cmd
+      changed_when: false
+
+    - name: Set experiment_start_time fact
+      set_fact:
+        experiment_start_time: "{{ start_time_cmd.stdout }}"
 
     - name: Run testbed experiments via load balancer
       command: "{{ testbed_cmd }}"
