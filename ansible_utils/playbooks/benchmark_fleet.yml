@@ -42,9 +42,9 @@
         path: "{{ user_id_file }}"
       register: uid_stat
 
-    - name: Skip host if provider_user_id.txt missing
+    - name: Skip host if provider_user_id.txt missing or host unreachable
       meta: end_host
-      when: not uid_stat.stat.exists
+      when: uid_stat.stat is not defined or not uid_stat.stat.exists
 
     - name: Read provider_user_id
       slurp:
@@ -95,9 +95,9 @@
         path: "{{ user_id_file }}"
       register: uid_stat
 
-    - name: Skip control node if no provider_user_id.txt
+    - name: Skip control node if no provider_user_id.txt or unreachable
       meta: end_host
-      when: not uid_stat.stat.exists
+      when: uid_stat.stat is not defined or not uid_stat.stat.exists
 
     - name: Read provider_user_id from control node
       slurp:
