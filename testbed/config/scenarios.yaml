@@ -31,7 +31,7 @@ steady_load:
   # Dev-scale: ~6,300 total requests (default)
   # Research-scale: Already supports research scale (2,000-5,000 requests)
   rps_levels: [1]  # Fixed RPS for uniform long-duration run
-  duration_per_level: 100  # seconds (1 minute)
+  duration_per_level: 500  # seconds (~8 min → 500 requests at 1 RPS)
   services: [13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
   interval: 1.0
   invocations: 1
