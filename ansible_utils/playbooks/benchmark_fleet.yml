@@ -1,0 +1,250 @@
+---
+# benchmark_fleet.yml
+#
+# Runs machine and function benchmarks across the fleet and ingests results
+# into the scheduler DB so the prediction engine has real data.
+#
+# Usage:
+#   cd ansible_utils
+#   ./run_playbook.sh playbooks/benchmark_fleet.yml -vvv --ask-vault-pass
+#
+# Optional overrides:
+#   -e "bem_host=cortalim1.dashlab.in"  # which managed node is the BEM (default: utorda1)
+#   -e "skip_dims=net"                  # skip network throttle (if not root)
+#   -e "bench_probes=cpu,mem"           # run only a subset of machine probes
+#
+# What this does:
+#   Play 1 — Run machine benchmark on every reachable managed node.
+#             Reads provider_user_id.txt to identify each node.
+#             Produces machine_bench_<hostname>.json in /tmp on each node.
+#             Fetches all JSONs back to ansible_utils/benchmark_results/ on localhost.
+#   Play 2 — Run machine benchmark on control nodes (schedulers) too,
+#             so their r_i ratios can be computed relative to BEM.
+#   Play 3 — Run function (service) benchmark on the BEM node (utorda1 by default).
+#             Requires docker on the BEM. Uses sudo for network throttle.
+#             Produces function_bench.json. Fetches back to localhost.
+#   Play 4 — Ingest all benchmark JSONs into the scheduler DB via manage.py.
+
+- name: Machine benchmarks on provider nodes
+  hosts: managed
+  gather_facts: false
+  ignore_unreachable: true
+  vars:
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+    user_id_file: "{{ project_dir }}/provider_user_id.txt"
+    bench_out: "/tmp/machine_bench_{{ inventory_hostname }}.json"
+    bench_probes: "cpu,mem,disk,net"
+    local_bench_dir: "{{ playbook_dir }}/../../ansible_utils/benchmark_results"
+
+  tasks:
+    - name: Check provider_user_id.txt exists
+      stat:
+        path: "{{ user_id_file }}"
+      register: uid_stat
+
+    - name: Skip host if provider_user_id.txt missing
+      meta: end_host
+      when: not uid_stat.stat.exists
+
+    - name: Read provider_user_id
+      slurp:
+        src: "{{ user_id_file }}"
+      register: slurp_uid
+
+    - name: Set provider_id fact
+      set_fact:
+        provider_id: "{{ slurp_uid.content | b64decode | trim }}"
+
+    - name: Run machine benchmark
+      shell: >-
+        {{ project_dir }}/.venv/bin/python
+        {{ project_dir }}/scripts/benchmarks/benchmark.py
+        provider
+        --provider-id {{ provider_id }}
+        --probes {{ bench_probes }}
+        --out {{ bench_out }}
+      args:
+        executable: /bin/bash
+      register: machine_bench_result
+      timeout: 600
+      failed_when: machine_bench_result.rc != 0
+
+    - name: Fetch machine benchmark JSON to localhost
+      fetch:
+        src: "{{ bench_out }}"
+        dest: "{{ local_bench_dir }}/machine_bench_{{ inventory_hostname }}.json"
+        flat: true
+      failed_when: false
+
+# ---------------------------------------------------------------------------
+
+- name: Machine benchmarks on control (scheduler) nodes
+  hosts: control
+  gather_facts: false
+  ignore_unreachable: true
+  vars:
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+    user_id_file: "{{ project_dir }}/provider_user_id.txt"
+    bench_out: "/tmp/machine_bench_{{ inventory_hostname }}.json"
+    bench_probes: "cpu,mem,disk,net"
+    local_bench_dir: "{{ playbook_dir }}/../../ansible_utils/benchmark_results"
+
+  tasks:
+    - name: Check provider_user_id.txt exists on control node
+      stat:
+        path: "{{ user_id_file }}"
+      register: uid_stat
+
+    - name: Skip control node if no provider_user_id.txt
+      meta: end_host
+      when: not uid_stat.stat.exists
+
+    - name: Read provider_user_id from control node
+      slurp:
+        src: "{{ user_id_file }}"
+      register: slurp_uid
+
+    - name: Set provider_id fact
+      set_fact:
+        provider_id: "{{ slurp_uid.content | b64decode | trim }}"
+
+    - name: Run machine benchmark on control node
+      shell: >-
+        {{ project_dir }}/.venv/bin/python
+        {{ project_dir }}/scripts/benchmarks/benchmark.py
+        provider
+        --provider-id {{ provider_id }}
+        --probes {{ bench_probes }}
+        --out {{ bench_out }}
+      args:
+        executable: /bin/bash
+      register: machine_bench_result
+      timeout: 600
+      failed_when: machine_bench_result.rc != 0
+
+    - name: Fetch control node machine benchmark JSON to localhost
+      fetch:
+        src: "{{ bench_out }}"
+        dest: "{{ local_bench_dir }}/machine_bench_{{ inventory_hostname }}.json"
+        flat: true
+      failed_when: false
+
+# ---------------------------------------------------------------------------
+
+- name: Function (service) benchmark on BEM node
+  hosts: localhost
+  gather_facts: false
+  vars:
+    # BEM is run locally on the control node (utorda1) via SSH delegation below.
+    # Override with -e "bem_host=cortalim1.dashlab.in" to use a managed node.
+    bem_host: "utorda1.dashlab.in"
+    local_project_dir: "/home/peercompute/Serverless_Scheduler"
+    bem_project_dir: "/home/peercompute/deploy/Serverless_Scheduler"
+    bem_uid_file: "{{ bem_project_dir }}/provider_user_id.txt"
+    function_bench_out: "/tmp/function_bench.json"
+    local_bench_dir: "{{ playbook_dir }}/../../ansible_utils/benchmark_results"
+    # Comma-separated dims to skip (e.g. "net" if no root access for tc)
+    skip_dims: ""
+
+  tasks:
+    - name: Ensure local benchmark_results directory exists
+      file:
+        path: "{{ local_bench_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Read BEM provider_user_id
+      slurp:
+        src: "{{ bem_uid_file }}"
+      register: bem_uid_slurp
+      delegate_to: "{{ bem_host }}"
+
+    - name: Set bem_provider_id fact
+      set_fact:
+        bem_provider_id: "{{ bem_uid_slurp.content | b64decode | trim }}"
+
+    - name: Run function benchmark on BEM (may take 30-60 min for all 8 services)
+      shell: >-
+        {{ bem_project_dir }}/.venv/bin/python
+        {{ bem_project_dir }}/scripts/benchmarks/benchmark.py
+        service
+        --provider-id {{ bem_provider_id }}
+        --out {{ function_bench_out }}
+        {% if skip_dims | length > 0 %}--skip-dims {{ skip_dims }}{% endif %}
+      args:
+        executable: /bin/bash
+      register: function_bench_result
+      timeout: 3600
+      failed_when: function_bench_result.rc != 0
+      delegate_to: "{{ bem_host }}"
+      become: true
+
+    - name: Fetch function benchmark JSON to localhost
+      fetch:
+        src: "{{ function_bench_out }}"
+        dest: "{{ local_bench_dir }}/function_bench.json"
+        flat: true
+      delegate_to: "{{ bem_host }}"
+
+    - name: Show function benchmark output summary
+      debug:
+        msg: "{{ function_bench_result.stdout_lines[-20:] }}"
+      when: function_bench_result.stdout_lines is defined
+
+# ---------------------------------------------------------------------------
+
+- name: Ingest benchmark results into scheduler DB
+  hosts: localhost
+  gather_facts: false
+  vars:
+    local_project_dir: "/home/peercompute/Serverless_Scheduler"
+    local_bench_dir: "{{ playbook_dir }}/../../ansible_utils/benchmark_results"
+    # The BEM is the reference machine; its machine_bench JSON is the denominator
+    # for r_i(m) = S_i(BEM) / S_i(m).  Must match bem_host from Play 3.
+    bem_host: "utorda1.dashlab.in"
+
+  tasks:
+    - name: List fetched machine benchmark files
+      find:
+        paths: "{{ local_bench_dir }}"
+        patterns: "machine_bench_*.json"
+      register: machine_bench_files
+
+    - name: Check function benchmark file exists
+      stat:
+        path: "{{ local_bench_dir }}/function_bench.json"
+      register: func_bench_stat
+
+    - name: Read BEM provider_id from its machine bench JSON
+      shell: >-
+        python3 -c "import json; d=json.load(open('{{ local_bench_dir }}/machine_bench_{{ bem_host }}.json')); print(d['provider_id'])"
+      register: bem_provider_id_read
+      changed_when: false
+
+    - name: Set bem_provider_id for ingestion
+      set_fact:
+        bem_provider_id: "{{ bem_provider_id_read.stdout | trim }}"
+
+    - name: Ingest machine + function benchmarks into DB
+      shell: >-
+        {{ local_project_dir }}/.venv/bin/python
+        {{ local_project_dir }}/scheduler/manage.py
+        ingest_benchmarks
+        --machine-dir {{ local_bench_dir }}
+        --bem-provider-id {{ bem_provider_id }}
+        {% if func_bench_stat.stat.exists %}--function-file {{ local_bench_dir }}/function_bench.json{% endif %}
+      args:
+        chdir: "{{ local_project_dir }}/scheduler"
+        executable: /bin/bash
+      register: ingest_result
+      environment:
+        DJANGO_SETTINGS_MODULE: scheduler.settings
+
+    - name: Show ingest result
+      debug:
+        msg: "{{ ingest_result.stdout_lines }}"
+
+    - name: Warn if ingest had errors
+      debug:
+        msg: "INGEST STDERR: {{ ingest_result.stderr_lines }}"
+      when: ingest_result.stderr_lines | length > 0
