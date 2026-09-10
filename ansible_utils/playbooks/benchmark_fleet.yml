@@ -66,7 +66,7 @@
       args:
         executable: /bin/bash
       register: machine_bench_result
-      timeout: 600
+      timeout: 900
       failed_when: machine_bench_result.rc != 0
 
     - name: Fetch machine benchmark JSON to localhost
@@ -119,7 +119,7 @@
       args:
         executable: /bin/bash
       register: machine_bench_result
-      timeout: 600
+      timeout: 900
       failed_when: machine_bench_result.rc != 0
 
     - name: Fetch control node machine benchmark JSON to localhost
@@ -165,7 +165,7 @@
 
     - name: Run function benchmark on BEM (may take 30-60 min for all 8 services)
       shell: >-
-        {{ bem_project_dir }}/.venv/bin/python
+        sudo {{ bem_project_dir }}/.venv/bin/python
         {{ bem_project_dir }}/scripts/benchmarks/benchmark.py
         service
         --provider-id {{ bem_provider_id }}
@@ -177,7 +177,6 @@
       timeout: 3600
       failed_when: function_bench_result.rc != 0
       delegate_to: "{{ bem_host }}"
-      become: true
 
     - name: Fetch function benchmark JSON to localhost
       fetch:
