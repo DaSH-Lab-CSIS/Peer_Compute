@@ -136,8 +136,9 @@
   gather_facts: false
   become: false
   vars:
-    # BEM is run locally on the control node (utorda1) via SSH delegation below.
-    # Override with -e "bem_host=cortalim1.dashlab.in" to use a managed node.
+    # BEM host to run the function benchmark on.
+    # utorda1 does not have provider_user_id.txt — override with a cortalim node
+    # that has the file, e.g.: -e "bem_host=cortalim2.dashlab.in"
     bem_host: "utorda1.dashlab.in"
     local_project_dir: "/home/peercompute/Serverless_Scheduler"
     bem_project_dir: "/home/peercompute/deploy/Serverless_Scheduler"
@@ -146,6 +147,8 @@
     local_bench_dir: "{{ playbook_dir }}/../../ansible_utils/benchmark_results"
     # Comma-separated dims to skip (e.g. "net" if no root access for tc)
     skip_dims: ""
+    # Override with -e "bem_provider_id=<uuid>" to skip reading the file.
+    bem_provider_id: ""
 
   tasks:
     - name: Ensure local benchmark_results directory exists
@@ -154,15 +157,32 @@
         state: directory
         mode: "0755"
 
-    - name: Read BEM provider_user_id
+    - name: Check provider_user_id.txt exists on BEM
+      stat:
+        path: "{{ bem_uid_file }}"
+      register: bem_uid_stat
+      delegate_to: "{{ bem_host }}"
+      when: bem_provider_id == ""
+
+    - name: Fail with helpful message if provider_user_id.txt missing and no override
+      fail:
+        msg: >-
+          {{ bem_host }} has no provider_user_id.txt at {{ bem_uid_file }}.
+          Either point to a provider node with -e "bem_host=cortalim2.dashlab.in"
+          or supply the UUID directly with -e "bem_provider_id=<uuid>".
+      when: bem_provider_id == "" and (bem_uid_stat.stat is not defined or not bem_uid_stat.stat.exists)
+
+    - name: Read BEM provider_user_id from file
       slurp:
         src: "{{ bem_uid_file }}"
       register: bem_uid_slurp
       delegate_to: "{{ bem_host }}"
+      when: bem_provider_id == ""
 
     - name: Set bem_provider_id fact
       set_fact:
         bem_provider_id: "{{ bem_uid_slurp.content | b64decode | trim }}"
+      when: bem_provider_id == ""
 
     - name: Run function benchmark on BEM (may take 30-60 min for all 8 services)
       shell: >-
