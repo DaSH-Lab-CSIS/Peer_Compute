@@ -134,6 +134,7 @@
 - name: Function (service) benchmark on BEM node
   hosts: localhost
   gather_facts: false
+  become: false
   vars:
     # BEM is run locally on the control node (utorda1) via SSH delegation below.
     # Override with -e "bem_host=cortalim1.dashlab.in" to use a managed node.
@@ -195,6 +196,7 @@
 - name: Ingest benchmark results into scheduler DB
   hosts: localhost
   gather_facts: false
+  become: false
   vars:
     local_project_dir: "/home/peercompute/Serverless_Scheduler"
     local_bench_dir: "{{ playbook_dir }}/../../ansible_utils/benchmark_results"
