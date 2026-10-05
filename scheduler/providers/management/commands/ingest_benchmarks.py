@@ -281,23 +281,30 @@ class Command(BaseCommand):
                 s_disk = float(data.get("s_disk_mbps", 0) or 0)
                 s_net = float(data.get("s_net_mbps", 0) or 0)
 
-                user.r_cpu = (bem_cpu / s_cpu) if s_cpu else None
-                user.r_mem = (bem_mem / s_mem) if s_mem else None
-                user.r_disk = (bem_disk / s_disk) if s_disk else None
-                user.r_net = (bem_net / s_net) if s_net else None
-                user.s_disk_mbps = s_disk or None
-                user.s_net_mbps = s_net or None
+                # A probe that was not run (or failed) is stored as 0. Only
+                # update a dimension when both the provider and the BEM have a
+                # real measurement; otherwise keep the existing DB value, so a
+                # partial run (e.g. --probes net) cannot wipe the other ratios
+                # and a failed BEM probe cannot write r = 0.
+                update_fields = []
+                for ratio_field, bem_val, s_val in (
+                    ("r_cpu", bem_cpu, s_cpu),
+                    ("r_mem", bem_mem, s_mem),
+                    ("r_disk", bem_disk, s_disk),
+                    ("r_net", bem_net, s_net),
+                ):
+                    if bem_val > 0 and s_val > 0:
+                        setattr(user, ratio_field, bem_val / s_val)
+                        update_fields.append(ratio_field)
+                if s_disk > 0:
+                    user.s_disk_mbps = s_disk
+                    update_fields.append("s_disk_mbps")
+                if s_net > 0:
+                    user.s_net_mbps = s_net
+                    update_fields.append("s_net_mbps")
 
-                user.save(
-                    update_fields=[
-                        "r_cpu",
-                        "r_mem",
-                        "r_disk",
-                        "r_net",
-                        "s_disk_mbps",
-                        "s_net_mbps",
-                    ]
-                )
+                if update_fields:
+                    user.save(update_fields=update_fields)
 
                 self.stdout.write(
                     self.style.SUCCESS(
