@@ -11,7 +11,11 @@
 # Optional overrides:
 #   -e "bem_host=cortalim1.dashlab.in"  # which managed node is the BEM (default: utorda1)
 #   -e "skip_dims=net"                  # skip network throttle (if not root)
-#   -e "bench_probes=cpu,mem"           # run only a subset of machine probes
+#   -e "bench_probes=cpu,mem"           # run only a subset of machine probes; the
+#                                       # results are merged into benchmark_results/
+#                                       # so unmeasured probes keep their stored values
+#   -e "bench_services=010,020,040,504" # function-benchmark only these numbers
+#   --tags machine | function | ingest  # run only some plays
 #
 # What this does:
 #   Play 1 — Run machine benchmark on every reachable managed node.
@@ -26,6 +30,7 @@
 #   Play 4 — Ingest all benchmark JSONs into the scheduler DB via manage.py.
 
 - name: Machine benchmarks on provider nodes
+  tags: [machine]
   hosts: managed
   gather_facts: false
   ignore_unreachable: true
@@ -72,13 +77,27 @@
     - name: Fetch machine benchmark JSON to localhost
       fetch:
         src: "{{ bench_out }}"
-        dest: "{{ local_bench_dir }}/machine_bench_{{ inventory_hostname }}.json"
+        dest: "{{ local_bench_dir }}/incoming/machine_bench_{{ inventory_hostname }}.json"
         flat: true
+      register: machine_bench_fetch
       failed_when: false
+
+    # Merge only the probes that ran, so a partial run (-e bench_probes=net)
+    # keeps the stored cpu/mem/disk scores. Ingest reads only the top-level dir.
+    - name: Merge measured probes into benchmark_results
+      command: >-
+        python3 {{ playbook_dir }}/../../scripts/benchmarks/merge_machine_bench.py
+        {{ local_bench_dir }}/incoming/machine_bench_{{ inventory_hostname }}.json
+        {{ local_bench_dir }}/machine_bench_{{ inventory_hostname }}.json
+        --probes {{ bench_probes }}
+      delegate_to: localhost
+      become: false
+      when: machine_bench_fetch.checksum is defined   # fetch succeeded
 
 # ---------------------------------------------------------------------------
 
 - name: Machine benchmarks on control (scheduler) nodes
+  tags: [machine]
   hosts: control
   gather_facts: false
   ignore_unreachable: true
@@ -88,6 +107,10 @@
     bench_out: "/tmp/machine_bench_{{ inventory_hostname }}.json"
     bench_probes: "cpu,mem,disk,net"
     local_bench_dir: "{{ playbook_dir }}/../../ansible_utils/benchmark_results"
+    # The BEM is a scheduler, not a provider, so it has no provider_user_id.txt.
+    # Its machine benchmark is the r_i denominator and is keyed by this id.
+    bem_host: "utorda1.dashlab.in"
+    bem_machine_id: "11111111-1111-1111-1111-111111111111"
 
   tasks:
     - name: Check provider_user_id.txt exists on control node
@@ -95,18 +118,22 @@
         path: "{{ user_id_file }}"
       register: uid_stat
 
-    - name: Skip control node if no provider_user_id.txt or unreachable
+    - name: Skip control node if it is not the BEM and has no provider_user_id.txt
       meta: end_host
-      when: uid_stat.stat is not defined or not uid_stat.stat.exists
+      when:
+        - inventory_hostname != bem_host
+        - uid_stat.stat is not defined or not uid_stat.stat.exists
 
     - name: Read provider_user_id from control node
       slurp:
         src: "{{ user_id_file }}"
       register: slurp_uid
+      when: uid_stat.stat.exists
 
     - name: Set provider_id fact
       set_fact:
-        provider_id: "{{ slurp_uid.content | b64decode | trim }}"
+        provider_id: >-
+          {{ (slurp_uid.content | b64decode | trim) if uid_stat.stat.exists else bem_machine_id }}
 
     - name: Run machine benchmark on control node
       shell: >-
@@ -125,13 +152,27 @@
     - name: Fetch control node machine benchmark JSON to localhost
       fetch:
         src: "{{ bench_out }}"
-        dest: "{{ local_bench_dir }}/machine_bench_{{ inventory_hostname }}.json"
+        dest: "{{ local_bench_dir }}/incoming/machine_bench_{{ inventory_hostname }}.json"
         flat: true
+      register: machine_bench_fetch
       failed_when: false
+
+    # Merge only the probes that ran, so a partial run (-e bench_probes=net)
+    # keeps the stored cpu/mem/disk scores. Ingest reads only the top-level dir.
+    - name: Merge measured probes into benchmark_results
+      command: >-
+        python3 {{ playbook_dir }}/../../scripts/benchmarks/merge_machine_bench.py
+        {{ local_bench_dir }}/incoming/machine_bench_{{ inventory_hostname }}.json
+        {{ local_bench_dir }}/machine_bench_{{ inventory_hostname }}.json
+        --probes {{ bench_probes }}
+      delegate_to: localhost
+      become: false
+      when: machine_bench_fetch.checksum is defined   # fetch succeeded
 
 # ---------------------------------------------------------------------------
 
 - name: Function (service) benchmark on BEM node
+  tags: [function]
   hosts: localhost
   gather_facts: false
   become: false
@@ -147,6 +188,8 @@
     local_bench_dir: "{{ playbook_dir }}/../../ansible_utils/benchmark_results"
     # Comma-separated dims to skip (e.g. "net" if no root access for tc)
     skip_dims: ""
+    # Comma-separated benchmark numbers (empty = all in reference_images.SERVICES)
+    bench_services: ""
     # Override with -e "bem_provider_id=<uuid>" to skip reading the file.
     bem_provider_id: ""
 
@@ -193,6 +236,7 @@
         --out {{ function_bench_out }}
         --B {{ bench_B | default(3) }}
         --B-prime {{ bench_B_prime | default(1) }}
+        {% if bench_services | length > 0 %}--services {{ bench_services }}{% endif %}
         {% if skip_dims | length > 0 %}--skip-dims {{ skip_dims }}{% endif %}
       args:
         executable: /bin/bash
@@ -200,13 +244,25 @@
       timeout: 21600
       failed_when: function_bench_result.rc != 0
       delegate_to: "{{ bem_host }}"
+      # Root is required: without it benchmark.py silently skips the network
+      # throttle and every service gets w_net = 0.
+      become: true
 
     - name: Fetch function benchmark JSON to localhost
       fetch:
         src: "{{ function_bench_out }}"
-        dest: "{{ local_bench_dir }}/function_bench.json"
+        dest: "{{ local_bench_dir }}/incoming/function_bench.json"
         flat: true
       delegate_to: "{{ bem_host }}"
+
+    # A --services run only contains those images; merge per service so the
+    # stored function_bench.json keeps every other service.
+    - name: Merge function benchmark into benchmark_results
+      command: >-
+        python3 {{ playbook_dir }}/../../scripts/benchmarks/merge_function_bench.py
+        {{ local_bench_dir }}/incoming/function_bench.json
+        {{ local_bench_dir }}/function_bench.json
+      become: false
 
     - name: Show function benchmark output summary
       debug:
@@ -216,6 +272,7 @@
 # ---------------------------------------------------------------------------
 
 - name: Ingest benchmark results into scheduler DB
+  tags: [ingest]
   hosts: localhost
   gather_facts: false
   become: false
