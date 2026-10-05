@@ -2,7 +2,7 @@ from collections import defaultdict
 import time
 import pulp
 from django.apps import apps
-from django.db import transaction
+from django.db import close_old_connections, transaction
 from django.db.models import Max
 from django.shortcuts import render,get_object_or_404, redirect
 import pika 
@@ -484,6 +484,11 @@ def on_disconnect(mqtt_client, userdata, disconnect_flags, reason_code, properti
     _mqtt_log.warning("[MQTT] on_disconnect: %s", detail)
 
 def on_message(mqtt_client, userdata, msg):
+    # The MQTT loop is a long-lived non-request thread, so Django never recycles
+    # its DB connection. Once CockroachDB drops it, every READY/NOT_READY/finish_job
+    # write fails with "connection already closed". Drop dead/expired connections
+    # here so the next query reconnects.
+    close_old_connections()
     print('from views.py/providers ')
     print(f'Received message on topic: {msg.topic} with payload: {msg.payload}')
     # Try to parse as JSON first (for job completion messages)
