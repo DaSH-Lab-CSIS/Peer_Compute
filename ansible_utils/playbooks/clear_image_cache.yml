@@ -1,0 +1,23 @@
+---
+# Clears the Docker image cache on all managed provider nodes.
+# Forces re-pull of service images on the next experiment run.
+#
+# Usage:
+#   ./run_playbook.sh playbooks/clear_image_cache.yml -vvv --ask-vault-pass
+#
+# Limit to specific nodes:
+#   ./run_playbook.sh playbooks/clear_image_cache.yml -vvv --ask-vault-pass --limit cortalim1.dashlab.in
+
+- name: Clear Docker image cache on provider nodes
+  hosts: managed
+  become: yes
+  ignore_unreachable: true
+  tasks:
+    - name: Prune all Docker images
+      shell: docker image prune --all --force
+      register: docker_prune
+      become_user: "{{ ansible_user }}"
+
+    - name: Report prune result
+      debug:
+        msg: "{{ inventory_hostname }}: {{ docker_prune.stdout_lines | last | default('no output') }}"

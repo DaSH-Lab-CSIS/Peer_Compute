@@ -1,0 +1,41 @@
+---
+# Sync the project .env from the control node to all managed and control nodes.
+# Usage:
+#   ./run_playbook.sh playbooks/sync_env.yml -vvv --ask-vault-pass
+#   ./run_playbook.sh playbooks/sync_env.yml -vvv --ask-vault-pass --limit managed
+
+- name: Sync .env to managed provider nodes
+  hosts: managed
+  gather_facts: false
+  ignore_unreachable: true
+  become: false
+  vars:
+    local_env_file: "{{ playbook_dir }}/../../.env"
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+
+  tasks:
+    - name: Copy .env to provider node
+      copy:
+        src: "{{ local_env_file }}"
+        dest: "{{ project_dir }}/.env"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0600"
+
+- name: Sync .env to control (scheduler) nodes
+  hosts: control
+  gather_facts: false
+  ignore_unreachable: true
+  become: false
+  vars:
+    local_env_file: "{{ playbook_dir }}/../../.env"
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+
+  tasks:
+    - name: Copy .env to control node
+      copy:
+        src: "{{ local_env_file }}"
+        dest: "{{ project_dir }}/.env"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0600"

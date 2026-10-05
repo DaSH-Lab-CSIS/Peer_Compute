@@ -1,0 +1,150 @@
+# Shared task list: configure and restart the scheduler.
+# Caller must set vars: project_dir, placement_mode, prediction_strategy, mqtt_broker, mqtt_port
+# Optional: force_model (default false)
+
+# Code sync MUST precede the .env edits: .env is git-tracked, so `git reset --hard`
+# (git mode) would silently drop the placement/prediction block below.
+- name: Push code from controller (rsync)
+  include_tasks: "{{ playbook_dir }}/tasks/push_code.yml"
+  when: code_sync_method | default('git') == "rsync"
+
+- name: Sync scheduler code from GitHub
+  include_tasks: "{{ playbook_dir }}/tasks/git_sync.yml"
+  when: code_sync_method | default('git') == "git"
+
+- name: Override MQTT_BROKER in scheduler .env
+  blockinfile:
+    path: "{{ project_dir }}/.env"
+    marker: "# {mark} ANSIBLE MANAGED MQTT"
+    block: |
+      export MQTT_BROKER={{ mqtt_broker }}
+      export MQTT_PORT={{ mqtt_port | default('1884') }}
+      export MQTT_USERNAME=peercompute
+      export MQTT_PASSWORD=peercompute
+    create: true
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0600"
+  become_user: "{{ ansible_user }}"
+  when: mqtt_broker != ""
+
+- name: Write placement/prediction env vars into scheduler .env
+  blockinfile:
+    path: "{{ project_dir }}/.env"
+    marker: "# {mark} ANSIBLE MANAGED PREDICTION"
+    block: |
+      export RUNTIME_PREDICTION_STRATEGY={{ prediction_strategy }}
+      export SCHEDULER_PLACEMENT_MODE={{ placement_mode }}
+      export PREDICTION_FORCE_MODEL={{ force_model | default(false) | bool | lower }}
+      export BELADY_ASSIGNMENTS_FILE=/opt/peercompute/belady_assignments.json
+    create: true
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0600"
+  become_user: "{{ ansible_user }}"
+
+- name: Overlay local scheduler fixes (survives git pull)
+  copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+  become: true
+  loop:
+    - src: "{{ playbook_dir }}/../../scheduler/providers/views.py"
+      dest: "{{ project_dir }}/scheduler/providers/views.py"
+    - src: "{{ playbook_dir }}/../../scheduler/providers/mincost.py"
+      dest: "{{ project_dir }}/scheduler/providers/mincost.py"
+    - src: "{{ playbook_dir }}/../../scheduler/profiles/models.py"
+      dest: "{{ project_dir }}/scheduler/profiles/models.py"
+    - src: "{{ playbook_dir }}/../../scheduler/manage.py"
+      dest: "{{ project_dir }}/scheduler/manage.py"
+    - src: "{{ playbook_dir }}/../../scheduler/scheduler/settings.py"
+      dest: "{{ project_dir }}/scheduler/scheduler/settings.py"
+
+- name: Ensure /opt/peercompute directory exists
+  file:
+    path: /opt/peercompute
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0755"
+  become: true
+  when: placement_mode == "belady"
+
+- name: Copy Belady assignment table to scheduler node
+  copy:
+    src: "{{ playbook_dir }}/../../testbed/results/requests/belady_assignments.json"
+    dest: /opt/peercompute/belady_assignments.json
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0644"
+  become: true
+  when: placement_mode == "belady"
+
+- name: Install gunicorn into venv
+  command: "{{ project_dir }}/.venv/bin/pip install gunicorn --no-input --index-url https://pypi.org/simple"
+  become_user: "{{ ansible_user }}"
+  changed_when: false
+
+- name: Run Django migrations
+  shell: "cd {{ project_dir }}/scheduler && {{ project_dir }}/.venv/bin/python manage.py migrate --no-input"
+  become_user: "{{ ansible_user }}"
+
+- name: Stop running scheduler
+  shell: "pkill -f '[g]unicorn.*scheduler.wsgi' || pkill -f '[m]anage.py runserver' || true"
+  failed_when: false
+  changed_when: false
+
+- name: Start scheduler (gunicorn, 1 worker 4 threads)
+  become_user: "{{ ansible_user }}"
+  shell: |
+    source "{{ project_dir }}/.env"
+    nohup {{ project_dir }}/.venv/bin/gunicorn \
+      --workers 1 --threads 4 --worker-class gthread \
+      --bind 0.0.0.0:8000 --timeout 300 \
+      scheduler.wsgi:application \
+      > /tmp/django.log 2>&1 &
+  environment:
+    DB_SSLROOTCERT: "{{ project_dir }}/certs/ca.crt"
+    DB_SSLCERT: "{{ project_dir }}/certs/client.root.crt"
+    DB_SSLKEY: "{{ project_dir }}/certs/client.root.key"
+  args:
+    chdir: "{{ project_dir }}/scheduler"
+    executable: /bin/bash
+  async: 30
+  poll: 0
+
+- name: Wait for scheduler port 8000
+  block:
+    - name: Wait for Django port 8000
+      wait_for:
+        host: 127.0.0.1
+        port: 8000
+        delay: 2
+        timeout: 60
+  rescue:
+    - name: Show Django startup log on failure
+      shell: "tail -120 /tmp/django.log || echo 'django.log not found'"
+      args:
+        executable: /bin/bash
+      register: django_startup_log
+      changed_when: false
+    - name: Print Django startup diagnostics
+      debug:
+        msg: "{{ django_startup_log.stdout }}"
+    - name: Fail due to scheduler startup timeout
+      fail:
+        msg: "Scheduler did not start on 127.0.0.1:8000. See diagnostics above."
+
+- name: Reset provider delay and invocation counters
+  uri:
+    url: "http://127.0.0.1:8000/providers/reset_provider_state/"
+    method: POST
+    return_content: yes
+    use_proxy: false
+    status_code: 200
+  register: reset_result
+  failed_when: false
+
+- name: Confirm active configuration
+  debug:
+    msg: "Scheduler started: placement_mode={{ placement_mode }} prediction_strategy={{ prediction_strategy }}"

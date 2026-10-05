@@ -1,0 +1,70 @@
+# Shared task list: fetch scheduler profile + prediction audit logs.
+# Caller must set vars: project_dir, local_log_dir
+
+- name: Ensure local scheduler_logs directory exists
+  file:
+    path: "{{ local_log_dir }}"
+    state: directory
+    mode: "0755"
+  delegate_to: localhost
+  run_once: true
+
+- name: Check scheduler logs directory on remote
+  stat:
+    path: "{{ project_dir }}/scheduler/logs"
+  register: log_dir_stat
+
+- name: List scheduler profile JSONL files
+  find:
+    paths: "{{ project_dir }}/scheduler/logs"
+    patterns: "scheduler_profile_*.jsonl"
+    file_type: file
+  register: profile_files
+  when: log_dir_stat.stat.exists
+
+- name: Set empty profile list when logs dir missing
+  set_fact:
+    profile_files:
+      files: []
+  when: not log_dir_stat.stat.exists
+
+- name: Fetch each profile JSONL
+  fetch:
+    src: "{{ item.path }}"
+    dest: "{{ local_log_dir }}/{{ inventory_hostname }}_{{ item.path | basename }}"
+    flat: yes
+    fail_on_missing: no
+  loop: "{{ profile_files.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+
+- name: List prediction audit JSONL files
+  find:
+    paths: "{{ project_dir }}/scheduler/logs"
+    patterns: "prediction_audit_*.jsonl"
+    file_type: file
+  register: audit_files
+  when: log_dir_stat.stat.exists
+
+- name: Set empty audit list when logs dir missing
+  set_fact:
+    audit_files:
+      files: []
+  when: not log_dir_stat.stat.exists
+
+- name: Fetch each prediction audit JSONL
+  fetch:
+    src: "{{ item.path }}"
+    dest: "{{ local_log_dir }}/{{ inventory_hostname }}_{{ item.path | basename }}"
+    flat: yes
+    fail_on_missing: no
+  loop: "{{ audit_files.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+
+- name: Report fetched log counts
+  debug:
+    msg: >-
+      {{ inventory_hostname }}:
+      {{ profile_files.files | length }} profile file(s),
+      {{ audit_files.files | length }} audit file(s) fetched.

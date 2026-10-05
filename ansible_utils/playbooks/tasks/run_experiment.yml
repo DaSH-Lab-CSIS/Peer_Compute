@@ -1,0 +1,219 @@
+# Shared task list: run testbed, drain, sweep, enrich, emit manifest.
+# Caller must set vars:
+#   local_project_dir, testbed_dir, lb_url, scenario, seed, replay_file,
+#   repetition, run_label, placement_mode, prediction_strategy,
+#   no_result_threshold_seconds, no_ack_threshold_seconds
+
+- name: Install testbed pip requirements
+  command: "{{ local_project_dir }}/.venv/bin/pip install -r {{ testbed_dir }}/requirements.txt --no-input --index-url https://pypi.org/simple"
+
+- name: Resolve scheduler host
+  set_fact:
+    scheduler_url: "http://{{ groups['control'] | first }}:8000"
+
+- name: Capture git SHA for manifest
+  command: git rev-parse --short HEAD
+  args:
+    chdir: "{{ local_project_dir }}"
+  register: git_sha
+  changed_when: false
+  failed_when: false
+
+- name: Build testbed command
+  set_fact:
+    testbed_cmd: >-
+      {{ local_project_dir }}/.venv/bin/python main.py
+      --scenario {{ scenario }}
+      --load-balancer-url {{ lb_url }}
+      --iterations 1
+      --seed {{ seed }}
+      {% if replay_file | string | length > 0 %} --replay {{ replay_file }}{% endif %}
+
+- name: Print testbed command
+  debug:
+    msg: "Testbed command: {{ testbed_cmd }}"
+
+- name: Expire pending jobs before this arm (belt-and-suspenders)
+  uri:
+    url: "{{ scheduler_url }}/providers/timeout_stale_jobs/"
+    method: POST
+    body_format: json
+    body:
+      since: "1970-01-01T00:00:00Z"
+      no_result_threshold_seconds: 1
+      no_ack_threshold_seconds: 1
+    return_content: yes
+    use_proxy: false
+    status_code: 200
+    timeout: 300
+  failed_when: false
+  delegate_to: localhost
+
+- name: Record experiment start time
+  command: date -u +"%Y-%m-%dT%H:%M:%SZ"
+  register: start_time_cmd
+  changed_when: false
+
+- name: Set experiment_start_time fact
+  set_fact:
+    experiment_start_time: "{{ start_time_cmd.stdout }}"
+
+- name: Run testbed via load balancer
+  command: "{{ testbed_cmd }}"
+  args:
+    chdir: "{{ testbed_dir }}"
+  register: testbed_run
+
+- name: Print testbed output
+  debug:
+    msg: |
+      STDOUT: {{ testbed_run.stdout | default('') }}
+      STDERR: {{ testbed_run.stderr | default('') }}
+      RC: {{ testbed_run.rc }}
+
+- name: Wait for LB to flush its batch queue
+  uri:
+    url: "http://colva2.dashlab.in:9001/status"
+    method: GET
+    return_content: yes
+    use_proxy: false
+    status_code: 200
+  register: lb_drain_check
+  retries: 120
+  delay: 5
+  until: >-
+    lb_drain_check.status == 200 and
+    (((lb_drain_check.json | default({})).current_batch_size | default(1)) | int) == 0 and
+    ((lb_drain_check.json | default({})).ilp_state | default('progress')) == 'done'
+  failed_when: false
+  delegate_to: localhost
+
+- name: Pre-drain stale sweep
+  uri:
+    url: "{{ scheduler_url }}/providers/timeout_stale_jobs/"
+    method: POST
+    body_format: json
+    body:
+      since: "{{ experiment_start_time }}"
+      no_result_threshold_seconds: "{{ no_result_threshold_seconds }}"
+      no_ack_threshold_seconds: "{{ no_ack_threshold_seconds }}"
+    return_content: yes
+    use_proxy: false
+    status_code: 200
+    timeout: 60
+  failed_when: false
+  delegate_to: localhost
+
+- name: Wait for all jobs from this arm to finish
+  uri:
+    url: "{{ scheduler_url }}/providers/pending_jobs_count/?since={{ experiment_start_time }}"
+    method: GET
+    return_content: yes
+    use_proxy: false
+    status_code: 200
+  register: pending_check
+  retries: 120
+  delay: 10
+  until: pending_check.status == 200 and (((pending_check.json | default({})).pending | default(-1)) | int) == 0
+  failed_when: false
+  delegate_to: localhost
+
+- name: Final stale sweep
+  uri:
+    url: "{{ scheduler_url }}/providers/timeout_stale_jobs/"
+    method: POST
+    body_format: json
+    body:
+      since: "{{ experiment_start_time }}"
+      no_result_threshold_seconds: "{{ no_result_threshold_seconds }}"
+      no_ack_threshold_seconds: "{{ no_ack_threshold_seconds }}"
+    return_content: yes
+    use_proxy: false
+    status_code: 200
+    timeout: 300
+  failed_when: false
+  delegate_to: localhost
+
+- name: Find latest run_id for this scenario
+  shell: >-
+    ls -1t {{ testbed_dir }}/results/json/{{ scenario }}_*_metrics.json 2>/dev/null |
+    head -1 | xargs -r basename | sed 's/_metrics\.json$//'
+  args:
+    executable: /bin/bash
+  register: latest_run_id
+  changed_when: false
+  failed_when: false
+
+- name: Enrich run results
+  command: >-
+    {{ local_project_dir }}/.venv/bin/python main.py
+    --enrich {{ latest_run_id.stdout }}
+    --scheduler-url {{ scheduler_url }}
+    --enrich-since {{ experiment_start_time }}
+  args:
+    chdir: "{{ testbed_dir }}"
+  register: enrich_result
+  when: latest_run_id.stdout != ""
+  failed_when: false
+
+- name: Print enrichment output
+  debug:
+    msg: |
+      STDOUT: {{ enrich_result.stdout | default('') }}
+      STDERR: {{ enrich_result.stderr | default('') }}
+  when: enrich_result is not skipped
+
+- name: Find latest enriched CSV
+  shell: "ls -1t {{ testbed_dir }}/results/csv/{{ scenario }}_*_jobs_enriched.csv 2>/dev/null | head -1"
+  args:
+    executable: /bin/bash
+  register: enriched_csv_path
+  changed_when: false
+  failed_when: false
+
+- name: Ensure manifest directory exists
+  file:
+    path: "{{ testbed_dir }}/results/manifests"
+    state: directory
+    mode: "0755"
+
+- name: Emit run manifest
+  shell: |
+    {{ local_project_dir }}/.venv/bin/python - <<'PY'
+    import json, datetime
+    from pathlib import Path
+    ts = datetime.datetime.utcnow().isoformat()
+    manifest = {
+      "manifest_version": 1,
+      "ts_utc": ts,
+      "git_sha": "{{ git_sha.stdout | default('unknown') }}",
+      "placement_mode": "{{ placement_mode }}",
+      "prediction_strategy": "{{ prediction_strategy }}",
+      "run_label": "{{ run_label }}",
+      "repetition": {{ repetition }},
+      "scenario": "{{ scenario }}",
+      "seed": {{ seed }},
+      "replay_file": "{{ replay_file }}",
+      "experiment_start_time": "{{ experiment_start_time }}",
+      "scheduler_url": "{{ scheduler_url }}",
+      "lb_url": "http://colva2.dashlab.in:9001",
+      "enriched_csv": "{{ enriched_csv_path.stdout | default('') }}",
+      "fleet": {
+        "control": {{ groups['control'] | to_json }},
+        "managed": {{ groups['managed'] | to_json }},
+      },
+    }
+    label_part = "_{{ run_label }}" if "{{ run_label }}" else ""
+    fname = f"manifest_{{ scenario }}{label_part}_rep{{ repetition }}_{ts[:19].replace(':', '').replace('-', '')}.json"
+    out = Path("{{ testbed_dir }}/results/manifests") / fname
+    out.write_text(json.dumps(manifest, indent=2))
+    print(f"Manifest: {out}")
+    PY
+  args:
+    executable: /bin/bash
+  register: manifest_result
+  changed_when: true
+
+- name: Print manifest path
+  debug:
+    msg: "{{ manifest_result.stdout }}"

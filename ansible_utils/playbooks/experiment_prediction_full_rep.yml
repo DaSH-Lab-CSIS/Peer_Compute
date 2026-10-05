@@ -1,0 +1,594 @@
+---
+# Full-repetition playbook: runs all 4 arms back-to-back in a single invocation.
+# Arms: RR → ILP+CPI → ILP+Scaling → Belady
+#
+# Between each arm:
+#   - All providers stopped
+#   - Docker image cache pruned (cold start for each arm)
+#   - All pending/stale DB jobs expired
+#   - Scheduler restarted with arm-specific placement_mode + prediction_strategy
+#   - Providers restarted fresh
+#
+# Usage:
+#   cd ansible_utils && ./run_playbook.sh playbooks/experiment_prediction_full_rep.yml -vvv --ask-vault-pass \
+#     -e "repetition=2 replay_file=testbed/results/requests/steady_load_20260928_154742_requests.json"
+#
+# Extra vars:
+#   repetition     integer rep index 1-5                     (default: 1)
+#   replay_file    path to replay JSON (required for rep>=2)  (default: "")
+#   seed           random seed                               (default: 42)
+#   scenario       scenario name                             (default: steady_load)
+#   no_result_threshold_seconds                              (default: 300)
+#   no_ack_threshold_seconds                                 (default: 120)
+#   run_profile_analysis                                     (default: true)
+
+# ============================================================================
+# Play 0 — Start Load Balancer (once for the entire repetition)
+# ============================================================================
+- name: Start Load Balancer
+  hosts: localhost
+  connection: local
+  become: no
+  tags: experiment
+  vars_files:
+    - secrets.yml
+  vars:
+    local_user: "{{ lookup('env', 'USER') }}"
+    local_project_dir: "/home/{{ local_user }}/Serverless_Scheduler"
+    lb_project_dir: "/home/{{ lb_ssh_user }}/deploy/Serverless_Scheduler"
+    lb_host: "colva2.dashlab.in"
+    lb_url: "http://colva2.dashlab.in:9001"
+    lb_ssh_user: "peercompute"
+    mqtt_broker: "utorda1.dashlab.in"
+    mqtt_port: "1884"
+  tasks:
+    - name: Register load balancer delegate host
+      add_host:
+        name: lb_delegate
+        ansible_host: "{{ lb_host }}"
+        ansible_user: "{{ lb_ssh_user }}"
+        ansible_connection: ssh
+        ansible_ssh_private_key_file: "/home/{{ local_user }}/.ssh/id_ed25519"
+      changed_when: false
+      run_once: true
+
+    - name: Verify passwordless SSH to load balancer
+      command: >-
+        ssh -o BatchMode=yes -o ConnectTimeout=8
+        {{ lb_ssh_user }}@{{ lb_host }} "echo ssh_ok"
+      register: lb_ssh_check
+      changed_when: false
+      failed_when: false
+      become: false
+      delegate_to: localhost
+      run_once: true
+
+    - name: Fail if SSH to LB is unavailable
+      fail:
+        msg: "Passwordless SSH to {{ lb_ssh_user }}@{{ lb_host }} required. Run: ssh-copy-id {{ lb_ssh_user }}@{{ lb_host }}"
+      when: lb_ssh_check.rc != 0
+      become: false
+      delegate_to: localhost
+      run_once: true
+
+    - name: Install loadbalancer pip requirements
+      command: "{{ lb_project_dir }}/.venv/bin/pip install -r {{ lb_project_dir }}/loadbalancer/requirements.txt --no-input --index-url https://pypi.org/simple"
+      become: false
+      delegate_to: lb_delegate
+
+    - name: Override MQTT_BROKER in LB .env
+      blockinfile:
+        path: "{{ lb_project_dir }}/.env"
+        marker: "# {mark} ANSIBLE MANAGED MQTT"
+        block: |
+          export MQTT_BROKER={{ mqtt_broker }}
+          export MQTT_PORT={{ mqtt_port | default('1884') }}
+          export MQTT_USERNAME=peercompute
+          export MQTT_PASSWORD=peercompute
+        create: true
+        owner: "{{ lb_ssh_user }}"
+        group: "{{ lb_ssh_user }}"
+        mode: "0600"
+      become: false
+      delegate_to: lb_delegate
+
+    - name: Stop any stale LB process
+      shell: "pkill -f 'uvicorn loadbalancer_with_logging:app' || true"
+      failed_when: false
+      changed_when: false
+      become: false
+      delegate_to: lb_delegate
+
+    - name: Start Load Balancer
+      shell: |
+        source "{{ lb_project_dir }}/.env"
+        nohup {{ lb_project_dir }}/.venv/bin/uvicorn loadbalancer_with_logging:app \
+          --host 0.0.0.0 --port 9001 > /tmp/lb.log 2>&1 &
+      args:
+        executable: /bin/bash
+        chdir: "{{ lb_project_dir }}/loadbalancer"
+      async: 10
+      poll: 0
+      become: false
+      delegate_to: lb_delegate
+
+    - name: Wait for LB port 9001
+      wait_for:
+        host: 127.0.0.1
+        port: 9001
+        delay: 1
+        timeout: 60
+      become: false
+      delegate_to: lb_delegate
+
+    - name: Wait for LB health
+      uri:
+        url: "http://127.0.0.1:9001/status"
+        return_content: yes
+        use_proxy: false
+      register: lb_health
+      retries: 10
+      delay: 3
+      until: lb_health.status == 200
+      become: false
+      delegate_to: lb_delegate
+
+# ============================================================================
+# ── ARM 1: RR ────────────────────────────────────────────────────────────────
+# ============================================================================
+
+- name: "[RR] Prune Docker image cache on providers"
+  hosts: managed
+  become: yes
+  tags: experiment
+  tasks:
+    - name: Prune all Docker images (cold start)
+      shell: docker image prune --all --force
+      register: docker_prune
+    - name: Report prune
+      debug:
+        msg: "{{ inventory_hostname }}: {{ docker_prune.stdout_lines[-1] | default('done') }}"
+
+- name: "[RR] Stop providers and expire stale DB jobs"
+  hosts: managed
+  become: yes
+  tags: experiment
+  tasks:
+    - name: Stop running provider
+      shell: "pkill -f 'provider1.py' || true"
+      failed_when: false
+      changed_when: false
+
+- name: "[RR] Start Scheduler"
+  hosts: control
+  become: yes
+  tags: experiment
+  vars_files:
+    - secrets.yml
+  vars:
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+    mqtt_broker: "utorda1.dashlab.in"
+    mqtt_port: "1884"
+    placement_mode: "rr"
+    prediction_strategy: "cpi"
+  tasks:
+    - import_tasks: tasks/start_scheduler.yml
+
+- name: "[RR] Expire all stale jobs before arm starts"
+  hosts: localhost
+  connection: local
+  become: no
+  tags: experiment
+  vars:
+    scheduler_url: "http://{{ groups['control'] | first }}:8000"
+  tasks:
+    - name: Expire all pending jobs from any previous arm
+      uri:
+        url: "{{ scheduler_url }}/providers/timeout_stale_jobs/"
+        method: POST
+        body_format: json
+        body:
+          since: "1970-01-01T00:00:00Z"
+          no_result_threshold_seconds: 1
+          no_ack_threshold_seconds: 1
+        return_content: yes
+        use_proxy: false
+        status_code: 200
+        timeout: 300
+      failed_when: false
+      delegate_to: localhost
+
+- name: "[RR] Start Providers"
+  hosts: managed
+  become: yes
+  tags: experiment
+  vars_files:
+    - secrets.yml
+  vars:
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+    mqtt_broker: "utorda1.dashlab.in"
+    mqtt_port: "1884"
+  tasks:
+    - import_tasks: tasks/start_providers.yml
+
+- name: "[RR] Run Experiment"
+  hosts: localhost
+  connection: local
+  become: no
+  tags: experiment
+  vars_files:
+    - secrets.yml
+  vars:
+    local_user: "{{ lookup('env', 'USER') }}"
+    local_project_dir: "/home/{{ local_user }}/Serverless_Scheduler"
+    testbed_dir: "{{ local_project_dir }}/testbed"
+    lb_url: "http://colva2.dashlab.in:9001"
+    scenario: "steady_load"
+    seed: 42
+    replay_file: ""
+    repetition: 1
+    run_label: "rr"
+    placement_mode: "rr"
+    prediction_strategy: "cpi"
+    no_result_threshold_seconds: 300
+    no_ack_threshold_seconds: 120
+  tasks:
+    - import_tasks: tasks/run_experiment.yml
+
+- name: "[RR] Fetch Logs"
+  hosts: control
+  become: no
+  gather_facts: no
+  tags: experiment
+  vars_files:
+    - secrets.yml
+  vars:
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+    local_log_dir: "{{ playbook_dir }}/../scheduler_logs"
+  tasks:
+    - import_tasks: tasks/fetch_logs.yml
+
+# ============================================================================
+# ── ARM 2: ILP+CPI ───────────────────────────────────────────────────────────
+# ============================================================================
+
+- name: "[ILP+CPI] Prune Docker image cache on providers"
+  hosts: managed
+  become: yes
+  tags: experiment
+  tasks:
+    - name: Prune all Docker images (cold start)
+      shell: docker image prune --all --force
+      register: docker_prune
+    - name: Report prune
+      debug:
+        msg: "{{ inventory_hostname }}: {{ docker_prune.stdout_lines[-1] | default('done') }}"
+
+- name: "[ILP+CPI] Stop providers"
+  hosts: managed
+  become: yes
+  tags: experiment
+  tasks:
+    - name: Stop running provider
+      shell: "pkill -f 'provider1.py' || true"
+      failed_when: false
+      changed_when: false
+
+- name: "[ILP+CPI] Start Scheduler"
+  hosts: control
+  become: yes
+  tags: experiment
+  vars_files:
+    - secrets.yml
+  vars:
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+    mqtt_broker: "utorda1.dashlab.in"
+    mqtt_port: "1884"
+    placement_mode: "ilp"
+    prediction_strategy: "cpi"
+  tasks:
+    - import_tasks: tasks/start_scheduler.yml
+
+- name: "[ILP+CPI] Expire all stale jobs"
+  hosts: localhost
+  connection: local
+  become: no
+  tags: experiment
+  vars:
+    scheduler_url: "http://{{ groups['control'] | first }}:8000"
+  tasks:
+    - name: Expire all pending jobs
+      uri:
+        url: "{{ scheduler_url }}/providers/timeout_stale_jobs/"
+        method: POST
+        body_format: json
+        body:
+          since: "1970-01-01T00:00:00Z"
+          no_result_threshold_seconds: 1
+          no_ack_threshold_seconds: 1
+        return_content: yes
+        use_proxy: false
+        status_code: 200
+        timeout: 300
+      failed_when: false
+      delegate_to: localhost
+
+- name: "[ILP+CPI] Start Providers"
+  hosts: managed
+  become: yes
+  tags: experiment
+  vars_files:
+    - secrets.yml
+  vars:
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+    mqtt_broker: "utorda1.dashlab.in"
+    mqtt_port: "1884"
+  tasks:
+    - import_tasks: tasks/start_providers.yml
+
+- name: "[ILP+CPI] Run Experiment"
+  hosts: localhost
+  connection: local
+  become: no
+  tags: experiment
+  vars_files:
+    - secrets.yml
+  vars:
+    local_user: "{{ lookup('env', 'USER') }}"
+    local_project_dir: "/home/{{ local_user }}/Serverless_Scheduler"
+    testbed_dir: "{{ local_project_dir }}/testbed"
+    lb_url: "http://colva2.dashlab.in:9001"
+    scenario: "steady_load"
+    seed: 42
+    replay_file: ""
+    repetition: 1
+    run_label: "ilp_cpi"
+    placement_mode: "ilp"
+    prediction_strategy: "cpi"
+    no_result_threshold_seconds: 300
+    no_ack_threshold_seconds: 120
+  tasks:
+    - import_tasks: tasks/run_experiment.yml
+
+- name: "[ILP+CPI] Fetch Logs"
+  hosts: control
+  become: no
+  gather_facts: no
+  tags: experiment
+  vars_files:
+    - secrets.yml
+  vars:
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+    local_log_dir: "{{ playbook_dir }}/../scheduler_logs"
+  tasks:
+    - import_tasks: tasks/fetch_logs.yml
+
+# ============================================================================
+# ── ARM 3: ILP+Scaling ───────────────────────────────────────────────────────
+# ============================================================================
+
+- name: "[ILP+Scaling] Prune Docker image cache on providers"
+  hosts: managed
+  become: yes
+  tags: experiment
+  tasks:
+    - name: Prune all Docker images (cold start)
+      shell: docker image prune --all --force
+      register: docker_prune
+    - name: Report prune
+      debug:
+        msg: "{{ inventory_hostname }}: {{ docker_prune.stdout_lines[-1] | default('done') }}"
+
+- name: "[ILP+Scaling] Stop providers"
+  hosts: managed
+  become: yes
+  tags: experiment
+  tasks:
+    - name: Stop running provider
+      shell: "pkill -f 'provider1.py' || true"
+      failed_when: false
+      changed_when: false
+
+- name: "[ILP+Scaling] Start Scheduler"
+  hosts: control
+  become: yes
+  tags: experiment
+  vars_files:
+    - secrets.yml
+  vars:
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+    mqtt_broker: "utorda1.dashlab.in"
+    mqtt_port: "1884"
+    placement_mode: "ilp"
+    prediction_strategy: "scaling"
+  tasks:
+    - import_tasks: tasks/start_scheduler.yml
+
+- name: "[ILP+Scaling] Expire all stale jobs"
+  hosts: localhost
+  connection: local
+  become: no
+  tags: experiment
+  vars:
+    scheduler_url: "http://{{ groups['control'] | first }}:8000"
+  tasks:
+    - name: Expire all pending jobs
+      uri:
+        url: "{{ scheduler_url }}/providers/timeout_stale_jobs/"
+        method: POST
+        body_format: json
+        body:
+          since: "1970-01-01T00:00:00Z"
+          no_result_threshold_seconds: 1
+          no_ack_threshold_seconds: 1
+        return_content: yes
+        use_proxy: false
+        status_code: 200
+        timeout: 300
+      failed_when: false
+      delegate_to: localhost
+
+- name: "[ILP+Scaling] Start Providers"
+  hosts: managed
+  become: yes
+  tags: experiment
+  vars_files:
+    - secrets.yml
+  vars:
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+    mqtt_broker: "utorda1.dashlab.in"
+    mqtt_port: "1884"
+  tasks:
+    - import_tasks: tasks/start_providers.yml
+
+- name: "[ILP+Scaling] Run Experiment"
+  hosts: localhost
+  connection: local
+  become: no
+  tags: experiment
+  vars_files:
+    - secrets.yml
+  vars:
+    local_user: "{{ lookup('env', 'USER') }}"
+    local_project_dir: "/home/{{ local_user }}/Serverless_Scheduler"
+    testbed_dir: "{{ local_project_dir }}/testbed"
+    lb_url: "http://colva2.dashlab.in:9001"
+    scenario: "steady_load"
+    seed: 42
+    replay_file: ""
+    repetition: 1
+    run_label: "ilp_scaling"
+    placement_mode: "ilp"
+    prediction_strategy: "scaling"
+    no_result_threshold_seconds: 300
+    no_ack_threshold_seconds: 120
+  tasks:
+    - import_tasks: tasks/run_experiment.yml
+
+- name: "[ILP+Scaling] Fetch Logs"
+  hosts: control
+  become: no
+  gather_facts: no
+  tags: experiment
+  vars_files:
+    - secrets.yml
+  vars:
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+    local_log_dir: "{{ playbook_dir }}/../scheduler_logs"
+  tasks:
+    - import_tasks: tasks/fetch_logs.yml
+
+# ============================================================================
+# ── ARM 4: Belady ────────────────────────────────────────────────────────────
+# ============================================================================
+
+- name: "[Belady] Prune Docker image cache on providers"
+  hosts: managed
+  become: yes
+  tags: experiment
+  tasks:
+    - name: Prune all Docker images (cold start)
+      shell: docker image prune --all --force
+      register: docker_prune
+    - name: Report prune
+      debug:
+        msg: "{{ inventory_hostname }}: {{ docker_prune.stdout_lines[-1] | default('done') }}"
+
+- name: "[Belady] Stop providers"
+  hosts: managed
+  become: yes
+  tags: experiment
+  tasks:
+    - name: Stop running provider
+      shell: "pkill -f 'provider1.py' || true"
+      failed_when: false
+      changed_when: false
+
+- name: "[Belady] Start Scheduler"
+  hosts: control
+  become: yes
+  tags: experiment
+  vars_files:
+    - secrets.yml
+  vars:
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+    mqtt_broker: "utorda1.dashlab.in"
+    mqtt_port: "1884"
+    placement_mode: "belady"
+    prediction_strategy: "cpi"
+  tasks:
+    - import_tasks: tasks/start_scheduler.yml
+
+- name: "[Belady] Expire all stale jobs"
+  hosts: localhost
+  connection: local
+  become: no
+  tags: experiment
+  vars:
+    scheduler_url: "http://{{ groups['control'] | first }}:8000"
+  tasks:
+    - name: Expire all pending jobs
+      uri:
+        url: "{{ scheduler_url }}/providers/timeout_stale_jobs/"
+        method: POST
+        body_format: json
+        body:
+          since: "1970-01-01T00:00:00Z"
+          no_result_threshold_seconds: 1
+          no_ack_threshold_seconds: 1
+        return_content: yes
+        use_proxy: false
+        status_code: 200
+        timeout: 300
+      failed_when: false
+      delegate_to: localhost
+
+- name: "[Belady] Start Providers"
+  hosts: managed
+  become: yes
+  tags: experiment
+  vars_files:
+    - secrets.yml
+  vars:
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+    mqtt_broker: "utorda1.dashlab.in"
+    mqtt_port: "1884"
+  tasks:
+    - import_tasks: tasks/start_providers.yml
+
+- name: "[Belady] Run Experiment"
+  hosts: localhost
+  connection: local
+  become: no
+  tags: experiment
+  vars_files:
+    - secrets.yml
+  vars:
+    local_user: "{{ lookup('env', 'USER') }}"
+    local_project_dir: "/home/{{ local_user }}/Serverless_Scheduler"
+    testbed_dir: "{{ local_project_dir }}/testbed"
+    lb_url: "http://colva2.dashlab.in:9001"
+    scenario: "steady_load"
+    seed: 42
+    replay_file: ""
+    repetition: 1
+    run_label: "belady"
+    placement_mode: "belady"
+    prediction_strategy: "cpi"
+    no_result_threshold_seconds: 300
+    no_ack_threshold_seconds: 120
+  tasks:
+    - import_tasks: tasks/run_experiment.yml
+
+- name: "[Belady] Fetch Logs"
+  hosts: control
+  become: no
+  gather_facts: no
+  tags: experiment
+  vars_files:
+    - secrets.yml
+  vars:
+    project_dir: "/home/{{ ansible_user }}/deploy/Serverless_Scheduler"
+    local_log_dir: "{{ playbook_dir }}/../scheduler_logs"
+  tasks:
+    - import_tasks: tasks/fetch_logs.yml

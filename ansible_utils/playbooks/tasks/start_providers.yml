@@ -1,0 +1,83 @@
+# Shared task list: configure and restart provider scripts.
+# Caller must set vars: project_dir, mqtt_broker, mqtt_port
+
+- name: Ensure Docker is running
+  service:
+    name: docker
+    state: started
+    enabled: yes
+
+- name: Discover scheduler on control group
+  include_tasks: tasks/resolve_scheduler.yml
+  when: scheduler_host is not defined and scheduler_url is not defined
+
+- name: Default scheduler_url from scheduler_host
+  set_fact:
+    scheduler_url: "http://{{ scheduler_host }}:8000"
+  when: scheduler_host is defined and scheduler_url is not defined
+
+- name: Read provider user ID from file
+  slurp:
+    src: "{{ project_dir }}/provider_user_id.txt"
+  register: slurp_user_id
+
+- name: Set provider_user_id fact
+  set_fact:
+    provider_user_id: "{{ slurp_user_id.content | b64decode | trim }}"
+
+- name: Override MQTT_BROKER in project .env
+  blockinfile:
+    path: "{{ project_dir }}/.env"
+    marker: "# {mark} ANSIBLE MANAGED MQTT"
+    block: |
+      export MQTT_BROKER={{ mqtt_broker }}
+      export MQTT_PORT={{ mqtt_port | default('1884') }}
+      export MQTT_USERNAME=peercompute
+      export MQTT_PASSWORD=peercompute
+    create: true
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0600"
+  become_user: "{{ ansible_user }}"
+  when: mqtt_broker != ""
+
+- name: Ensure provider TrainingData directory exists
+  file:
+    path: "{{ project_dir }}/TrainingData"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0755"
+
+- name: Rotate provider log (truncate before each run)
+  shell: truncate -s 0 {{ project_dir }}/provider.log
+  args:
+    executable: /bin/bash
+  become_user: "{{ ansible_user }}"
+  failed_when: false
+
+- name: Overlay provider1.py fix
+  copy:
+    src: "{{ playbook_dir }}/../../provider/provider1.py"
+    dest: "{{ project_dir }}/provider/provider1.py"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0644"
+  become: true
+
+- name: Overlay s3_utils.py fix
+  copy:
+    src: "{{ playbook_dir }}/../../invocations/s3_utils.py"
+    dest: "{{ project_dir }}/invocations/s3_utils.py"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0644"
+  become: true
+
+- name: Start provider script
+  shell: |
+    nohup {{ project_dir }}/.venv/bin/python {{ project_dir }}/provider/provider1.py {{ provider_user_id }} > {{ project_dir }}/provider.log 2>&1 &
+  args:
+    executable: /bin/bash
+  async: 10
+  poll: 0
