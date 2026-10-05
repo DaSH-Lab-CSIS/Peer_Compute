@@ -32,6 +32,9 @@
 # ─── Extra vars reference ───────────────────────────────────────────────────
 #   placement_mode        ilp | rr | belady | oracle | drl  (default: ilp)
 #   prediction_strategy   cpi | scaling | history          (default: cpi)
+#   force_model           true | false — cold-start condition: ignore execution history
+#                         and price every (provider, service) pair with the prediction
+#                         strategy (PREDICTION_FORCE_MODEL). Recorded in the manifest.
 #   run_label             free-text tag embedded in manifest (default: "")
 #   repetition            integer repetition index 1-5     (default: 1)
 #   seed                  integer random seed              (default: 42)
@@ -379,7 +382,7 @@
       shell: |
         pid=$(pgrep -f '[g]unicorn.*scheduler.wsgi' | head -1)
         [ -n "$pid" ] || { echo "no gunicorn process" >&2; exit 1; }
-        tr '\0' '\n' < /proc/$pid/environ | grep -E '^(SCHEDULER_PLACEMENT_MODE|RUNTIME_PREDICTION_STRATEGY)=' || true
+        tr '\0' '\n' < /proc/$pid/environ | grep -E '^(SCHEDULER_PLACEMENT_MODE|RUNTIME_PREDICTION_STRATEGY|PREDICTION_FORCE_MODEL)=' || true
       args:
         executable: /bin/bash
       register: scheduler_live_env
@@ -390,14 +393,17 @@
         that:
           - ("SCHEDULER_PLACEMENT_MODE=" ~ placement_mode) in scheduler_live_env.stdout_lines
           - ("RUNTIME_PREDICTION_STRATEGY=" ~ prediction_strategy) in scheduler_live_env.stdout_lines
+          - ("PREDICTION_FORCE_MODEL=" ~ (force_model | default(false) | bool | lower)) in scheduler_live_env.stdout_lines
         fail_msg: >-
           Scheduler on {{ inventory_hostname }} is running with
           {{ scheduler_live_env.stdout_lines }} but this run requested
-          placement_mode={{ placement_mode }} prediction_strategy={{ prediction_strategy }}.
+          placement_mode={{ placement_mode }} prediction_strategy={{ prediction_strategy }}
+          force_model={{ force_model | default(false) | bool | lower }}.
           Results would be mislabelled — aborting.
         success_msg: >-
           Scheduler env verified: placement_mode={{ placement_mode }}
           prediction_strategy={{ prediction_strategy }}
+          force_model={{ force_model | default(false) | bool | lower }}
 
     - name: Reset provider delay and invocation counters before experiment
       uri:
