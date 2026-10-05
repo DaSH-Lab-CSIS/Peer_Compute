@@ -160,6 +160,34 @@ class Job(models.Model):
         if not self.start_time:
             self.start_time = datetime.now(timezone(TIME_ZONE))
         super().save(*args, **kwargs)
+
+
+class PairRuntimeStats(models.Model):
+    """EMA of observed run_time per (provider, service) pair.
+
+    Implements docs/runtime_prediction.tex sec. "Historical Data: Exponential
+    Moving Average": updated on every successful job completion, O(1) storage
+    per pair, and blended with the cold-start prediction by the scaling
+    strategy (n / (n + kappa)). Derived data: it can be rebuilt from Job rows,
+    and experiments reset it to start each cold-start run from n = 0.
+    """
+
+    provider = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        limit_choices_to={"is_provider": True},
+        related_name="pair_runtime_stats",
+    )
+    service = models.ForeignKey(Services, on_delete=models.CASCADE, related_name="pair_runtime_stats")
+    ema_runtime_ms = models.FloatField()
+    observation_count = models.PositiveIntegerField(default=0)
+    last_runtime_ms = models.IntegerField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["provider", "service"], name="pair_runtime_stats_unique_pair"),
+        ]
     # reputation_score = models.IntegerField(default=0)
 
     # delay = models.JSONField(default=dict, blank=True)

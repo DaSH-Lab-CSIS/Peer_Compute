@@ -135,15 +135,53 @@
       fail:
         msg: "Scheduler did not start on 127.0.0.1:8000. See diagnostics above."
 
+- name: Read placement/prediction env from the running scheduler process
+  shell: |
+    pid=$(pgrep -f '[g]unicorn.*scheduler.wsgi' | head -1)
+    [ -n "$pid" ] || { echo "no gunicorn process" >&2; exit 1; }
+    tr '\0' '\n' < /proc/$pid/environ | grep -E '^(SCHEDULER_PLACEMENT_MODE|RUNTIME_PREDICTION_STRATEGY|PREDICTION_FORCE_MODEL)=' || true
+  args:
+    executable: /bin/bash
+  register: scheduler_live_env
+  changed_when: false
+
+- name: Abort if the scheduler is not running the requested arm
+  assert:
+    that:
+      - ("SCHEDULER_PLACEMENT_MODE=" ~ placement_mode) in scheduler_live_env.stdout_lines
+      - ("RUNTIME_PREDICTION_STRATEGY=" ~ prediction_strategy) in scheduler_live_env.stdout_lines
+      - ("PREDICTION_FORCE_MODEL=" ~ (force_model | default(false) | bool | lower)) in scheduler_live_env.stdout_lines
+    fail_msg: >-
+      Scheduler on {{ inventory_hostname }} is running with
+      {{ scheduler_live_env.stdout_lines }} but this run requested
+      placement_mode={{ placement_mode }} prediction_strategy={{ prediction_strategy }}
+      force_model={{ force_model | default(false) | bool | lower }}.
+      Results would be mislabelled — aborting.
+
 - name: Reset provider delay and invocation counters
   uri:
     url: "http://127.0.0.1:8000/providers/reset_provider_state/"
     method: POST
+    body_format: json
+    body:
+      # Cold-start runs must start every (provider, service) EMA at n = 0.
+      reset_ema: "{{ reset_ema | default(force_model | default(false)) | bool }}"
     return_content: yes
     use_proxy: false
     status_code: 200
   register: reset_result
   failed_when: false
+
+- name: Abort if a requested EMA reset did not happen
+  assert:
+    that:
+      - reset_result.status | default(0) == 200
+      - (reset_result.json | default({})).ema_rows_deleted is not none
+    fail_msg: >-
+      reset_ema was requested but the scheduler did not clear PairRuntimeStats
+      ({{ reset_result.json | default(reset_result.msg | default('no response')) }}).
+      The cold-start run would start warm — aborting.
+  when: reset_ema | default(force_model | default(false)) | bool
 
 - name: Confirm active configuration
   debug:

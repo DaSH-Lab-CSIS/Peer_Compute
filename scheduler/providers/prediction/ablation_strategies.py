@@ -10,6 +10,9 @@ so the evaluation can attribute placement quality to it (run with
   machine scaling factor fixed at ``sigma = 1``. Identical to ``scaling`` in every
   other term (pull-time model, EMA blend), so ``ref`` vs ``scaling`` isolates the
   value of the machine benchmarks.
+* ``scaling_static`` -- ``scaling`` without the EMA blend: always the cold-start
+  prediction, never learns from completed jobs. ``scaling_static`` vs
+  ``scaling`` isolates the value of adaptive blending.
 """
 
 from __future__ import annotations
@@ -45,3 +48,13 @@ class ReferenceOnlyStrategy(ScalingFactorStrategy):
         provider: PredictionInput,
     ) -> Tuple[float, float, float, float]:
         return (1.0, 1.0, 1.0, 1.0)
+
+
+class StaticScalingStrategy(ScalingFactorStrategy):
+    """``scaling`` with the EMA blend disabled (pure t_cold + pull time)."""
+
+    name = "scaling_static"
+
+    @staticmethod
+    def _blend(t_cold: float, ema: Optional[float], n: int, kappa: float) -> float:
+        return t_cold

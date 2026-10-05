@@ -32,13 +32,15 @@
 #
 # ─── Extra vars reference ───────────────────────────────────────────────────
 #   placement_mode        ilp | rr | belady | oracle | drl  (default: ilp)
-#   prediction_strategy   scaling | ref | uniform | cpi    (default: cpi)
-#                         ref / uniform are cold-start ablations (see
+#   prediction_strategy   scaling | scaling_static | ref | uniform | cpi  (default: cpi)
+#                         scaling_static / ref / uniform are cold-start ablations (see
 #                         scheduler/providers/prediction/ablation_strategies.py);
 #                         cpi has no benchmark inputs in the DB yet.
 #   force_model           true | false — cold-start condition: ignore execution history
 #                         and price every (provider, service) pair with the prediction
 #                         strategy (PREDICTION_FORCE_MODEL). Recorded in the manifest.
+#   reset_ema             true | false — clear every (provider, service) EMA before the
+#                         run (default: same as force_model). Recorded in the manifest.
 #   run_label             free-text tag embedded in manifest (default: "")
 #   repetition            integer repetition index 1-5     (default: 1)
 #   seed                  integer random seed              (default: 42)
@@ -413,11 +415,26 @@
       uri:
         url: "http://127.0.0.1:8000/providers/reset_provider_state/"
         method: POST
+        body_format: json
+        body:
+          # Cold-start runs must start every (provider, service) EMA at n = 0.
+          reset_ema: "{{ reset_ema | default(force_model | default(false)) | bool }}"
         return_content: yes
         use_proxy: false
         status_code: 200
       register: reset_result
       failed_when: false
+
+    - name: Abort if a requested EMA reset did not happen
+      assert:
+        that:
+          - reset_result.status | default(0) == 200
+          - (reset_result.json | default({})).ema_rows_deleted is not none
+        fail_msg: >-
+          reset_ema was requested but the scheduler did not clear PairRuntimeStats
+          ({{ reset_result.json | default(reset_result.msg | default('no response')) }}).
+          The cold-start run would start warm — aborting.
+      when: reset_ema | default(force_model | default(false)) | bool
 
     - name: Print provider state reset result
       debug:
@@ -811,6 +828,7 @@
           "placement_mode": "{{ placement_mode }}",
           "prediction_strategy": "{{ prediction_strategy }}",
           "force_model": {{ force_model | default(false) | bool }},
+          "reset_ema": {{ reset_ema | default(force_model | default(false)) | bool }},
           "run_label": "{{ run_label }}",
           "repetition": {{ repetition }},
           "scenario": "{{ scenario }}",

@@ -117,6 +117,20 @@ class ScalingFactorStrategy(PredictionStrategy):
                 runtimes[svc.service_id] = None
         return PredictionOutput(runtimes_ms=runtimes)
 
+    def cold_start_ms(
+        self, provider: PredictionInput, svc: ServicePredInput
+    ) -> Optional[float]:
+        """t_cold(f, m) = t_ref(f) * sigma(f, m), or None without t_ref.
+
+        Used to initialise the EMA (EMA_0 = t_cold). Subclasses that change
+        sigma (e.g. ``ref``) get a matching prior.
+        """
+        t_ref = _as_float(svc.ref_runtime_ms)
+        if t_ref is None or t_ref <= 0:
+            return None
+        sigma = self._sigma(self._resolve_weights(svc), self._resolve_ratios(provider))
+        return self._cold_start_ms(t_ref, sigma)
+
     def _predict_one(
         self, provider: PredictionInput, svc: ServicePredInput
     ) -> Optional[int]:

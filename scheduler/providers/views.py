@@ -39,6 +39,8 @@ from providers.prediction import (
 from providers.prediction.cpi_strategy import CPIStrategy as _CPIStrategy
 from providers.prediction.scaling_strategy import ScalingFactorStrategy as _ScalingFactorStrategy
 from providers.prediction.ablation_strategies import ReferenceOnlyStrategy as _ReferenceOnlyStrategy
+from providers.prediction.ema import ema_update as _ema_update
+from providers.prediction.registry import get_strategy as _get_prediction_strategy
 
 # Module-level shadow strategy instances (stateless, thread-safe)
 _SHADOW_STRATEGIES = {
@@ -1285,24 +1287,40 @@ def reset_provider_state(request):
     per-provider delay estimates and invocation counters don't carry over
     stale state from a previous run, which would skew ILP assignment decisions.
 
-    POST (no body required).
+    POST, optional JSON body ``{"reset_ema": true}`` to also clear every
+    (provider, service) EMA (PairRuntimeStats) so a cold-start run begins with
+    n = 0 for all pairs. EMA rows are derived data (rebuildable from Job rows).
 
     Returns:
-        { "reset": <int n_providers>, "providers": [ user_id, ... ] }
+        { "reset": <int n_providers>, "providers": [ user_id, ... ],
+          "ema_rows_deleted": <int or null> }
     """
+    from providers.models import PairRuntimeStats
+
     if request.method != "POST":
         return JsonResponse({"error": "Only POST is supported"}, status=405)
 
+    try:
+        body = json.loads(request.body or b"{}")
+    except (ValueError, TypeError):
+        return JsonResponse({"error": "Body must be JSON"}, status=400)
+    # Ansible may template the flag as the string "True"; accept both forms.
+    reset_ema = str(body.get("reset_ema", "")).strip().lower() == "true"
+
     providers = User.objects.filter(is_provider=True, active=True)
     reset_ids = []
+    ema_deleted = None
     with transaction.atomic():
         for p in providers.select_for_update():
             p.reset_delay()
             p.function_invocations = {}
             p.save(update_fields=["delay", "function_invocations"])
             reset_ids.append(str(p.user_id))
+        if reset_ema:
+            ema_deleted, _ = PairRuntimeStats.objects.all().delete()
 
-    return JsonResponse({"reset": len(reset_ids), "providers": reset_ids})
+    return JsonResponse({"reset": len(reset_ids), "providers": reset_ids,
+                         "ema_rows_deleted": ema_deleted})
 
 
 def pending_jobs_count(request):
@@ -1730,6 +1748,56 @@ def request_handler(data, service, start_time, run_async=False):
 
 
 
+def update_pair_ema(job):
+    """Fold a completed job's run_time into its (provider, service) EMA.
+
+    docs/runtime_prediction.tex, "EMA Update": EMA_0 = t_cold, then
+    EMA_n = alpha * x_n + (1 - alpha) * EMA_{n-1}. Only successful executions
+    (run_time > 0) count. t_cold comes from the active strategy when it is a
+    scaling variant, so each ablation arm starts from its own prior.
+    """
+    from django.db import IntegrityError
+    from providers.models import PairRuntimeStats
+
+    if not job.service_id or not job.run_time or job.run_time <= 0:
+        return None
+    alpha = _ScalingFactorStrategy.ALPHA
+
+    for _attempt in range(2):  # second pass only if a concurrent insert won the race
+        try:
+            with transaction.atomic():
+                stats = (
+                    PairRuntimeStats.objects.select_for_update()
+                    .filter(provider_id=job.provider_id, service_id=job.service_id)
+                    .first()
+                )
+                if stats is not None:
+                    stats.ema_runtime_ms = _ema_update(stats.ema_runtime_ms, job.run_time, alpha)
+                    stats.observation_count += 1
+                    stats.last_runtime_ms = job.run_time
+                    stats.save(update_fields=["ema_runtime_ms", "observation_count",
+                                              "last_runtime_ms", "updated_at"])
+                    return stats
+
+                strategy = _get_prediction_strategy()
+                if not hasattr(strategy, "cold_start_ms"):
+                    strategy = _SHADOW_STRATEGIES["scaling"]
+                pred_input = _build_prediction_input(
+                    job.provider, [(job.service_id, job.service)], ema_by_pair={}
+                )
+                prior = strategy.cold_start_ms(pred_input, pred_input.services[0])
+                return PairRuntimeStats.objects.create(
+                    provider_id=job.provider_id,
+                    service_id=job.service_id,
+                    ema_runtime_ms=_ema_update(prior, job.run_time, alpha),
+                    observation_count=1,
+                    last_runtime_ms=job.run_time,
+                )
+        except IntegrityError:
+            continue
+    return None
+
+
 def finish_job(data):
     print("=== JOB COMPLETION PROCESSING ===")
     print(f"Inside finish_job with data: {data}")
@@ -1792,6 +1860,16 @@ def finish_job(data):
         
         job.save()
         print(f"Job {id} successfully updated and saved to database")
+
+        # Prediction engine: update the (provider, service) EMA. Never let this
+        # block job completion.
+        try:
+            stats = update_pair_ema(job)
+            if stats is not None:
+                print(f"[ema] provider={job.provider_id} service={job.service_id} "
+                      f"n={stats.observation_count} ema={stats.ema_runtime_ms:.0f}ms")
+        except Exception as ema_error:
+            print(f"ERROR: EMA update failed for job {id}: {ema_error}")
         
         # Update cache state after job completion (inside try block to ensure job is saved first)
         try:
@@ -2121,14 +2199,31 @@ def get_predicted_runtimes_cache_pass(provider, services, predicted_runtimes,
     }
 
 
-def _build_prediction_input(provider, services_needing_prediction, service_rows_by_id=None):
+def _load_pair_ema(provider_ids, service_ids):
+    """Return {(provider_id, service_id): (ema_runtime_ms, observation_count)} in one query."""
+    from providers.models import PairRuntimeStats
+
+    if not provider_ids or not service_ids:
+        return {}
+    rows = PairRuntimeStats.objects.filter(
+        provider_id__in=list(provider_ids), service_id__in=list(service_ids)
+    ).values_list("provider_id", "service_id", "ema_runtime_ms", "observation_count")
+    return {(p, s): (ema, n) for p, s, ema, n in rows}
+
+
+def _build_prediction_input(provider, services_needing_prediction, service_rows_by_id=None,
+                            ema_by_pair=None):
     """Build a PredictionInput for one provider from already-loaded DB rows.
 
     ``services_needing_prediction`` is a list of ``(service_id, service)`` tuples
     as produced by :func:`get_predicted_runtimes_db_pass`. If ``service_rows_by_id``
-    is not supplied the rows are fetched in one query by id.
+    is not supplied the rows are fetched in one query by id. ``ema_by_pair``
+    ({(provider_id, service_id): (ema_ms, n)}) is fetched for this provider when
+    not supplied; the scaling strategy blends it with the cold-start prediction.
     """
     service_ids = [sid for sid, _ in services_needing_prediction if sid is not None]
+    if ema_by_pair is None:
+        ema_by_pair = _load_pair_ema([provider.id], service_ids)
     if service_rows_by_id is None:
         service_rows_by_id = {
             s.id: s
@@ -2165,6 +2260,8 @@ def _build_prediction_input(provider, services_needing_prediction, service_rows_
                 w_disk=getattr(row, "w_disk", None),
                 w_net=getattr(row, "w_net", None),
                 image_size_mb=getattr(row, "image_size_mb", None),
+                ema_runtime_ms=ema_by_pair.get((provider.id, sid), (None, 0))[0],
+                observation_count=ema_by_pair.get((provider.id, sid), (None, 0))[1],
             )
         )
     return PredictionInput(
@@ -2365,8 +2462,11 @@ def build_cost_matrix(providers, services):
                     "image_size_mb",
                 )
             }
+    ema_by_pair = _load_pair_ema(
+        {p.id for p in provider_services_map}, set(service_rows_by_id)
+    ) if provider_services_map else {}
     _prof("build_cost_matrix-prefetch_service_rows", t_prefetch,
-          ids_fetched=len(service_rows_by_id))
+          ids_fetched=len(service_rows_by_id), ema_pairs=len(ema_by_pair))
 
     # Run the strategy once per provider using the pre-fetched rows
     t_predict_total = time.time()
@@ -2381,7 +2481,7 @@ def build_cost_matrix(providers, services):
         predicted_runtimes = per_provider_runtimes[provider]
         if provider in provider_services_map:
             pred_input = _build_prediction_input(
-                provider, provider_services_map[provider], service_rows_by_id
+                provider, provider_services_map[provider], service_rows_by_id, ema_by_pair
             )
             t_strat = time.time()
             try:
