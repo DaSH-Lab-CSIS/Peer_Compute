@@ -10,6 +10,7 @@ from __future__ import annotations
 from threading import Lock
 from typing import Dict, Optional, Type
 
+from .ablation_strategies import ReferenceOnlyStrategy, UniformStrategy
 from .base import PredictionStrategy
 from .cpi_strategy import CPIStrategy
 from .scaling_strategy import ScalingFactorStrategy
@@ -17,6 +18,9 @@ from .scaling_strategy import ScalingFactorStrategy
 _STRATEGIES: Dict[str, Type[PredictionStrategy]] = {
     "cpi": CPIStrategy,
     "scaling": ScalingFactorStrategy,
+    # Cold-start ablations (see ablation_strategies.py).
+    "uniform": UniformStrategy,
+    "ref": ReferenceOnlyStrategy,
 }
 
 _instance_lock = Lock()

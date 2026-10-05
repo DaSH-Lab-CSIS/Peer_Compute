@@ -26,12 +26,16 @@
 #         seed=42 replay_file=testbed/results/requests/steady_load_<RUN_ID>_requests.json \
 #         run_label=ilp_cpi repetition=1"
 #
-#   # Repeat with prediction_strategy=scaling, history; also with reset_image_cache=true
+#   # Repeat with prediction_strategy=scaling (and ref / uniform with force_model=true
+#   # for the cold-start ablation); also with reset_image_cache=true
 #   # for cold-start condition (runs docker image prune on all managed nodes before providers).
 #
 # ─── Extra vars reference ───────────────────────────────────────────────────
 #   placement_mode        ilp | rr | belady | oracle | drl  (default: ilp)
-#   prediction_strategy   cpi | scaling | history          (default: cpi)
+#   prediction_strategy   scaling | ref | uniform | cpi    (default: cpi)
+#                         ref / uniform are cold-start ablations (see
+#                         scheduler/providers/prediction/ablation_strategies.py);
+#                         cpi has no benchmark inputs in the DB yet.
 #   force_model           true | false — cold-start condition: ignore execution history
 #                         and price every (provider, service) pair with the prediction
 #                         strategy (PREDICTION_FORCE_MODEL). Recorded in the manifest.

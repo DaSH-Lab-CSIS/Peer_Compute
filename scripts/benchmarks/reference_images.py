@@ -5,14 +5,14 @@ This module is the single source of truth for:
   - their mapping from benchmark_no -> docker_tag,
   - and the default parameter values recommended by docs/runtime_prediction.tex §11.
 
-Benchmark 010.sleep is intentionally excluded: a pure time.sleep workload
+Benchmark 010.sleep is included for its t_ref only: a pure time.sleep workload
 produces zero deviation under any resource throttle, so the weight-discovery
-step (Stage 2) would always hit the equal-weights fallback. Including it wastes
-time without adding information.
+step (Stage 2) hits the equal-weights fallback and its sigma is not meaningful.
 
 Valid service map (benchmark_no -> full docker tag):
-  Mapping confirmed from readme.md §Benchmark Mapping; inactive entries
-  (020, 030, 040, 220, 411) are omitted.
+  Mapping confirmed from readme.md §Benchmark Mapping. 020 and 040 were listed
+  as inactive there but are active Services used by the experiment trace;
+  030, 220 and 411 are omitted.
 """
 
 from __future__ import annotations
@@ -46,13 +46,24 @@ SERVICES: List[Tuple[str, str]] = [
     ("502", "peercompute/benchmark.502.graph-mst-3.9"),
     ("503", "peercompute/benchmark.503.graph-bfs-3.9"),
     ("504", "peercompute/benchmark.504.dna-visualisation.python-3.9"),
+    # Services used by the experiment trace that had no t_ref / weights.
+    # 010.sleep: throttling changes nothing, so weight discovery hits the
+    # equal-weights fallback (see module docstring); t_ref is still valid.
+    ("010", "peercompute/benchmark.010.sleep.python-3.9"),
+    ("020", "peercompute/benchmark.020.network-benchmark.python-3.9"),
+    ("040", "peercompute/benchmark.040.server-reply.python-3.9"),
+    # Shares benchmark_no 504 with dna-visualisation: provider1.py derives the
+    # payload from the number in the image name, so production sends this image
+    # the 504 payload too. Benchmark it the same way.
+    ("504", "peercompute/benchmark.504.graph-bfs-3.9"),
 ]
 
-# Quick lookup: benchmark_no -> docker_tag
-SERVICE_MAP: Dict[str, str] = {no: tag for no, tag in SERVICES}
+# Quick lookup: benchmark_no -> docker_tag. Numbers are not unique (504 maps to
+# two images); this keeps the last one. Iterate SERVICES to get every image.
+SERVICE_MAP: Dict[str, str] = dict(SERVICES)
 
-# All valid benchmark numbers (for CLI validation)
-VALID_BENCH_NOS: List[str] = [no for no, _ in SERVICES]
+# All valid benchmark numbers (for CLI validation), de-duplicated, in order.
+VALID_BENCH_NOS: List[str] = list(dict.fromkeys(no for no, _ in SERVICES))
 
 # ---------------------------------------------------------------------------
 # Machine-benchmark probe image

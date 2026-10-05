@@ -303,7 +303,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_svc.add_argument(
         "--services", default=None,
         help=f"Comma-separated benchmark numbers to run. "
-             f"Default: all 8 ({','.join(VALID_BENCH_NOS)}). "
+             f"Default: all ({','.join(VALID_BENCH_NOS)}). "
              f"Example: --services 110,311,501"
     )
     p_svc.add_argument(

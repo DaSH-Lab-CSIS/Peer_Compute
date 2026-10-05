@@ -38,11 +38,13 @@ from providers.prediction import (
 )
 from providers.prediction.cpi_strategy import CPIStrategy as _CPIStrategy
 from providers.prediction.scaling_strategy import ScalingFactorStrategy as _ScalingFactorStrategy
+from providers.prediction.ablation_strategies import ReferenceOnlyStrategy as _ReferenceOnlyStrategy
 
 # Module-level shadow strategy instances (stateless, thread-safe)
 _SHADOW_STRATEGIES = {
     "cpi": _CPIStrategy(),
     "scaling": _ScalingFactorStrategy(),
+    "ref": _ReferenceOnlyStrategy(),
 }
 from providers import profiling as scheduler_profiling
 from developers.models import Services
@@ -2439,6 +2441,7 @@ def build_cost_matrix(providers, services):
                         "prediction_source": provider_src.get(_sid),
                         "cpi_output_ms": _shadow_outputs.get("cpi", {}).get(_sid),
                         "scaling_output_ms": _shadow_outputs.get("scaling", {}).get(_sid),
+                        "ref_output_ms": _shadow_outputs.get("ref", {}).get(_sid),
                         # Provider CPI features
                         "f_cpi": float(pred_input.cpi) if pred_input.cpi is not None else None,
                         "f_clock_hz": pred_input.clock_hz,
