@@ -192,6 +192,9 @@
     bench_services: ""
     # Override with -e "bem_provider_id=<uuid>" to skip reading the file.
     bem_provider_id: ""
+    # Used when the BEM has no provider_user_id.txt (utorda1 is a scheduler,
+    # not a provider). Must match the id in its machine_bench JSON.
+    bem_machine_id: "11111111-1111-1111-1111-111111111111"
 
   tasks:
     - name: Ensure local benchmark_results directory exists
@@ -207,27 +210,20 @@
       delegate_to: "{{ bem_host }}"
       when: bem_provider_id == ""
 
-    - name: Fail with helpful message if provider_user_id.txt missing and no override
-      fail:
-        msg: >-
-          {{ bem_host }} has no provider_user_id.txt at {{ bem_uid_file }}.
-          Either point to a provider node with -e "bem_host=cortalim2.dashlab.in"
-          or supply the UUID directly with -e "bem_provider_id=<uuid>".
-      when: bem_provider_id == "" and (bem_uid_stat.stat is not defined or not bem_uid_stat.stat.exists)
-
     - name: Read BEM provider_user_id from file
       slurp:
         src: "{{ bem_uid_file }}"
       register: bem_uid_slurp
       delegate_to: "{{ bem_host }}"
-      when: bem_provider_id == ""
+      when: bem_provider_id == "" and bem_uid_stat.stat.exists
 
-    - name: Set bem_provider_id fact
+    - name: Set bem_provider_id fact (file, else the fixed BEM id)
       set_fact:
-        bem_provider_id: "{{ bem_uid_slurp.content | b64decode | trim }}"
+        bem_provider_id: >-
+          {{ (bem_uid_slurp.content | b64decode | trim) if bem_uid_stat.stat.exists else bem_machine_id }}
       when: bem_provider_id == ""
 
-    - name: Run function benchmark on BEM (may take 30-60 min for all 8 services)
+    - name: Run function benchmark on BEM (all 12 services take ~1.5-2 h)
       shell: >-
         {{ bem_project_dir }}/.venv/bin/python
         {{ bem_project_dir }}/scripts/benchmarks/benchmark.py
