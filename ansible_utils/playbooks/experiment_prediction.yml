@@ -233,6 +233,17 @@
     placement_mode: "ilp"
     prediction_strategy: "cpi"
   tasks:
+    # Code sync MUST precede the .env edits: .env is git-tracked, so the git-mode
+    # reset reverts it, silently dropping placement_mode/prediction_strategy and
+    # leaving the scheduler on settings.py defaults (ilp/cpi).
+    - name: Push code from controller (rsync)
+      include_tasks: "{{ playbook_dir }}/tasks/push_code.yml"
+      when: code_sync_method | default('git') == "rsync"
+
+    - name: Sync scheduler code from GitHub
+      include_tasks: "{{ playbook_dir }}/tasks/git_sync.yml"
+      when: code_sync_method | default('git') == "git"
+
     - name: Override MQTT_BROKER in scheduler .env
       blockinfile:
         path: "{{ project_dir }}/.env"
@@ -262,14 +273,6 @@
         group: "{{ ansible_user }}"
         mode: "0600"
       become_user: "{{ ansible_user }}"
-
-    - name: Pull latest scheduler code from git
-      shell: |
-        git -C "{{ project_dir }}" reset --hard HEAD
-        timeout 60 git -C "{{ project_dir }}" pull --ff-only || true
-      register: git_pull_result
-      changed_when: "'Already up to date' not in git_pull_result.stdout"
-      failed_when: false
 
     - name: Overlay local scheduler fixes (survives git pull from stale remote)
       copy:
@@ -372,6 +375,30 @@
 # ============================================================================
 # Play 3 — Start Providers  (identical to experiment.yml Play 3)
 # ============================================================================
+    - name: Read placement/prediction env from the running scheduler process
+      shell: |
+        pid=$(pgrep -f '[g]unicorn.*scheduler.wsgi' | head -1)
+        [ -n "$pid" ] || { echo "no gunicorn process" >&2; exit 1; }
+        tr '\0' '\n' < /proc/$pid/environ | grep -E '^(SCHEDULER_PLACEMENT_MODE|RUNTIME_PREDICTION_STRATEGY)=' || true
+      args:
+        executable: /bin/bash
+      register: scheduler_live_env
+      changed_when: false
+
+    - name: Abort if the scheduler is not running the requested arm
+      assert:
+        that:
+          - ("SCHEDULER_PLACEMENT_MODE=" ~ placement_mode) in scheduler_live_env.stdout_lines
+          - ("RUNTIME_PREDICTION_STRATEGY=" ~ prediction_strategy) in scheduler_live_env.stdout_lines
+        fail_msg: >-
+          Scheduler on {{ inventory_hostname }} is running with
+          {{ scheduler_live_env.stdout_lines }} but this run requested
+          placement_mode={{ placement_mode }} prediction_strategy={{ prediction_strategy }}.
+          Results would be mislabelled — aborting.
+        success_msg: >-
+          Scheduler env verified: placement_mode={{ placement_mode }}
+          prediction_strategy={{ prediction_strategy }}
+
 - name: Start Providers
   hosts: managed
   become: yes
