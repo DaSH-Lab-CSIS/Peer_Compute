@@ -16,7 +16,7 @@
     direct_number_of_invocations: 1
     direct_chained: false
     direct_run_multiple_invocations: false
-    mqtt_broker: "utorda2.dashlab.in"
+    mqtt_broker: "utorda1.dashlab.in"
     mqtt_port: 1884
     mqtt_username: "peercompute"
     mqtt_password: "peercompute"
