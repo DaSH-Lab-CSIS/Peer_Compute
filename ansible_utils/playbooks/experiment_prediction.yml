@@ -30,7 +30,7 @@
 #   # for cold-start condition (runs docker image prune on all managed nodes before providers).
 #
 # ─── Extra vars reference ───────────────────────────────────────────────────
-#   placement_mode        ilp | rr | oracle | drl          (default: ilp)
+#   placement_mode        ilp | rr | belady | oracle | drl  (default: ilp)
 #   prediction_strategy   cpi | scaling | history          (default: cpi)
 #   run_label             free-text tag embedded in manifest (default: "")
 #   repetition            integer repetition index 1-5     (default: 1)
@@ -268,6 +268,7 @@
           export RUNTIME_PREDICTION_STRATEGY={{ prediction_strategy }}
           export SCHEDULER_PLACEMENT_MODE={{ placement_mode }}
           export PREDICTION_FORCE_MODEL={{ force_model | default(false) | bool | lower }}
+          export BELADY_ASSIGNMENTS_FILE=/opt/peercompute/belady_assignments.json
         create: true
         owner: "{{ ansible_user }}"
         group: "{{ ansible_user }}"
@@ -288,6 +289,28 @@
           dest: "{{ project_dir }}/scheduler/profiles/models.py"
         - src: "{{ playbook_dir }}/../../scheduler/manage.py"
           dest: "{{ project_dir }}/scheduler/manage.py"
+        - src: "{{ playbook_dir }}/../../scheduler/scheduler/settings.py"
+          dest: "{{ project_dir }}/scheduler/scheduler/settings.py"
+
+    - name: Ensure /opt/peercompute directory exists (needed for Belady assignments file)
+      file:
+        path: /opt/peercompute
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0755"
+      become: true
+      when: placement_mode == "belady"
+
+    - name: Copy Belady assignment table to scheduler node (only needed for placement_mode=belady)
+      copy:
+        src: "{{ playbook_dir }}/../../testbed/results/requests/belady_assignments.json"
+        dest: /opt/peercompute/belady_assignments.json
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0644"
+      become: true
+      when: placement_mode == "belady"
 
     - name: Install gunicorn into venv
       command: "{{ project_dir }}/.venv/bin/pip install gunicorn --no-input --index-url https://pypi.org/simple"
@@ -352,29 +375,6 @@
           fail:
             msg: "Scheduler did not start on 127.0.0.1:8000. See diagnostics above."
 
-    - name: Reset provider delay and invocation counters before experiment
-      uri:
-        url: "http://127.0.0.1:8000/providers/reset_provider_state/"
-        method: POST
-        return_content: yes
-        use_proxy: false
-        status_code: 200
-      register: reset_result
-      failed_when: false
-
-    - name: Print provider state reset result
-      debug:
-        msg: "Provider state reset: {{ reset_result.json | default({}) }}"
-
-    - name: Confirm active prediction configuration
-      debug:
-        msg: >-
-          Scheduler started with placement_mode={{ placement_mode }}
-          prediction_strategy={{ prediction_strategy }}
-
-# ============================================================================
-# Play 3 — Start Providers  (identical to experiment.yml Play 3)
-# ============================================================================
     - name: Read placement/prediction env from the running scheduler process
       shell: |
         pid=$(pgrep -f '[g]unicorn.*scheduler.wsgi' | head -1)
@@ -399,6 +399,29 @@
           Scheduler env verified: placement_mode={{ placement_mode }}
           prediction_strategy={{ prediction_strategy }}
 
+    - name: Reset provider delay and invocation counters before experiment
+      uri:
+        url: "http://127.0.0.1:8000/providers/reset_provider_state/"
+        method: POST
+        return_content: yes
+        use_proxy: false
+        status_code: 200
+      register: reset_result
+      failed_when: false
+
+    - name: Print provider state reset result
+      debug:
+        msg: "Provider state reset: {{ reset_result.json | default({}) }}"
+
+    - name: Confirm active prediction configuration
+      debug:
+        msg: >-
+          Scheduler started with placement_mode={{ placement_mode }}
+          prediction_strategy={{ prediction_strategy }}
+
+# ============================================================================
+# Play 3 — Start Providers  (identical to experiment.yml Play 3)
+# ============================================================================
 - name: Start Providers
   hosts: managed
   become: yes
@@ -482,6 +505,24 @@
         executable: /bin/bash
       become_user: "{{ ansible_user }}"
       failed_when: false
+
+    - name: Overlay provider1.py fix (uses env vars for AWS creds, not hardcoded key)
+      copy:
+        src: "{{ playbook_dir }}/../../provider/provider1.py"
+        dest: "{{ project_dir }}/provider/provider1.py"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0644"
+      become: true
+
+    - name: Overlay s3_utils.py fix (uses env vars for AWS creds, not hardcoded key)
+      copy:
+        src: "{{ playbook_dir }}/../../invocations/s3_utils.py"
+        dest: "{{ project_dir }}/invocations/s3_utils.py"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0644"
+      become: true
 
     - name: Start provider script
       shell: |

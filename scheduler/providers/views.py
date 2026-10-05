@@ -67,6 +67,11 @@ ILP_QUEUE_POLL_INTERVAL = 0.5  # seconds between drain checks
 _rr_lock = threading.Lock()
 _rr_counter = _itertools.count(0)
 
+# Belady placement state — loaded once from BELADY_ASSIGNMENTS_FILE at first use.
+_belady_lock          = threading.Lock()
+_belady_job_counter   = _itertools.count(0)   # global job sequence index across all batches
+_belady_assignments: dict | None = None        # {str(job_idx): provider_user_id}
+
 
 def _prof(label: str, t0: float, **extra) -> float:
     """Print a structured PROFILE line, append JSONL when enabled; return current time."""
@@ -2842,6 +2847,44 @@ def find_providers(services, jobs=None, request_data_map=None):
                     total_cost = 0
                     _prof("find_providers-rr_assign", t_ilp,
                           n_services=len(indexed_services), rr_start=start)
+                elif django_settings.SCHEDULER_PLACEMENT_MODE == "belady":
+                    # Belady oracle: load pre-computed assignments from JSON file,
+                    # then assign each job in this batch by global sequence index.
+                    global _belady_assignments
+                    if _belady_assignments is None:
+                        assignments_path = getattr(
+                            django_settings, "BELADY_ASSIGNMENTS_FILE",
+                            "/opt/peercompute/belady_assignments.json"
+                        )
+                        try:
+                            import json as _json
+                            with open(assignments_path) as _f:
+                                _belady_assignments = _json.load(_f)
+                            print(f"[belady] Loaded {len(_belady_assignments)} assignments from {assignments_path}")
+                        except Exception as _e:
+                            print(f"[belady] WARN: could not load assignments file {assignments_path}: {_e}; falling back to RR")
+                            _belady_assignments = {}
+
+                    # Build provider lookup: user_id -> provider ORM object
+                    provider_by_uid = {str(p.user_id): p for p in suitable_providers}
+
+                    assignment = {}
+                    with _belady_lock:
+                        for i, service in indexed_services:
+                            job_seq = next(_belady_job_counter)
+                            target_uid = _belady_assignments.get(str(job_seq))
+                            # Use pre-computed provider if it's currently available,
+                            # else fall back to the least-loaded available provider.
+                            provider = provider_by_uid.get(target_uid)
+                            if provider is None:
+                                provider = min(suitable_providers,
+                                               key=lambda p: delay.get(p, 0))
+                                print(f"[belady] job {job_seq}: target {target_uid} not ready, "
+                                      f"falling back to {provider.user_id}")
+                            assignment[(i, service)] = provider
+                    total_cost = 0
+                    _prof("find_providers-belady_assign", t_ilp,
+                          n_services=len(indexed_services))
                 else:
                     assignment, total_cost = minimize_total_cost(
                         suitable_providers, indexed_services, cost_matrix, delay
