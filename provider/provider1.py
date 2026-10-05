@@ -750,12 +750,22 @@ def _wait_for_benchmark_ready(cont):
         status = cont.status
 
         if status == "exited":
+            exit_code = cont.attrs.get("State", {}).get("ExitCode", -1)
+            elapsed = time.monotonic() - started
+            if exit_code == 0:
+                # Stdout-based container (no HTTP server) — ran and completed cleanly.
+                # Return host_port=None; caller skips HTTP POST but records real run_time.
+                print(
+                    f"[DEBUG] Container exited cleanly (exit_code=0) after {elapsed:.2f}s "
+                    f"(non-HTTP benchmark, skipping HTTP POST)"
+                )
+                return None, elapsed
             try:
                 logs = cont.logs(tail=30).decode("utf-8", errors="replace")
             except Exception:
                 logs = ""
             raise RuntimeError(
-                f"Container exited before HTTP ready (status={status}). "
+                f"Container exited with code {exit_code} before HTTP ready. "
                 f"Logs: {logs[:400]}"
             )
 
@@ -1053,7 +1063,7 @@ def run_and_invoke_docker(body, container_name) -> dict:
         
         traceback.print_exc()
         # Return default values to prevent the function from crashing
-        return {"error": str(e)}, 0, 0, container_name, None
+        return {"error": str(e)}, 0, 0, container_name, None, "error"
 
 def delete_container_and_image(body, container_name):
     print(f"[DEBUG] delete_container_and_image called with body: {body}, container_name: {container_name}")
