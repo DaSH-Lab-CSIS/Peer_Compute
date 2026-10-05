@@ -887,9 +887,9 @@ def run_and_invoke_docker(body, container_name) -> dict:
                                          detach=True,
                                          ports={'8080/tcp': None}, #None dynamically allocates a port
                                          environment={
-                                             'AWS_ACCESS_KEY_ID': 'AKIA3KAG6W36BSXOEHWD',
-                                             'AWS_SECRET_ACCESS_KEY': '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', 
-                                             'AWS_REGION': 'ap-south-1'
+                                             'AWS_ACCESS_KEY_ID': os.environ.get('AWS_ACCESS_KEY_ID', ''),
+                                             'AWS_SECRET_ACCESS_KEY': os.environ.get('AWS_SECRET_ACCESS_KEY', ''),
+                                             'AWS_REGION': os.environ.get('AWS_REGION', 'ap-south-1'),
                                          }
                                          )
             print(f"[DEBUG] Container created successfully: {cont.id}")

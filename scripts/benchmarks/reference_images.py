@@ -16,7 +16,19 @@ Valid service map (benchmark_no -> full docker tag):
 """
 
 from __future__ import annotations
+import os
+from pathlib import Path
 from typing import Dict, List, Tuple
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=True)
+except ImportError:
+    pass
+
+# ---------------------------------------------------------------------------
+# Service list
+# ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # Service list
@@ -65,10 +77,12 @@ MACHINE_PROBE_REPS: int = 3
 
 # Docker AWS environment variables required by benchmark containers
 # (mirrored from provider/provider1.py containers.run call)
+# Credentials are read from environment so they are never stored in source.
+# Set AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION in .env before running.
 BENCH_ENV: Dict[str, str] = {
-    "AWS_ACCESS_KEY_ID": "AKIA3KAG6W36BSXOEHWD",
-    "AWS_SECRET_ACCESS_KEY": "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",
-    "AWS_REGION": "ap-south-1",
+    "AWS_ACCESS_KEY_ID": os.environ.get("AWS_ACCESS_KEY_ID", ""),
+    "AWS_SECRET_ACCESS_KEY": os.environ.get("AWS_SECRET_ACCESS_KEY", ""),
+    "AWS_REGION": os.environ.get("AWS_REGION", "ap-south-1"),
 }
 
 # Seconds to wait after container start before probing port 8080 (legacy fixed sleep)

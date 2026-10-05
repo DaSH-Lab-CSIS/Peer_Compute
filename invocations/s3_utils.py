@@ -1,3 +1,12 @@
+import os
+from pathlib import Path
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=True)
+except ImportError:
+    pass
+
 # Lazy import boto3 - only import when actually needed
 _s3_client = None
 
@@ -9,9 +18,9 @@ def _get_s3_client():
             import boto3
             _s3_client = boto3.client(
                 's3',
-                aws_access_key_id='AKIA3KAG6W36BSXOEHWD',
-                aws_secret_access_key='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',
-                region_name='ap-south-1'
+                aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
+                aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
+                region_name=os.environ.get("AWS_REGION", "ap-south-1"),
             )
         except ImportError:
             raise ImportError("boto3 is required for S3 uploads. Install it with: pip install boto3")
