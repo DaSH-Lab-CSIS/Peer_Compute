@@ -136,28 +136,20 @@ class Command(BaseCommand):
         self.stdout.write("")
         self.stdout.write(self.style.SUCCESS("=== ingest_benchmarks summary ==="))
         self.stdout.write(
-            self.style.SUCCESS(
-                f"  Machines updated : {machines_updated}"
-            )
+            self.style.SUCCESS(f"  Machines updated : {machines_updated}")
         )
         self.stdout.write(
-            self.style.WARNING(
-                f"  Machines skipped : {machines_skipped}"
-            ) if machines_skipped else self.style.SUCCESS(
-                f"  Machines skipped : {machines_skipped}"
-            )
+            self.style.WARNING(f"  Machines skipped : {machines_skipped}")
+            if machines_skipped
+            else self.style.SUCCESS(f"  Machines skipped : {machines_skipped}")
         )
         self.stdout.write(
-            self.style.SUCCESS(
-                f"  Services updated : {services_updated}"
-            )
+            self.style.SUCCESS(f"  Services updated : {services_updated}")
         )
         self.stdout.write(
-            self.style.WARNING(
-                f"  Services skipped : {services_skipped}"
-            ) if services_skipped else self.style.SUCCESS(
-                f"  Services skipped : {services_skipped}"
-            )
+            self.style.WARNING(f"  Services skipped : {services_skipped}")
+            if services_skipped
+            else self.style.SUCCESS(f"  Services skipped : {services_skipped}")
         )
 
     # ------------------------------------------------------------------
@@ -206,13 +198,13 @@ class Command(BaseCommand):
                 )
 
         if not bench_entries:
-            self.stdout.write(self.style.ERROR("No machine benchmark files could be loaded."))
+            self.stdout.write(
+                self.style.ERROR("No machine benchmark files could be loaded.")
+            )
             return 0, len(bench_files)
 
         # ---- Locate BEM baseline data ---------------------------------
-        bem_entry = next(
-            (e for e in bench_entries if e[1] == bem_provider_id), None
-        )
+        bem_entry = next((e for e in bench_entries if e[1] == bem_provider_id), None)
         if bem_entry is None:
             available = [e[1] for e in bench_entries]
             raise CommandError(
@@ -261,6 +253,18 @@ class Command(BaseCommand):
                     skipped += 1
                     continue
 
+                try:
+                    import uuid as _uuid
+                    _uuid.UUID(provider_id)
+                except ValueError:
+                    self.stdout.write(
+                        self.style.WARNING(
+                            f"  {hostname!r}: provider_id {provider_id!r} is not a valid UUID — skipping"
+                        )
+                    )
+                    skipped += 1
+                    continue
+
                 user = User.objects.filter(user_id=provider_id).first()
                 if user is None:
                     self.stdout.write(
@@ -286,8 +290,12 @@ class Command(BaseCommand):
 
                 user.save(
                     update_fields=[
-                        "r_cpu", "r_mem", "r_disk", "r_net",
-                        "s_disk_mbps", "s_net_mbps",
+                        "r_cpu",
+                        "r_mem",
+                        "r_disk",
+                        "r_net",
+                        "s_disk_mbps",
+                        "s_net_mbps",
                     ]
                 )
 
@@ -307,9 +315,7 @@ class Command(BaseCommand):
     # Function benchmark ingestion
     # ------------------------------------------------------------------
 
-    def _ingest_function_benchmarks(
-        self, function_file: str
-    ) -> tuple[int, int]:
+    def _ingest_function_benchmarks(self, function_file: str) -> tuple[int, int]:
         """Load function_bench.json and write weight / timing fields to Services rows.
 
         Returns (updated_count, skipped_count).
@@ -356,9 +362,7 @@ class Command(BaseCommand):
 
                 # Match by docker_container field (the JSON key is the full
                 # Docker Hub tag stored in Services.docker_container).
-                service = Services.objects.filter(
-                    docker_container=docker_tag
-                ).first()
+                service = Services.objects.filter(docker_container=docker_tag).first()
 
                 if service is None:
                     self.stdout.write(
@@ -383,7 +387,10 @@ class Command(BaseCommand):
                 service.save(
                     update_fields=[
                         "ref_runtime_ms",
-                        "w_cpu", "w_mem", "w_disk", "w_net",
+                        "w_cpu",
+                        "w_mem",
+                        "w_disk",
+                        "w_net",
                         "image_size_mb",
                     ]
                 )
@@ -409,11 +416,13 @@ class Command(BaseCommand):
     @staticmethod
     def _hostname_from_path(path: str) -> str:
         """Extract the hostname from a path like .../machine_bench_<hostname>.json."""
-        basename = os.path.basename(path)  # e.g. "machine_bench_cortalim1.dashlab.in.json"
+        basename = os.path.basename(
+            path
+        )  # e.g. "machine_bench_cortalim1.dashlab.in.json"
         # Strip prefix "machine_bench_" and suffix ".json"
         name = basename
         if name.startswith("machine_bench_"):
-            name = name[len("machine_bench_"):]
+            name = name[len("machine_bench_") :]
         if name.endswith(".json"):
             name = name[:-5]
         return name

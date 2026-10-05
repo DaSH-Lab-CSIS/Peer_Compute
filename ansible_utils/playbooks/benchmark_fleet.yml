@@ -141,7 +141,7 @@
     # that has the file, e.g.: -e "bem_host=cortalim2.dashlab.in"
     bem_host: "utorda1.dashlab.in"
     local_project_dir: "/home/peercompute/Serverless_Scheduler"
-    bem_project_dir: "/home/peercompute/deploy/Serverless_Scheduler"
+    bem_project_dir: "/home/{{ hostvars[bem_host]['ansible_user'] | default('peercompute') }}/deploy/Serverless_Scheduler"
     bem_uid_file: "{{ bem_project_dir }}/provider_user_id.txt"
     function_bench_out: "/tmp/function_bench.json"
     local_bench_dir: "{{ playbook_dir }}/../../ansible_utils/benchmark_results"
@@ -186,16 +186,18 @@
 
     - name: Run function benchmark on BEM (may take 30-60 min for all 8 services)
       shell: >-
-        sudo {{ bem_project_dir }}/.venv/bin/python
+        {{ bem_project_dir }}/.venv/bin/python
         {{ bem_project_dir }}/scripts/benchmarks/benchmark.py
         service
         --provider-id {{ bem_provider_id }}
         --out {{ function_bench_out }}
+        --B {{ bench_B | default(3) }}
+        --B-prime {{ bench_B_prime | default(1) }}
         {% if skip_dims | length > 0 %}--skip-dims {{ skip_dims }}{% endif %}
       args:
         executable: /bin/bash
       register: function_bench_result
-      timeout: 3600
+      timeout: 21600
       failed_when: function_bench_result.rc != 0
       delegate_to: "{{ bem_host }}"
 
@@ -223,6 +225,9 @@
     # The BEM is the reference machine; its machine_bench JSON is the denominator
     # for r_i(m) = S_i(BEM) / S_i(m).  Must match bem_host from Play 3.
     bem_host: "utorda1.dashlab.in"
+    # Override with -e "bem_provider_id=<uuid>" when the BEM has no machine bench JSON
+    # (e.g. utorda1 is a control node, not a provider node).
+    bem_provider_id: ""
 
   tasks:
     - name: List fetched machine benchmark files
@@ -241,10 +246,12 @@
         python3 -c "import json; d=json.load(open('{{ local_bench_dir }}/machine_bench_{{ bem_host }}.json')); print(d['provider_id'])"
       register: bem_provider_id_read
       changed_when: false
+      when: bem_provider_id == ""
 
     - name: Set bem_provider_id for ingestion
       set_fact:
         bem_provider_id: "{{ bem_provider_id_read.stdout | trim }}"
+      when: bem_provider_id == ""
 
     - name: Ingest machine + function benchmarks into DB
       shell: >-
