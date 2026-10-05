@@ -1,0 +1,78 @@
+---
+# Push the controller's working tree to {{ project_dir }} on the target host over
+# SSH (rsync). Replaces GitHub-based sync so nodes need no repo access or token.
+#
+# What ships: exactly the files `git ls-files` lists on the controller — committed
+# or staged files, including uncommitted edits to them. To ship a NEW file,
+# `git add` it (no commit/push needed). Files deleted locally are not deleted on
+# nodes.
+#
+# Never touched on nodes: .env (use sync_env.yml), the vault file, and anything
+# untracked — provider_user_id.txt, certs/, .venv/, logs, results.
+#
+# Required var: project_dir. Optional: code_sync_src (default: repo root).
+# Opt-in: -e code_sync_method=rsync (default is git, which pulls from GitHub).
+
+- name: Resolve controller source directory
+  set_fact:
+    code_sync_src: "{{ code_sync_src | default((playbook_dir ~ '/../..') | realpath) }}"
+  run_once: true
+
+- name: Write tracked-file list on controller
+  shell: |
+    set -euo pipefail
+    list=$(mktemp /tmp/code_sync_files.XXXXXX)
+    git -C "{{ code_sync_src }}" ls-files -z > "$list"
+    echo "$list"
+  args:
+    executable: /bin/bash
+  register: code_sync_list
+  delegate_to: localhost
+  become: false
+  run_once: true
+  changed_when: false
+  check_mode: false   # local and read-only; needed so --check can dry-run rsync
+
+- name: Ensure deployment directory exists
+  file:
+    path: "{{ project_dir }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0755"
+  become: true
+
+# rsync runs as {{ ansible_user }} and cannot replace root-owned files.
+- include_tasks: "{{ playbook_dir }}/tasks/fix_ownership.yml"
+
+- name: Push code to {{ project_dir }}
+  ansible.posix.synchronize:
+    src: "{{ code_sync_src }}/"
+    dest: "{{ project_dir }}/"
+    owner: false
+    group: false
+    rsync_opts:
+      - "--from0"
+      - "--files-from={{ code_sync_list.stdout }}"
+      - "--exclude=.env"
+      - "--exclude=ansible_utils/playbooks/secrets.yml"
+      - "--exclude=experiment_logs/"
+      - "--itemize-changes"
+  register: code_sync_result
+  become: false
+
+- name: Report pushed files
+  debug:
+    msg: >-
+      {{ inventory_hostname }}:
+      {{ (code_sync_result.stdout_lines | default([]) | select('match', '^[<>]f') | list | length) }}
+      file(s) updated from {{ code_sync_src }}
+
+- name: Remove tracked-file list on controller
+  file:
+    path: "{{ code_sync_list.stdout }}"
+    state: absent
+  delegate_to: localhost
+  become: false
+  run_once: true
+  changed_when: false

@@ -1,0 +1,35 @@
+---
+# Hard-sync {{ project_dir }} to the canonical GitHub repo (git mode of code sync).
+#
+# Defaults: DaSH-Lab-CSIS/Peer_Compute @ main. Override with
+#   -e "repo_owner=<owner> repo_name=<repo> repo_branch=<branch>"
+# Needs github_pat (secrets.yml). Fails the run if the fetch fails — a silent
+# failure here means the experiment runs stale code.
+
+- include_tasks: "{{ playbook_dir }}/tasks/fix_ownership.yml"
+
+- name: Point origin at the canonical repo
+  command: >-
+    git -C "{{ project_dir }}" remote set-url origin
+    "https://{{ github_pat }}@github.com/{{ repo_owner | default('DaSH-Lab-CSIS') }}/{{ repo_name | default('Peer_Compute') }}"
+  changed_when: false
+  become: true
+  become_user: "{{ ansible_user }}"
+  no_log: true   # command line carries the PAT; -vvv would write it to the log
+
+# Runs as the repo owner: git refuses to touch a repo owned by another user
+# ("dubious ownership"), and root-run git leaves root-owned files behind.
+- name: Sync code to origin/{{ repo_branch | default('main') }}
+  shell: |
+    set -euo pipefail
+    before=$(git -C "{{ project_dir }}" rev-parse HEAD)
+    git -C "{{ project_dir }}" fetch --quiet origin "{{ repo_branch | default('main') }}"
+    git -C "{{ project_dir }}" reset --hard --quiet "origin/{{ repo_branch | default('main') }}"
+    after=$(git -C "{{ project_dir }}" rev-parse HEAD)
+    echo "$before -> $after"
+  args:
+    executable: /bin/bash
+  register: git_sync_result
+  changed_when: git_sync_result.stdout.split(' -> ') | unique | length > 1
+  become: true
+  become_user: "{{ ansible_user }}"

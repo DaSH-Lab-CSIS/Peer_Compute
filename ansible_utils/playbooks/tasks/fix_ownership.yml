@@ -1,0 +1,12 @@
+---
+# Hand root-owned files in {{ project_dir }} back to {{ ansible_user }}.
+# Earlier become:true runs (root git clone, copy overlays) left root-owned files
+# that an unprivileged git or rsync cannot replace. .venv is skipped (large).
+- name: Hand root-owned files in the deploy tree back to the node user
+  shell: >-
+    find "{{ project_dir }}" -path "{{ project_dir }}/.venv" -prune -o
+    ! -user "{{ ansible_user }}" -print
+    -exec chown "{{ ansible_user }}:{{ ansible_user }}" {} +
+  register: fix_ownership_result
+  changed_when: fix_ownership_result.stdout | length > 0
+  become: true

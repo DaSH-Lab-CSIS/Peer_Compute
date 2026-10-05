@@ -32,6 +32,7 @@
       apt:
         name:
           - git
+          - rsync
           - python3-pip
           - python3-venv
           - python3-packaging
@@ -47,6 +48,11 @@
         group: "{{ ansible_user }}"
         mode: "0755"
 
+    - name: Push code from controller (rsync)
+      tags: git_clone_control
+      include_tasks: "{{ playbook_dir }}/tasks/push_code.yml"
+      when: code_sync_method | default('git') == "rsync"
+
     - name: Clone repository
       tags: git_clone_control
       git:
@@ -54,6 +60,8 @@
         dest: "{{ project_dir }}"
         version: "{{ repo_branch }}"
         force: yes
+      when: code_sync_method | default('git') == "git"
+      no_log: true   # repo_url carries the PAT; -vvv would write it to the log
 
     - name: Remove broken venv (control node)
       file:
@@ -255,6 +263,7 @@
       apt:
         name:
           - git
+          - rsync
           - python3-pip
           - python3-venv
           - python3-packaging
@@ -269,12 +278,18 @@
         owner: "{{ ansible_user }}"
         group: "{{ ansible_user }}"
         mode: "0755"
+    - name: Push code from controller (rsync)
+      include_tasks: "{{ playbook_dir }}/tasks/push_code.yml"
+      when: code_sync_method | default('git') == "rsync"
+
     - name: Clone repository on managed nodes
       git:
         repo: "{{ repo_url }}"
         dest: "{{ project_dir }}"
         version: "{{ repo_branch }}"
         force: yes
+      when: code_sync_method | default('git') == "git"
+      no_log: true   # repo_url carries the PAT; -vvv would write it to the log
 
 - name: Setup Managed Nodes
   hosts: managed
@@ -408,6 +423,7 @@
         group: "{{ ansible_user }}"
         mode: "0600"
       become_user: "{{ ansible_user }}"
+
 
     # Same effect as: sudo usermod -aG docker $USER
     # New SSH sessions get the docker group automatically. For an already-open shell without
