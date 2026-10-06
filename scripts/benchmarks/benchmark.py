@@ -125,10 +125,16 @@ def _check_root_for_net() -> bool:
     return True
 
 
-def _write_output(data: dict, path: str) -> None:
-    with open(path, "w") as f:
+def _write_output(data: dict, path: str, quiet: bool = False) -> None:
+    # Write to a temp file and rename over the target: atomic, and works when a
+    # stale file owned by another user sits in /tmp (fs.protected_regular blocks
+    # even root from opening it for writing, but not from replacing it).
+    tmp = f"{path}.tmp{os.getpid()}"
+    with open(tmp, "w") as f:
         json.dump(data, f, indent=2)
-    print(f"Output written to {path}")
+    os.replace(tmp, path)
+    if not quiet:
+        print(f"Output written to {path}")
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +217,7 @@ def _cmd_service(args: argparse.Namespace) -> None:
         epsilon=DEFAULT_EPSILON,
         dry_run=args.dry_run,
         skip_dims=skip_dims,
+        checkpoint=lambda partial: _write_output(partial, args.out, quiet=True),
     )
     _write_output(result, args.out)
 

@@ -60,7 +60,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from statistics import median
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _PROJECT_ROOT not in sys.path:
@@ -262,6 +262,7 @@ def run_service_benchmark(
     epsilon: float = DEFAULT_EPSILON,
     dry_run: bool = False,
     skip_dims: Optional[List[str]] = None,
+    checkpoint: Optional[Callable[[Dict], None]] = None,
 ) -> Dict:
     """Benchmark all (or a subset of) valid services on the BEM.
 
@@ -272,6 +273,8 @@ def run_service_benchmark(
     B, B_prime, theta, size, epsilon : algorithm parameters (paper §11).
     dry_run         : If True, skip real Docker execution.
     skip_dims       : Resource dimensions to skip (e.g. ['net'] without root).
+    checkpoint      : Called with the partial output after each service, so a
+                      failure late in a long run keeps the finished services.
 
     Returns
     -------
@@ -316,5 +319,7 @@ def run_service_benchmark(
             dry_run=dry_run,
             skip_dims=skip_dims,
         )
+        if checkpoint is not None:
+            checkpoint(output)
 
     return output
