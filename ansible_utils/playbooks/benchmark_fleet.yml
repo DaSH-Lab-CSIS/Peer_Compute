@@ -15,6 +15,7 @@
 #                                       # results are merged into benchmark_results/
 #                                       # so unmeasured probes keep their stored values
 #   -e "bench_services=010,020,040,504" # function-benchmark only these numbers
+#   -e "bench_B=5 bench_B_prime=3 bench_size=large"  # function-benchmark settings (defaults)
 #   --tags machine | function | ingest  # run only some plays
 #
 # What this does:
@@ -190,6 +191,12 @@
     skip_dims: ""
     # Comma-separated benchmark numbers (empty = all in reference_images.SERVICES)
     bench_services: ""
+    # Defaults follow docs/runtime_prediction.tex (B >= 5, B' >= 3) and use the
+    # payload size providers actually run (provider1.py always sends "large").
+    # B' = 1 gave weights that swung from cpu 0.45 to 0.00 between two runs.
+    bench_B: 5
+    bench_B_prime: 3
+    bench_size: "large"
     # Override with -e "bem_provider_id=<uuid>" to skip reading the file.
     bem_provider_id: ""
     # Used when the BEM has no provider_user_id.txt (utorda1 is a scheduler,
@@ -223,15 +230,16 @@
           {{ (bem_uid_slurp.content | b64decode | trim) if bem_uid_stat.stat.exists else bem_machine_id }}
       when: bem_provider_id == ""
 
-    - name: Run function benchmark on BEM (all 12 services take ~1.5-2 h)
+    - name: Run function benchmark on BEM (12 services at B=5 B'=3 large take several hours)
       shell: >-
         {{ bem_project_dir }}/.venv/bin/python
         {{ bem_project_dir }}/scripts/benchmarks/benchmark.py
         service
         --provider-id {{ bem_provider_id }}
         --out {{ function_bench_out }}
-        --B {{ bench_B | default(3) }}
-        --B-prime {{ bench_B_prime | default(1) }}
+        --B {{ bench_B }}
+        --B-prime {{ bench_B_prime }}
+        --size {{ bench_size }}
         {% if bench_services | length > 0 %}--services {{ bench_services }}{% endif %}
         {% if skip_dims | length > 0 %}--skip-dims {{ skip_dims }}{% endif %}
       args:
