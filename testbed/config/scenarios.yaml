@@ -32,7 +32,10 @@ steady_load:
   # Research-scale: Already supports research scale (2,000-5,000 requests)
   rps_levels: [1]  # Fixed RPS for uniform long-duration run
   duration_per_level: 500  # seconds (~8 min → 500 requests at 1 RPS)
-  services: [13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  # 13 (010.sleep) excluded 2026-10-07: broken workload. Its 'large' payload exceeds the
+  # benchmark's 180 s per-run limit while production runs took ~1 s, and it had ~33%
+  # success in rep 1, so it would feed noise into the prediction engine.
+  services: [14, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
   interval: 1.0
   invocations: 1
   # ILP configuration
