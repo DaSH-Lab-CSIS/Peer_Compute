@@ -67,6 +67,10 @@ RUNTIME_PREDICTION_STRATEGY = os.environ.get("RUNTIME_PREDICTION_STRATEGY", "cpi
 SCHEDULER_PLACEMENT_MODE = os.environ.get("SCHEDULER_PLACEMENT_MODE", "ilp")
 BELADY_ASSIGNMENTS_FILE = os.environ.get("BELADY_ASSIGNMENTS_FILE", "/opt/peercompute/belady_assignments.json")
 PREDICTION_FORCE_MODEL = os.environ.get("PREDICTION_FORCE_MODEL", "false").lower() == "true"
+# Execution history used by the cost matrix starts here. Jobs before 2026-10-08
+# stored a failed function's wait as run_time (86% of the 90-day window were
+# {"error": ...} results), so they must not be read as runtimes.
+PREDICTION_HISTORY_SINCE = os.environ.get("PREDICTION_HISTORY_SINCE", "2026-10-08T00:00:00+00:00")
 
 CORS_ORIGIN_ALLOW_ALL = True
 

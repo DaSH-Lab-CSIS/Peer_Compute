@@ -1836,6 +1836,17 @@ def finish_job(data):
         job.total_time = response_decoded['total_time']
         job.cost = (response_decoded['total_time'])
 
+        # A failed function still reports run_time = how long the provider waited
+        # (e.g. {"error": "No response received from container"}). Store 0 so the
+        # job counts as an error everywhere run_time > 0 means success: the
+        # outcome rule, the history lookup (bulk_latest_run_time) and the EMA.
+        # total_time keeps the provider's value, i.e. the time the failure cost.
+        _result = response_decoded.get('Result')
+        if isinstance(_result, dict) and _result.get('error'):
+            print(f"[finish_job] job {id} failed in the function: {str(_result.get('error'))[:120]} "
+                  f"(provider run_time {job.run_time} ms recorded as 0)")
+            job.run_time = 0
+
         # Optional: efficiency/training stats (eff_score_data shape) when provider sends them
         if 'memory_usage' in response_decoded:
             job.memory_usage = response_decoded['memory_usage']

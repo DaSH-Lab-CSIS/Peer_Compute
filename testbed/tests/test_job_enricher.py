@@ -23,6 +23,17 @@ class JobEnricherOutcomeTests(unittest.TestCase):
     def test_error_when_finished_and_zero_run_time(self):
         self.assertEqual(classify_outcome(True, 0, '{"error":"boom"}'), "error")
 
+    def test_error_when_result_is_error_object_despite_run_time(self):
+        # rep 1: the provider recorded its wait as run_time on failures
+        response = '{"error": "No response received from container"}'
+        self.assertEqual(classify_outcome(True, 9500, response), "error")
+
+    def test_success_when_result_has_empty_error_field(self):
+        self.assertEqual(classify_outcome(True, 10, '{"result": 1, "error": null}'), "success")
+
+    def test_success_when_response_is_not_json(self):
+        self.assertEqual(classify_outcome(True, 10, "<!DOCTYPE html>"), "success")
+
 
 if __name__ == "__main__":
     unittest.main()

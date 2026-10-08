@@ -10,6 +10,13 @@ from django.core.exceptions import ValidationError
 # Create your models here.
 
 
+def _history_since():
+    """Earliest job whose run_time counts as history (settings.PREDICTION_HISTORY_SINCE)."""
+    from datetime import datetime as _datetime
+    from django.conf import settings as _settings
+    return _datetime.fromisoformat(getattr(_settings, "PREDICTION_HISTORY_SINCE", "2026-10-08T00:00:00+00:00"))
+
+
 class Job(models.Model):
     id = models.AutoField(primary_key=True)
     # # New state field
@@ -78,10 +85,14 @@ class Job(models.Model):
 
     # Return the run_time of the latest invocation of this service (job) for a certain provider
     def get_latest_run_time(provider_id, service_id):
+        # Successful runs only (run_time > 0), like bulk_latest_run_time: a failed
+        # job's run_time is 0 and would make the provider look free to the ILP.
         latest_job = Job.objects.filter(
             provider_id = provider_id,
-            service_id = service_id
-        ).latest('start_time')
+            service_id = service_id,
+            run_time__gt = 0,
+            start_time__gte = _history_since(),
+        ).exclude(response__startswith='{"error"').latest('start_time')
 
         if latest_job:
             return latest_job.run_time
@@ -106,7 +117,7 @@ class Job(models.Model):
             return {}
         from django.utils import timezone as dj_tz
         import datetime as _dt
-        cutoff = dj_tz.now() - _dt.timedelta(days=90)
+        cutoff = max(dj_tz.now() - _dt.timedelta(days=90), _history_since())
         qs = (
             cls.objects
             .filter(
@@ -116,6 +127,9 @@ class Job(models.Model):
                 run_time__gt=0,
                 start_time__gte=cutoff,
             )
+            # No response filter here: excluding error results makes CockroachDB
+            # drop the index plan (399 ms -> >20 s). finish_job stores run_time 0
+            # for failed functions, so run_time__gt=0 already excludes them.
             .order_by('provider_id', 'service_id', '-start_time')
             .distinct('provider_id', 'service_id')
             .values('provider_id', 'service_id', 'run_time')

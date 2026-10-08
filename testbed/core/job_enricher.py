@@ -27,14 +27,31 @@ _PAGE_SIZE = 10000
 # Outcome classification
 # ---------------------------------------------------------------------------
 
+def _response_is_error(response: Any) -> bool:
+    """True if the function's result is an error object, e.g. {"error": "..."}."""
+    obj = response
+    if isinstance(response, str):
+        try:
+            obj = json.loads(response)
+        except (ValueError, TypeError):
+            return False
+    return isinstance(obj, dict) and bool(obj.get("error"))
+
+
 def classify_outcome(finished: bool, run_time: Optional[int], response: Any) -> str:
-    """Classify terminal state using the run_time > 0 rule."""
+    """Classify terminal state.
+
+    success = finished, run_time > 0 and the result is not an error object.
+    The run_time rule alone counted {"error": "No response received from
+    container"} as success, because the provider records how long it waited
+    as run_time (rep 1: 76-81% reported vs 11-16% real success).
+    """
     if not finished:
         return "pending"
     response_text = response if isinstance(response, str) else json.dumps(response or "")
     if response_text.startswith(TIMEOUT_SENTINEL_PREFIX):
         return "timeout"
-    if (run_time or 0) > 0:
+    if (run_time or 0) > 0 and not _response_is_error(response):
         return "success"
     return "error"
 
