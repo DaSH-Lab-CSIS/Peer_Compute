@@ -1,0 +1,2 @@
+#Your dependencies go here
+# python-igraph==0.9.0 removed: not imported by function.py (copy-paste leftover in the original image)

@@ -122,13 +122,15 @@ def get_payload(benchmark_no, size):
         payload = generate_input_for_generator(size)
         pass
     elif benchmark_no == '020':
-        print("inactive benchmark")
+        from invocations.b020 import generate_input_for_generator
+        payload = generate_input_for_generator(size)
         pass
     elif benchmark_no == '030':
         print("inactive benchmark")
         pass
     elif benchmark_no == '040':
-        print("inactive benchmark")
+        from invocations.b040 import generate_input_for_generator
+        payload = generate_input_for_generator(size)
         pass
     elif benchmark_no == '110':
         from invocations.b110 import generate_input_for_generator
