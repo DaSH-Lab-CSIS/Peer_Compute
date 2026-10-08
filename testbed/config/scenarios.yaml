@@ -45,6 +45,15 @@ steady_load:
     max_solve_time: 1.0
     batch_timeout: 5.0
 
+steady_smoke:
+  # Short steady_load (same services and code path): ~6 requests per service.
+  # Use to check real success rates end to end before a full rep.
+  rps_levels: [1]
+  duration_per_level: 66
+  services: [14, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+  interval: 1.0
+  invocations: 1
+
 bursty_load:
   # Dev-scale: 1,000 total requests (200 × 5, default)
   # Research-scale: 2,000-5,000 total requests (400-500 per burst × 5-10 repeats)

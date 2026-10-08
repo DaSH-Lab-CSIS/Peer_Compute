@@ -35,6 +35,7 @@ _DEFAULT_RESULTS_DIR = str(_TESTBED_DIR / "results")
 SCENARIO_CLASSES = {
     'baseline': BaselineScenario,
     'steady_load': SteadyLoadScenario,
+    'steady_smoke': SteadyLoadScenario,  # short steady_load for end-to-end checks
     'bursty_load': BurstyLoadScenario,
     'stress_soak': StressSoakScenario,
     'chaos_edge': ChaosEdgeScenario,
