@@ -149,6 +149,7 @@ def benchmark_service(
     epsilon: float = DEFAULT_EPSILON,
     dry_run: bool = False,
     skip_dims: Optional[List[str]] = None,
+    net_base_mbit: Optional[float] = None,
 ) -> Dict:
     """Run both benchmark stages for a single service and return the result dict.
 
@@ -209,7 +210,7 @@ def benchmark_service(
                 continue
 
             _log.info("  Stage 2 [%s]: %d runs with theta=%.2f ...", dim, B_prime, theta)
-            throttle = make_throttle(dim, theta)
+            throttle = make_throttle(dim, theta, net_base_mbit=net_base_mbit)
             thr_runs = run_B_times(
                 tag, benchmark_no, B=B_prime, size=size,
                 throttle=throttle, dry_run=dry_run
@@ -294,6 +295,17 @@ def run_service_benchmark(
     _log.info("Params: B=%d B'=%d theta=%.2f size=%s epsilon=%.2g",
               B, B_prime, theta, size, epsilon)
 
+    # The network throttle is relative to the BEM's real throughput (a fixed
+    # 1 Gbit/s base never throttled the ~89 Mbit/s lab uplink). Measure once.
+    net_base_mbit: Optional[float] = None
+    if "net" not in (skip_dims or []) and not dry_run:
+        from scripts.benchmarks.machine import probe_net
+        net_base_mbit = round(probe_net(get_docker_client()) * 8.0, 1)
+        if not net_base_mbit:
+            raise RuntimeError("could not measure BEM network throughput for ThrottleNet")
+        _log.info("Network base for ThrottleNet: %.1f Mbit/s (theta %.2f -> %.0f Mbit/s)",
+                  net_base_mbit, theta, net_base_mbit * theta)
+
     output: Dict = {
         "bem_provider_id": bem_provider_id,
         "measured_at": datetime.now(timezone.utc).isoformat(),
@@ -303,6 +315,7 @@ def run_service_benchmark(
             "theta": theta,
             "size": size,
             "epsilon": epsilon,
+            "net_base_mbit": net_base_mbit,
         },
         "services": {},
     }
@@ -318,6 +331,7 @@ def run_service_benchmark(
             epsilon=epsilon,
             dry_run=dry_run,
             skip_dims=skip_dims,
+            net_base_mbit=net_base_mbit,
         )
         if checkpoint is not None:
             checkpoint(output)

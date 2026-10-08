@@ -368,26 +368,38 @@ class ThrottleDisk(ThrottleSpec):
 
 
 class ThrottleNet(ThrottleSpec):
-    """Throttle Docker bridge network bandwidth via Linux ``tc tbf``.
+    """Throttle container network bandwidth in both directions via ``tc tbf``.
 
-    Requires root. Applies a token-bucket filter on the docker0 interface
-    for the duration of the context; restores the qdisc on exit.
+    Requires root. Container traffic leaves through two shapeable points:
+      * downloads: the host forwards them out of ``docker0`` (egress of docker0);
+      * uploads:   the host forwards them out of its uplink (egress of the
+                   default-route interface, e.g. enp2s0).
+    A tbf root qdisc on each limits both. Deleting the root qdisc on exit
+    restores the kernel default (noqueue / fq_codel).
 
-    theta=0.5 => rate set to 50% of an arbitrary 1 Gbit baseline (500 Mbit).
-    The absolute value matters less than consistency across benchmark runs on
-    the same BEM — we are measuring relative slowdown, not absolute bandwidth.
+    The rate is ``theta * base_mbit`` where ``base_mbit`` is the BEM's measured
+    network throughput. A fixed 1 Gbit/s base (the previous behaviour) gave a
+    500 Mbit/s cap on an ~89 Mbit/s uplink, i.e. no throttling at all, and only
+    docker0 egress was shaped, so uploads were never throttled. Measured on
+    utorda1 with 504.dna-visualisation (168 MB upload): no throttle 23.1 s,
+    old ThrottleNet 23.3 s, both directions at 44 Mbit/s 40.7 s.
 
-    Non-Linux platforms: __enter__ logs a warning and is a no-op; the net
-    dimension will have d_net=0 and contribute zero to the normalised weight
-    sum (paper's clamping rule), effectively treating functions as net-neutral.
+    Failures to apply a qdisc raise, so a broken throttle cannot silently
+    produce d_net = 0.
     """
 
-    _BASE_RATE_MBIT = 1000.0  # 1 Gbit/s reference
+    _DEFAULT_BASE_MBIT = 100.0  # used only when no measurement is supplied
 
-    def __init__(self, theta: float = 0.5, interface: str = "docker0"):
+    def __init__(self, theta: float = 0.5, base_mbit: Optional[float] = None,
+                 interfaces: Optional[List[str]] = None):
         self.theta = theta
-        self.interface = interface
-        self._applied = False
+        self.base_mbit = base_mbit or float(os.environ.get("BENCH_NET_BASE_MBIT", self._DEFAULT_BASE_MBIT))
+        self.interfaces = interfaces or ["docker0", _default_route_interface()]
+        self._applied: List[str] = []
+
+    @property
+    def rate_mbit(self) -> int:
+        return max(1, int(self.base_mbit * self.theta))
 
     def docker_kwargs(self) -> Dict[str, Any]:
         return {}
@@ -407,38 +419,44 @@ class ThrottleNet(ThrottleSpec):
                 "network throttling. Skipping.", os.geteuid()
             )
             return self
-        rate_mbit = int(self._BASE_RATE_MBIT * self.theta)
-        cmds = [
-            # Remove any existing root qdisc (ignore errors — may not exist)
-            f"tc qdisc del dev {self.interface} root",
-            # Install TBF: rate, burst 32kbit, latency 50ms
-            (
-                f"tc qdisc add dev {self.interface} root tbf "
-                f"rate {rate_mbit}mbit burst 32kbit latency 50ms"
-            ),
-        ]
-        for cmd in cmds:
-            try:
-                subprocess.run(cmd.split(), check=False, capture_output=True)
-            except Exception as exc:
-                _log.warning("tc command failed: %s", exc)
-                return self
-        self._applied = True
-        _log.debug("ThrottleNet: applied %d Mbit/s on %s", rate_mbit, self.interface)
+        for iface in self.interfaces:
+            subprocess.run(["tc", "qdisc", "del", "dev", iface, "root"],
+                           check=False, capture_output=True)
+            res = subprocess.run(
+                ["tc", "qdisc", "add", "dev", iface, "root", "tbf",
+                 "rate", f"{self.rate_mbit}mbit", "burst", "32kbit", "latency", "50ms"],
+                check=False, capture_output=True, text=True,
+            )
+            if res.returncode != 0:
+                self.__exit__(None, None, None)
+                raise RuntimeError(f"ThrottleNet: tc failed on {iface}: {res.stderr.strip()}")
+            self._applied.append(iface)
+        _log.info("    ThrottleNet: %d Mbit/s (theta=%.2f x base %.1f Mbit/s) on %s",
+                  self.rate_mbit, self.theta, self.base_mbit, ", ".join(self._applied))
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if not self._applied:
-            return
-        try:
-            subprocess.run(
-                f"tc qdisc del dev {self.interface} root".split(),
-                check=False, capture_output=True
-            )
-            _log.debug("ThrottleNet: removed qdisc on %s", self.interface)
-        except Exception as exc:
-            _log.debug("ThrottleNet cleanup: %s", exc)
-        self._applied = False
+        for iface in self._applied:
+            try:
+                subprocess.run(["tc", "qdisc", "del", "dev", iface, "root"],
+                               check=False, capture_output=True)
+                _log.debug("ThrottleNet: removed qdisc on %s", iface)
+            except Exception as exc:
+                _log.warning("ThrottleNet cleanup on %s failed: %s", iface, exc)
+        self._applied = []
+
+
+def _default_route_interface() -> str:
+    """Interface carrying the default route (the uplink uploads leave through)."""
+    try:
+        out = subprocess.run(["ip", "route", "get", "1.1.1.1"],
+                             check=False, capture_output=True, text=True).stdout
+        parts = out.split()
+        if "dev" in parts:
+            return parts[parts.index("dev") + 1]
+    except Exception:
+        pass
+    return "eth0"
 
 
 # ---------------------------------------------------------------------------
@@ -483,10 +501,15 @@ THROTTLE_CLASSES: Dict[str, type] = {
 }
 
 
-def make_throttle(resource: str, theta: float) -> ThrottleSpec:
-    """Return a ThrottleSpec for the given resource dimension and theta."""
+def make_throttle(resource: str, theta: float, net_base_mbit: Optional[float] = None) -> ThrottleSpec:
+    """Return a ThrottleSpec for the given resource dimension and theta.
+
+    ``net_base_mbit`` (measured BEM throughput) sets the network throttle's base.
+    """
     cls = THROTTLE_CLASSES.get(resource)
     if cls is None:
         raise ValueError(f"Unknown resource dimension {resource!r}; "
                          f"choose from {sorted(THROTTLE_CLASSES)}")
+    if cls is ThrottleNet:
+        return ThrottleNet(theta=theta, base_mbit=net_base_mbit)
     return cls(theta=theta)
