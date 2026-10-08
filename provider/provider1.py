@@ -711,7 +711,11 @@ def get_docker_host_ip():
 
 
 # Benchmark HTTP settings (aligned with scripts/benchmarks/reference_images.py)
-_BENCHMARK_HTTP_TIMEOUT = 60
+# Max wait for the function's HTTP response. 60 s was too tight: 504.dna-visualisation
+# uploads a 168 MB output (~21 s alone on the lab uplink), so a few concurrent runs
+# exceeded 60 s and were recorded as "No response". Keep below the experiment's
+# stale-job sweep (no_result_threshold_seconds, default 300 s).
+_BENCHMARK_HTTP_TIMEOUT = float(os.environ.get("PROVIDER_CONTAINER_HTTP_TIMEOUT", "240"))
 _BENCHMARK_READY_TIMEOUT = float(os.environ.get("PROVIDER_CONTAINER_READY_TIMEOUT", "30"))
 _BENCHMARK_READY_POLL_INTERVAL = float(
     os.environ.get("PROVIDER_CONTAINER_READY_POLL_INTERVAL", "0.05")
