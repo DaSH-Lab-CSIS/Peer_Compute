@@ -1681,13 +1681,11 @@ def request_handler(data, service, start_time, run_async=False):
         services = service
         data_items = data
     
-    # Create request_data_map: service.id -> request data (for timestamps)
-    request_data_map = {}
-    if is_batch:
-        for svc, req_data in zip(services, data_items):
-            request_data_map[svc.id] = req_data
-    else:
-        request_data_map[services[0].id] = data_items[0]
+    # request_data_map: batch index -> request data (timestamps, _trace_seq).
+    # Keyed by index, matching the (i, service) assignment keys. Keying by
+    # service.id let a second request for the same service in one batch
+    # overwrite the first, so both jobs got the same lb/scheduler timestamps.
+    request_data_map = {i: req_data for i, req_data in enumerate(data_items)}
     
     while attempt < max_attempts:
         try:
@@ -2756,7 +2754,7 @@ def process_assignments(assignment, cost_matrix, request_data_map=None, predicti
     Args:
         assignment: Dictionary mapping (index, service) to provider
         cost_matrix: Cost matrix for ILP
-        request_data_map: Optional dict mapping service.id to request data (for timestamps)
+        request_data_map: Optional dict mapping batch index i to request data (for timestamps)
     """
     t0 = time.time()
     n_assignments = len(assignment)
@@ -2772,8 +2770,8 @@ def process_assignments(assignment, cost_matrix, request_data_map=None, predicti
 
         lb_received_time = None
         scheduler_received_time = None
-        if request_data_map and service.id in request_data_map:
-            req_data = request_data_map[service.id]
+        if request_data_map and i in request_data_map:
+            req_data = request_data_map[i]
             if '_lb_received_time' in req_data:
                 try:
                     lb_received_time = datetime.fromisoformat(
@@ -2877,7 +2875,7 @@ def find_providers(services, jobs=None, request_data_map=None):
     Args:
         services: List of Service objects
         jobs: Optional jobs parameter (legacy)
-        request_data_map: Optional dict mapping service.id to request data (for timestamps)
+        request_data_map: Optional dict mapping batch index i to request data (for timestamps)
     """
     t_fp_start = time.time()
     n_services = len(services) if isinstance(services, list) else 1
@@ -2990,7 +2988,14 @@ def find_providers(services, jobs=None, request_data_map=None):
                     assignment = {}
                     with _belady_lock:
                         for i, service in indexed_services:
-                            job_seq = next(_belady_job_counter)
+                            # Prefer the request's position in the replayed trace
+                            # (stamped by the testbed as _trace_seq): it is global,
+                            # whereas this counter is per scheduler process and the
+                            # LB round-robins batches across schedulers.
+                            _req = (request_data_map or {}).get(i) or {}
+                            job_seq = _req.get("_trace_seq")
+                            if job_seq is None:
+                                job_seq = next(_belady_job_counter)
                             target_uid = _belady_assignments.get(str(job_seq))
                             # Use pre-computed provider if it's currently available,
                             # else fall back to the least-loaded available provider.

@@ -64,6 +64,16 @@ class SteadyLoadScenario(BaseScenario):
                 )
                 level_request_lists.append(requests)
 
+        # Stamp each request with its global position in the trace. The Belady
+        # placement mode looks its precomputed assignment up by this index;
+        # identical for fresh and replayed traces, and independent of which
+        # scheduler the load balancer sends the batch to.
+        seq = 0
+        for lvl in level_request_lists:
+            for j, r in enumerate(lvl):
+                lvl[j] = {**r, "_trace_seq": seq}
+                seq += 1
+
         if self.save_requests and not self.replay_file:
             flat = [r for lvl in level_request_lists for r in lvl]
             save_path = _TESTBED_ROOT / "results" / "requests" / f"{self.run_id}_requests.json"
