@@ -5,9 +5,9 @@ This module is the single source of truth for:
   - their mapping from benchmark_no -> docker_tag,
   - and the default parameter values recommended by docs/runtime_prediction.tex §11.
 
-Benchmark 010.sleep is included for its t_ref only: a pure time.sleep workload
-produces zero deviation under any resource throttle, so the weight-discovery
-step (Stage 2) hits the equal-weights fallback and its sigma is not meaningful.
+Benchmark 010.sleep is excluded: a pure time.sleep workload produces zero
+deviation under any throttle, and its production "large" payload exceeds the
+harness's per-run time limit.
 
 Valid service map (benchmark_no -> full docker tag):
   Mapping confirmed from readme.md §Benchmark Mapping. 020 and 040 were listed
@@ -47,9 +47,9 @@ SERVICES: List[Tuple[str, str]] = [
     ("503", "peercompute/benchmark.503.graph-bfs-3.9"),
     ("504", "peercompute/benchmark.504.dna-visualisation.python-3.9"),
     # Services used by the experiment trace that had no t_ref / weights.
-    # 010.sleep: throttling changes nothing, so weight discovery hits the
-    # equal-weights fallback (see module docstring); t_ref is still valid.
-    ("010", "peercompute/benchmark.010.sleep.python-3.9"),
+    # 010.sleep is deliberately absent: with the production "large" payload every
+    # run exceeds the harness's 180 s per-run limit (~1 h of timeouts per full
+    # run), and it is excluded from the steady_load trace.
     ("020", "peercompute/benchmark.020.network-benchmark.python-3.9"),
     ("040", "peercompute/benchmark.040.server-reply.python-3.9"),
     # Shares benchmark_no 504 with dna-visualisation: provider1.py derives the
